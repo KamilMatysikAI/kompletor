@@ -1,0 +1,111 @@
+# Kompletor jedną komendą: `docker compose up` w czystym klonie, bez pliku .env.
+# Goły `docker compose up` bierze ten plik, czyli produkt. Baza do developmentu i testów jest w docker-compose.dev.yml
+# (npm run db:up / db:down wołają go jawnie przez -f).
+#
+#   sekrety  jednorazowo zakłada losowe hasła bazy, klucz szyfrowania i kod instalacji w wolumenie `sekrety`
+#            (istniejących plików nigdy nie zmienia)
+#   db       Postgres 16, bez publikowania portu na zewnątrz
+#   web      panel na http://localhost:3000 (tylko 127.0.0.1); po pierwszym starcie log podaje adres /start z kodem
+#   worker   kolejka zadań (cień zamówień, rezerwacje, raporty)
+#
+# Zmienne (opcjonalne, w powłoce albo w pliku .env obok tego pliku):
+#   KOMPLETOR_PORT           port panelu na 127.0.0.1 (domyślnie 3000)
+#   KOMPLETOR_SEED           preset firmy przy starcie: nazwa pliku z seed/presety albo prywatne/presety, `demo` (fikcyjne)
+#   KOMPLETOR_PRESET_PLIK    ścieżka presetu w kontenerze (własny plik zamontowany w nakładce compose)
+#   KOMPLETOR_NADPISANIA_KATALOG  katalog plików nadpisań ofert firm w kontenerze (zamontowany w nakładce compose)
+#   KOMPLETOR_COOKIE_SECURE  true za reverse proxy z HTTPS (ciasteczko sesji tylko po https)
+#   KOMPLETOR_OBRAZ          nazwa obrazu (domyślnie kompletor:lokalny, budowany z tego repo)
+# Kopie zapasowe: wolumeny `pg_data`, `sekrety` i `zdjecia` razem (README, „Kopie zapasowe”).
+name: kompletor
+
+x-aplikacja: &aplikacja
+  image: ${KOMPLETOR_OBRAZ:-kompletor:lokalny}
+  restart: unless-stopped
+  volumes:
+    - sekrety:/sekrety:ro
+    # zdjęcia produktów ze starszych wersji; zdjęcia są w bazie, a start przenosi stąd stare
+    # pliki (README, „Zdjęcia produktów w bazie”)
+    - zdjecia:/dane/zdjecia
+
+x-env: &env
+  APP_MODE: self-host
+  KOMPLETOR_SEKRETY_DIR: /sekrety
+  KOMPLETOR_DB_HOST: db
+  KOMPLETOR_PORT: ${KOMPLETOR_PORT:-3000}
+  KOMPLETOR_PRESET_PLIK: ${KOMPLETOR_PRESET_PLIK:-}
+  KOMPLETOR_NADPISANIA_KATALOG: ${KOMPLETOR_NADPISANIA_KATALOG:-}
+
+services:
+  sekrety:
+    # ten sam obraz co web (budowany przez usługę web)
+    image: ${KOMPLETOR_OBRAZ:-kompletor:lokalny}
+    # root tylko tutaj: nadaje plikom właściciela (postgres uid 70 i użytkownik app obrazu), potem kończy pracę
+    user: '0:0'
+    entrypoint: ['node', 'dist/instalacja.cjs']
+    environment:
+      KOMPLETOR_SEKRETY_DIR: /sekrety
+    volumes:
+      - sekrety:/sekrety
+    restart: 'no'
+    healthcheck:
+      disable: true
+
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: kompletor
+      POSTGRES_DB: kompletor
+      POSTGRES_PASSWORD_FILE: /sekrety/postgres_password
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - sekrety:/sekrety:ro
+    depends_on:
+      sekrety:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U kompletor -d kompletor']
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  web:
+    <<: *aplikacja
+    build: .
+    environment:
+      <<: *env
+      KOMPLETOR_ROLA: web
+      KOMPLETOR_SEED: ${KOMPLETOR_SEED:-}
+      # bez bramki Basic Auth: panel ma własne logowanie, a adres jest tylko na 127.0.0.1
+      BASIC_AUTH_DISABLED: '1'
+      COOKIE_SECURE: ${KOMPLETOR_COOKIE_SECURE:-false}
+    ports:
+      - '127.0.0.1:${KOMPLETOR_PORT:-3000}:3000'
+    depends_on:
+      sekrety:
+        condition: service_completed_successfully
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD', '/usr/local/bin/healthcheck.sh']
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 150s
+      start_interval: 3s
+
+  worker:
+    <<: *aplikacja
+    environment:
+      <<: *env
+      KOMPLETOR_ROLA: worker
+    depends_on:
+      db:
+        condition: service_healthy
+      web:
+        condition: service_healthy
+
+volumes:
+  pg_data:
+  sekrety:
+  zdjecia:

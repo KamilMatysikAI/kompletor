@@ -1,0 +1,221 @@
+/* Kompletor — tokeny semantyczne panelu. Wczytywane przed panel.css; stare nazwy (--ink, --leaf…) są
+   w panel.css aliasami do tych tokenów, żeby ekrany sprzed przebudowy działały bez zmian. Zasady: docs/ui.md.
+   Paleta bez zmian względem makiet (zieleń liścia na chłodnym papierze), zmienia się tylko warstwa nazw:
+   komponent mówi „sukces”, „ostrzeżenie”, „powierzchnia”, nie „zielony”. Kontrast tekstu ≥ 4.5:1 na powierzchni
+   i na tle tonu (sprawdzone w docs/ui.md, tabela kontrastów). */
+
+:root {
+  /* ---------- kolor: tła i tekst (chłodny papier, atrament granatowy) ---------- */
+  --kolor-tlo: #f3f4f6;
+  --kolor-powierzchnia: #ffffff;
+  --kolor-powierzchnia-2: #f8f8fa;
+  --kolor-powierzchnia-hover: #fff8e0; /* wiersz pod kursorem: cień złota, nie szarość */
+  --kolor-tekst: #1a1e2b;
+  --kolor-tekst-2: #4a5060;
+  --kolor-tekst-3: #5d6474;
+  --kolor-tekst-odwrotny: #ffffff;
+  --kolor-linia: #e1e3e8;
+  --kolor-linia-mocna: #c9ccd4;
+  --kolor-focus: #2456c8;
+  --kolor-link: #1b4b9b;
+
+  /* ---------- kolor: akcent marki (złoto taśmy pakowej) ----------
+     Złoto niesie markę i „tu jesteś / to kliknij”: przycisk główny, aktywna pozycja menu, aktywna zakładka, słupki
+     wykresów. Na złocie ZAWSZE tekst atramentowy (--kolor-na-akcencie), nigdy biały (biały na złocie to 1,8:1).
+     Złoty tekst na jasnym tle to --kolor-akcent-tekst (ciemny bursztyn), nie --kolor-akcent. */
+  --kolor-akcent: #f5b700;
+  --kolor-akcent-hover: #e3a700;
+  --kolor-akcent-linia: #d99e00;
+  --kolor-akcent-tlo: #fff3c9;
+  --kolor-akcent-tekst: #734f00;
+  --kolor-na-akcencie: #1a1e2b;
+
+  /* ---------- kolor: tony stanów (tekst na tle tonu ≥ 4.5:1) ----------
+     Ostrzeżenie jest pomarańczowe, żeby nie mylić go ze złotem marki. Zieleń znaczy wyłącznie „zrobione / dobrze”. */
+  --kolor-sukces: #1c6140;      --kolor-sukces-tlo: #e0f2e7;      --kolor-sukces-linia: #a3d2b6;
+  --kolor-ostrzezenie: #963f05; --kolor-ostrzezenie-tlo: #ffe8d6; --kolor-ostrzezenie-linia: #f3bd95;
+  --kolor-blad: #a8251b;        --kolor-blad-tlo: #fce6e3;        --kolor-blad-linia: #e7b3ad;
+  --kolor-info: #1b4b9b;        --kolor-info-tlo: #e4edfb;        --kolor-info-linia: #adc4ec;
+  --kolor-uwaga: #553a9e;       --kolor-uwaga-tlo: #ece7f8;       --kolor-uwaga-linia: #c3b5e6;
+  --kolor-neutralny: #4a5060;   --kolor-neutralny-tlo: #eceef2;   --kolor-neutralny-linia: #c9ccd4;
+  /* „akcent” jako ton odznaki i znak „zrobione”: stan zakończony (wysłane, odebrane) — pełna zieleń, biały tekst */
+  --kolor-akcent-pelny: #23704a;
+  --kolor-sukces-pelny: #23704a;
+  --kolor-sukces-pelny-hover: #1c6140;
+  /* pełne tła z białym tekstem (komunikat skanu, brak na półce): stałe w obu motywach, bo tony w ciemnym są pastelowe */
+  --kolor-blad-pelny: #a8251b;
+  --kolor-uwaga-pelny: #553a9e;
+
+  /* ---------- kolor: menu boczne (jasne; białe, aktywna pozycja w złocie) ---------- */
+  --kolor-menu-tlo: #ffffff;
+  --kolor-menu-tekst: #1a1e2b;
+  --kolor-menu-tekst-2: #5d6474;
+  --kolor-menu-hover: #f3f4f6;
+  --kolor-menu-linia: #e1e3e8;
+  --kolor-menu-aktywny: #fff3c9;
+  --kolor-menu-aktywny-tekst: #1a1e2b;
+  /* kropki statusów w menu (grafika, próg 3:1 na tle menu) */
+  --kolor-kropka-ostrzezenie: #d2620c;
+  --kolor-kropka-neutralna: #7c8394;
+  /* ciemne tło: toasty, ekran logowania, zaznaczone przełączniki */
+  --kolor-ciemny: #1a1e2b;
+  --kolor-ciemny-tekst-2: #b3b9c8;
+  --wys-paska: 52px;
+
+  /* ---------- typografia ---------- */
+  --font-naglowek: var(--font-bricolage), 'Bricolage Grotesque', 'Segoe UI', system-ui, sans-serif;
+  --font-tresc: var(--font-public-sans), 'Public Sans', 'Segoe UI', system-ui, sans-serif;
+  --font-mono: var(--font-plex-mono), 'IBM Plex Mono', Consolas, monospace;
+  --tekst-xs: 12px;
+  --tekst-sm: 13px;
+  --tekst-md: 14px;
+  --tekst-lg: 16px;
+  --tekst-xl: 20px;
+  --tekst-2xl: 26px;
+  --waga-normal: 400;
+  --waga-srednia: 500;
+  --waga-polmocna: 600;
+  --waga-mocna: 700;
+  --interlinia-ciasna: 1.25;
+  --interlinia: 1.5;
+
+  /* ---------- odstępy, promienie, cienie, warstwy ---------- */
+  --odstep-1: 4px;
+  --odstep-2: 8px;
+  --odstep-3: 12px;
+  --odstep-4: 16px;
+  --odstep-5: 24px;
+  --odstep-6: 32px;
+  --odstep-7: 48px;
+  --promien-sm: 4px;
+  --promien: 6px;
+  --promien-lg: 10px;
+  --promien-pelny: 999px;
+  /* cienie tylko dla warstw unoszących się nad treścią (menu rozwijane, modal, toast); karty są płaskie */
+  --cien-1: 0 1px 2px rgb(26 30 43 / 0.06);
+  --cien-2: 0 8px 28px rgb(26 30 43 / 0.16);
+  --z-sticky: 10;
+  --z-menu: 20;
+  --z-boczne: 40;
+  --z-modal: 50;
+  --z-toast: 70;
+  --szer-menu: 236px;
+  --szer-tresci-max: 1180px;
+  --czas-szybki: 120ms;
+  --czas: 200ms;
+
+  /* ---------- gęstość: domyślnie „gęsto” (biuro) ---------- */
+  --wys-kontrolki: 36px;
+  --wys-kontrolki-sm: 30px;
+  --wys-wiersza: 40px;
+  --pad-komorki-y: 8px;
+  --pad-komorki-x: 10px;
+  --tekst-bazowy: 15px;
+  --wys-celu: 32px; /* minimalny cel dotykowy przy myszy */
+}
+
+/* „Wygodnie” (magazyn, ekran dotykowy): większe kontrolki i wiersze. Atrybut na .shell (app/(panel)/layout.tsx). */
+[data-gestosc='wygodnie'] {
+  --wys-kontrolki: 44px;
+  --wys-kontrolki-sm: 40px;
+  --wys-wiersza: 56px;
+  --pad-komorki-y: 12px;
+  --pad-komorki-x: 12px;
+  --tekst-bazowy: 16px;
+  --wys-celu: 44px;
+}
+
+/* Telefon i tablet dotykowy: cele ≥ 44 px niezależnie od wyboru gęstości. */
+@media (max-width: 1024px) {
+  :root,
+  [data-gestosc] {
+    --wys-kontrolki: 44px;
+    --wys-kontrolki-sm: 44px;
+    --wys-celu: 44px;
+  }
+}
+
+/* ---------- motyw ciemny ----------
+   Atrybut `data-motyw` na <html> (app/layout.tsx, z ciasteczka; lib/panel/motyw.ts): `jasny` = wartości z :root,
+   `ciemny` = ten blok, `auto` = ten sam blok, gdy system ma ciemny wygląd. Oba bloki muszą mieć te same wartości.
+   Złoto marki zostaje, tekst na złocie dalej atramentowy (--kolor-na-akcencie się nie zmienia). `--kolor-ciemny` to
+   w ciemnym motywie powierzchnia uniesiona (toast, pasek akcji, wciśnięty przełącznik), z białym tekstem.
+   Kontrasty: docs/ui.md. */
+html[data-motyw='ciemny'] {
+  color-scheme: dark;
+  --kolor-tlo: #11141c;
+  --kolor-powierzchnia: #1a1e2b;
+  --kolor-powierzchnia-2: #202534;
+  --kolor-powierzchnia-hover: #2c2a1c;
+  --kolor-tekst: #eef0f5;
+  --kolor-tekst-2: #b6bccb;
+  --kolor-tekst-3: #969db0;
+  --kolor-linia: #2c3244;
+  --kolor-linia-mocna: #424a61;
+  --kolor-focus: #8ab0ff;
+  --kolor-link: #9bbcff;
+  --kolor-akcent: #f5b700;
+  --kolor-akcent-hover: #ffc929;
+  --kolor-akcent-linia: #f5b700;
+  --kolor-akcent-tlo: #3a3111;
+  --kolor-akcent-tekst: #ffd766;
+  --kolor-sukces: #86d9ab;      --kolor-sukces-tlo: #16321f;      --kolor-sukces-linia: #2b5c40;
+  --kolor-ostrzezenie: #ffb685; --kolor-ostrzezenie-tlo: #3b2413; --kolor-ostrzezenie-linia: #6e4322;
+  --kolor-blad: #ffa39a;        --kolor-blad-tlo: #3f1b18;        --kolor-blad-linia: #74302a;
+  --kolor-info: #a3c4ff;        --kolor-info-tlo: #182a4b;        --kolor-info-linia: #2f4a7d;
+  --kolor-uwaga: #c8b8ff;       --kolor-uwaga-tlo: #2a2250;       --kolor-uwaga-linia: #4a3d85;
+  --kolor-neutralny: #b6bccb;   --kolor-neutralny-tlo: #272c3b;   --kolor-neutralny-linia: #424a61;
+  --kolor-menu-tlo: #161a25;
+  --kolor-menu-tekst: #eef0f5;
+  --kolor-menu-tekst-2: #969db0;
+  --kolor-menu-hover: #202534;
+  --kolor-menu-linia: #2c3244;
+  --kolor-menu-aktywny: #3a3111;
+  --kolor-menu-aktywny-tekst: #ffe59a;
+  --kolor-kropka-ostrzezenie: #ff9a4d;
+  --kolor-kropka-neutralna: #8f97aa;
+  --kolor-ciemny: #323a52;
+  --kolor-ciemny-tekst-2: #c3c8d6;
+  --cien-1: 0 1px 2px rgb(0 0 0 / 0.3);
+  --cien-2: 0 8px 28px rgb(0 0 0 / 0.5);
+}
+@media (prefers-color-scheme: dark) {
+  html[data-motyw='auto'] {
+    color-scheme: dark;
+    --kolor-tlo: #11141c;
+    --kolor-powierzchnia: #1a1e2b;
+    --kolor-powierzchnia-2: #202534;
+    --kolor-powierzchnia-hover: #2c2a1c;
+    --kolor-tekst: #eef0f5;
+    --kolor-tekst-2: #b6bccb;
+    --kolor-tekst-3: #969db0;
+    --kolor-linia: #2c3244;
+    --kolor-linia-mocna: #424a61;
+    --kolor-focus: #8ab0ff;
+    --kolor-link: #9bbcff;
+    --kolor-akcent: #f5b700;
+    --kolor-akcent-hover: #ffc929;
+    --kolor-akcent-linia: #f5b700;
+    --kolor-akcent-tlo: #3a3111;
+    --kolor-akcent-tekst: #ffd766;
+    --kolor-sukces: #86d9ab;      --kolor-sukces-tlo: #16321f;      --kolor-sukces-linia: #2b5c40;
+    --kolor-ostrzezenie: #ffb685; --kolor-ostrzezenie-tlo: #3b2413; --kolor-ostrzezenie-linia: #6e4322;
+    --kolor-blad: #ffa39a;        --kolor-blad-tlo: #3f1b18;        --kolor-blad-linia: #74302a;
+    --kolor-info: #a3c4ff;        --kolor-info-tlo: #182a4b;        --kolor-info-linia: #2f4a7d;
+    --kolor-uwaga: #c8b8ff;       --kolor-uwaga-tlo: #2a2250;       --kolor-uwaga-linia: #4a3d85;
+    --kolor-neutralny: #b6bccb;   --kolor-neutralny-tlo: #272c3b;   --kolor-neutralny-linia: #424a61;
+    --kolor-menu-tlo: #161a25;
+    --kolor-menu-tekst: #eef0f5;
+    --kolor-menu-tekst-2: #969db0;
+    --kolor-menu-hover: #202534;
+    --kolor-menu-linia: #2c3244;
+    --kolor-menu-aktywny: #3a3111;
+    --kolor-menu-aktywny-tekst: #ffe59a;
+    --kolor-kropka-ostrzezenie: #ff9a4d;
+    --kolor-kropka-neutralna: #8f97aa;
+    --kolor-ciemny: #323a52;
+    --kolor-ciemny-tekst-2: #c3c8d6;
+    --cien-1: 0 1px 2px rgb(0 0 0 / 0.3);
+    --cien-2: 0 8px 28px rgb(0 0 0 / 0.5);
+  }
+}

@@ -1,0 +1,7 @@
+node_modules/
+dist/
+wydanie/
+# Konfiguracja stanowiska zawiera token — tylko na komputerze w magazynie, nigdy w repo.
+agent-druku.json
+dane/
+logi/

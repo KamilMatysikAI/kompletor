@@ -1,0 +1,848 @@
+{
+ "warehouse_documents": {
+  "0": {
+   "warehouse_document": {
+    "id": "900000014",
+    "fullnumber": "WZ 127/26/10/26",
+    "number": "127",
+    "date": "2026-10-26",
+    "type": "WZ",
+    "status": "pending",
+    "description": "",
+    "delivered": "Baselinker",
+    "created": "2026-10-26 17:18:43",
+    "modified": "2026-10-26 17:18:44",
+    "warehouse": {
+     "id": 900014
+    },
+    "invoice": {
+     "id": 900000084
+    },
+    "warehouse_document_contents": {
+     "0": {
+      "warehouse_document_content": {
+       "id": "900000350",
+       "count": "1.0000",
+       "unit_count": "1.0000",
+       "created": "2026-10-26 17:18:44",
+       "good": {
+        "id": 90000028
+       },
+       "warehouse_document": {
+        "id": 900000014
+       }
+      }
+     },
+     "1": {
+      "warehouse_document_content": {
+       "id": "900000357",
+       "count": "1.0000",
+       "unit_count": "1.0000",
+       "created": "2026-10-26 17:18:44",
+       "good": {
+        "id": 90000007
+       },
+       "warehouse_document": {
+        "id": 900000014
+       }
+      }
+     },
+     "2": {
+      "warehouse_document_content": {
+       "id": "900000364",
+       "count": "1.0000",
+       "unit_count": "1.0000",
+       "created": "2026-10-26 17:18:44",
+       "good": {
+        "id": 90000021
+       },
+       "warehouse_document": {
+        "id": 900000014
+       }
+      }
+     },
+     "3": {
+      "warehouse_document_content": {
+       "id": "900000371",
+       "count": "1.0000",
+       "unit_count": "1.0000",
+       "created": "2026-10-26 17:18:44",
+       "good": {
+        "id": 90000014
+       },
+       "warehouse_document": {
+        "id": 900000014
+       }
+      }
+     },
+     "4": {
+      "warehouse_document_content": {
+       "id": "900000378",
+       "count": "1.0000",
+       "unit_count": "1.0000",
+       "created": "2026-10-26 17:18:44",
+       "good": {
+        "id": 90000035
+       },
+       "warehouse_document": {
+        "id": 900000014
+       }
+      }
+     }
+    }
+   }
+  },
+  "1": {
+   "warehouse_document": {
+    "id": "900000021",
+    "fullnumber": "WZ 112/27/10/26",
+    "number": "112",
+    "date": "2026-10-27",
+    "type": "WZ",
+    "status": "pending",
+    "description": "",
+    "delivered": "Baselinker",
+    "created": "2026-10-27 10:44:55",
+    "modified": "2026-10-27 10:44:55",
+    "warehouse": {
+     "id": 900014
+    },
+    "invoice": {
+     "id": 900000091
+    },
+    "warehouse_document_contents": {
+     "0": {
+      "warehouse_document_content": {
+       "id": "900000385",
+       "count": "14.0000",
+       "unit_count": "14.0000",
+       "created": "2026-10-27 10:44:55",
+       "good": {
+        "id": 90000105
+       },
+       "warehouse_document": {
+        "id": 900000021
+       }
+      }
+     },
+     "1": {
+      "warehouse_document_content": {
+       "id": "900000392",
+       "count": "1.0000",
+       "unit_count": "1.0000",
+       "created": "2026-10-27 10:44:55",
+       "good": {
+        "id": 90000105
+       },
+       "warehouse_document": {
+        "id": 900000021
+       }
+      }
+     }
+    }
+   }
+  },
+  "2": {
+   "warehouse_document": {
+    "id": "900000028",
+    "fullnumber": "WZ 115/27/10/26",
+    "number": "115",
+    "date": "2026-10-27",
+    "type": "WZ",
+    "status": "pending",
+    "description": "",
+    "delivered": "Baselinker",
+    "created": "2026-10-27 10:49:48",
+    "modified": "2026-10-27 10:49:48",
+    "warehouse": {
+     "id": 900014
+    },
+    "invoice": {
+     "id": 900000098
+    },
+    "warehouse_document_contents": {
+     "0": {
+      "warehouse_document_content": {
+       "id": "900000399",
+       "count": "3.0000",
+       "unit_count": "3.0000",
+       "created": "2026-10-27 10:49:48",
+       "good": {
+        "id": 90000175
+       },
+       "warehouse_document": {
+        "id": 900000028
+       }
+      }
+     },
+     "1": {
+      "warehouse_document_content": {
+       "id": "900000406",
+       "count": "2.0000",
+       "unit_count": "2.0000",
+       "created": "2026-10-27 10:49:48",
+       "good": {
+        "id": 90000168
+       },
+       "warehouse_document": {
+        "id": 900000028
+       }
+      }
+     },
+     "2": {
+      "warehouse_document_content": {
+       "id": "900000413",
+       "count": "1.0000",
+       "unit_count": "1.0000",
+       "created": "2026-10-27 10:49:48",
+       "good": {
+        "id": 90000154
+       },
+       "warehouse_document": {
+        "id": 900000028
+       }
+      }
+     }
+    }
+   }
+  },
+  "3": {
+   "warehouse_document": {
+    "id": "900000035",
+    "fullnumber": "WZ 130/29/10/26",
+    "number": "130",
+    "date": "2026-10-29",
+    "type": "WZ",
+    "status": "pending",
+    "description": "",
+    "delivered": "Baselinker",
+    "created": "2026-10-29 13:58:37",
+    "modified": "2026-10-29 13:58:38",
+    "warehouse": {
+     "id": 900014
+    },
+    "invoice": {
+     "id": 900000105
+    },
+    "warehouse_document_contents": {
+     "0": {
+      "warehouse_document_content": {
+       "id": "900000420",
+       "count": "2.0000",
+       "unit_count": "2.0000",
+       "created": "2026-10-29 13:58:37",
+       "good": {
+        "id": 90000196
+       },
+       "warehouse_document": {
+        "id": 900000035
+       }
+      }
+     },
+     "1": {
+      "warehouse_document_content": {
+       "id": "900000427",
+       "count": "1.0000",
+       "unit_count": "1.0000",
+       "created": "2026-10-29 13:58:37",
+       "good": {
+        "id": 90000182
+       },
+       "warehouse_document": {
+        "id": 900000035
+       }
+      }
+     },
+     "2": {
+      "warehouse_document_content": {
+       "id": "900000434",
+       "count": "1.0000",
+       "unit_count": "1.0000",
+       "created": "2026-10-29 13:58:37",
+       "good": {
+        "id": 90000112
+       },
+       "warehouse_document": {
+        "id": 900000035
+       }
+      }
+     },
+     "3": {
+      "warehouse_document_content": {
+       "id": "900000441",
+       "count": "1.0000",
+       "unit_count": "1.0000",
+       "created": "2026-10-29 13:58:37",
+       "good": {
+        "id": 90000175
+       },
+       "warehouse_document": {
+        "id": 900000035
+       }
+      }
+     }
+    }
+   }
+  },
+  "4": {
+   "warehouse_document": {
+    "id": "900000042",
+    "fullnumber": "WZ 145/2/11/26",
+    "number": "145",
+    "date": "2026-11-02",
+    "type": "WZ",
+    "status": "pending",
+    "description": "",
+    "delivered": "Baselinker",
+    "created": "2026-11-02 21:38:18",
+    "modified": "2026-11-02 21:38:18",
+    "warehouse": {
+     "id": 900014
+    },
+    "invoice": {
+     "id": 900000112
+    },
+    "warehouse_document_contents": {
+     "0": {
+      "warehouse_document_content": {
+       "id": "900000448",
+       "count": "1.0000",
+       "unit_count": "1.0000",
+       "created": "2026-11-02 21:38:18",
+       "good": {
+        "id": 90000189
+       },
+       "warehouse_document": {
+        "id": 900000042
+       }
+      }
+     },
+     "1": {
+      "warehouse_document_content": {
+       "id": "900000455",
+       "count": "1.0000",
+       "unit_count": "1.0000",
+       "created": "2026-11-02 21:38:18",
+       "good": {
+        "id": 90000140
+       },
+       "warehouse_document": {
+        "id": 900000042
+       }
+      }
+     },
+     "2": {
+      "warehouse_document_content": {
+       "id": "900000462",
+       "count": "1.0000",
+       "unit_count": "1.0000",
+       "created": "2026-11-02 21:38:18",
+       "good": {
+        "id": 90000175
+       },
+       "warehouse_document": {
+        "id": 900000042
+       }
+      }
+     },
+     "3": {
+      "warehouse_document_content": {
+       "id": "900000469",
+       "count": "1.0000",
+       "unit_count": "1.0000",
+       "created": "2026-11-02 21:38:18",
+       "good": {
+        "id": 90000119
+       },
+       "warehouse_document": {
+        "id": 900000042
+       }
+      }
+     },
+     "4": {
+      "warehouse_document_content": {
+       "id": "900000476",
+       "count": "2.0000",
+       "unit_count": "2.0000",
+       "created": "2026-11-02 21:38:18",
+       "good": {
+        "id": 90000133
+       },
+       "warehouse_document": {
+        "id": 900000042
+       }
+      }
+     },
+     "5": {
+      "warehouse_document_content": {
+       "id": "900000483",
+       "count": "2.0000",
+       "unit_count": "2.0000",
+       "created": "2026-11-02 21:38:18",
+       "good": {
+        "id": 90000161
+       },
+       "warehouse_document": {
+        "id": 900000042
+       }
+      }
+     },
+     "6": {
+      "warehouse_document_content": {
+       "id": "900000490",
+       "count": "2.0000",
+       "unit_count": "2.0000",
+       "created": "2026-11-02 21:38:18",
+       "good": {
+        "id": 90000147
+       },
+       "warehouse_document": {
+        "id": 900000042
+       }
+      }
+     },
+     "7": {
+      "warehouse_document_content": {
+       "id": "900000497",
+       "count": "2.0000",
+       "unit_count": "2.0000",
+       "created": "2026-11-02 21:38:18",
+       "good": {
+        "id": 90000126
+       },
+       "warehouse_document": {
+        "id": 900000042
+       }
+      }
+     }
+    }
+   }
+  },
+  "5": {
+   "warehouse_document": {
+    "id": "900000049",
+    "fullnumber": "WZ 172/3/11/26",
+    "number": "172",
+    "date": "2026-11-03",
+    "type": "WZ",
+    "status": "pending",
+    "description": "",
+    "delivered": "Baselinker",
+    "created": "2026-11-03 20:58:40",
+    "modified": "2026-11-03 20:58:40",
+    "warehouse": {
+     "id": 900014
+    },
+    "invoice": {
+     "id": 900000119
+    },
+    "warehouse_document_contents": {
+     "0": {
+      "warehouse_document_content": {
+       "id": "900000504",
+       "count": "1.0000",
+       "unit_count": "1.0000",
+       "created": "2026-11-03 20:58:40",
+       "good": {
+        "id": 90000231
+       },
+       "warehouse_document": {
+        "id": 900000049
+       }
+      }
+     },
+     "1": {
+      "warehouse_document_content": {
+       "id": "900000511",
+       "count": "2.0000",
+       "unit_count": "2.0000",
+       "created": "2026-11-03 20:58:40",
+       "good": {
+        "id": 90000217
+       },
+       "warehouse_document": {
+        "id": 900000049
+       }
+      }
+     },
+     "2": {
+      "warehouse_document_content": {
+       "id": "900000518",
+       "count": "4.0000",
+       "unit_count": "4.0000",
+       "created": "2026-11-03 20:58:40",
+       "good": {
+        "id": 90000238
+       },
+       "warehouse_document": {
+        "id": 900000049
+       }
+      }
+     },
+     "3": {
+      "warehouse_document_content": {
+       "id": "900000525",
+       "count": "1.0000",
+       "unit_count": "1.0000",
+       "created": "2026-11-03 20:58:40",
+       "good": {
+        "id": 90000175
+       },
+       "warehouse_document": {
+        "id": 900000049
+       }
+      }
+     }
+    }
+   }
+  },
+  "6": {
+   "warehouse_document": {
+    "id": "900000056",
+    "fullnumber": "WZ 130/4/11/26",
+    "number": "130",
+    "date": "2026-11-04",
+    "type": "WZ",
+    "status": "pending",
+    "description": "",
+    "delivered": "Baselinker",
+    "created": "2026-11-04 11:27:25",
+    "modified": "2026-11-04 11:27:25",
+    "warehouse": {
+     "id": 900014
+    },
+    "invoice": {
+     "id": 900000189
+    },
+    "warehouse_document_contents": {
+     "0": {
+      "warehouse_document_content": {
+       "id": "900000532",
+       "count": "1.0000",
+       "unit_count": "1.0000",
+       "created": "2026-11-04 11:27:25",
+       "good": {
+        "id": 90000021
+       },
+       "warehouse_document": {
+        "id": 900000056
+       }
+      }
+     },
+     "1": {
+      "warehouse_document_content": {
+       "id": "900000539",
+       "count": "1.0000",
+       "unit_count": "1.0000",
+       "created": "2026-11-04 11:27:25",
+       "good": {
+        "id": 90000063
+       },
+       "warehouse_document": {
+        "id": 900000056
+       }
+      }
+     }
+    }
+   }
+  },
+  "7": {
+   "warehouse_document": {
+    "id": "900000063",
+    "fullnumber": "WZ 139/4/11/26",
+    "number": "139",
+    "date": "2026-11-04",
+    "type": "WZ",
+    "status": "pending",
+    "description": "",
+    "delivered": "Baselinker",
+    "created": "2026-11-04 12:07:03",
+    "modified": "2026-11-04 12:07:03",
+    "warehouse": {
+     "id": 900014
+    },
+    "invoice": {
+     "id": 900000210
+    },
+    "warehouse_document_contents": {
+     "0": {
+      "warehouse_document_content": {
+       "id": "900000546",
+       "count": "3.0000",
+       "unit_count": "3.0000",
+       "created": "2026-11-04 12:07:03",
+       "good": {
+        "id": 90000245
+       },
+       "warehouse_document": {
+        "id": 900000063
+       }
+      }
+     },
+     "1": {
+      "warehouse_document_content": {
+       "id": "900000553",
+       "count": "1.0000",
+       "unit_count": "1.0000",
+       "created": "2026-11-04 12:07:03",
+       "good": {
+        "id": 90000203
+       },
+       "warehouse_document": {
+        "id": 900000063
+       }
+      }
+     },
+     "2": {
+      "warehouse_document_content": {
+       "id": "900000560",
+       "count": "2.0000",
+       "unit_count": "2.0000",
+       "created": "2026-11-04 12:07:03",
+       "good": {
+        "id": 90000238
+       },
+       "warehouse_document": {
+        "id": 900000063
+       }
+      }
+     },
+     "3": {
+      "warehouse_document_content": {
+       "id": "900000567",
+       "count": "2.0000",
+       "unit_count": "2.0000",
+       "created": "2026-11-04 12:07:03",
+       "good": {
+        "id": 90000224
+       },
+       "warehouse_document": {
+        "id": 900000063
+       }
+      }
+     },
+     "4": {
+      "warehouse_document_content": {
+       "id": "900000574",
+       "count": "1.0000",
+       "unit_count": "1.0000",
+       "created": "2026-11-04 12:07:03",
+       "good": {
+        "id": 90000070
+       },
+       "warehouse_document": {
+        "id": 900000063
+       }
+      }
+     },
+     "5": {
+      "warehouse_document_content": {
+       "id": "900000581",
+       "count": "1.0000",
+       "unit_count": "1.0000",
+       "created": "2026-11-04 12:07:03",
+       "good": {
+        "id": 90000042
+       },
+       "warehouse_document": {
+        "id": 900000063
+       }
+      }
+     },
+     "6": {
+      "warehouse_document_content": {
+       "id": "900000588",
+       "count": "1.0000",
+       "unit_count": "1.0000",
+       "created": "2026-11-04 12:07:03",
+       "good": {
+        "id": 90000210
+       },
+       "warehouse_document": {
+        "id": 900000063
+       }
+      }
+     },
+     "7": {
+      "warehouse_document_content": {
+       "id": "900000595",
+       "count": "1.0000",
+       "unit_count": "1.0000",
+       "created": "2026-11-04 12:07:03",
+       "good": {
+        "id": 90000140
+       },
+       "warehouse_document": {
+        "id": 900000063
+       }
+      }
+     },
+     "8": {
+      "warehouse_document_content": {
+       "id": "900000602",
+       "count": "1.0000",
+       "unit_count": "1.0000",
+       "created": "2026-11-04 12:07:03",
+       "good": {
+        "id": 90000175
+       },
+       "warehouse_document": {
+        "id": 900000063
+       }
+      }
+     },
+     "9": {
+      "warehouse_document_content": {
+       "id": "900000609",
+       "count": "1.0000",
+       "unit_count": "1.0000",
+       "created": "2026-11-04 12:07:03",
+       "good": {
+        "id": 90000098
+       },
+       "warehouse_document": {
+        "id": 900000063
+       }
+      }
+     },
+     "10": {
+      "warehouse_document_content": {
+       "id": "900000616",
+       "count": "1.0000",
+       "unit_count": "1.0000",
+       "created": "2026-11-04 12:07:03",
+       "good": {
+        "id": 90000084
+       },
+       "warehouse_document": {
+        "id": 900000063
+       }
+      }
+     },
+     "11": {
+      "warehouse_document_content": {
+       "id": "900000623",
+       "count": "1.0000",
+       "unit_count": "1.0000",
+       "created": "2026-11-04 12:07:03",
+       "good": {
+        "id": 90000091
+       },
+       "warehouse_document": {
+        "id": 900000063
+       }
+      }
+     }
+    }
+   }
+  },
+  "8": {
+   "warehouse_document": {
+    "id": "900000070",
+    "fullnumber": "WZ 142/4/11/26",
+    "number": "142",
+    "date": "2026-11-04",
+    "type": "WZ",
+    "status": "pending",
+    "description": "",
+    "delivered": "Baselinker",
+    "created": "2026-11-04 12:51:24",
+    "modified": "2026-11-04 12:51:24",
+    "warehouse": {
+     "id": 900014
+    },
+    "invoice": {
+     "id": 900000217
+    },
+    "warehouse_document_contents": {
+     "0": {
+      "warehouse_document_content": {
+       "id": "900000630",
+       "count": "1.0000",
+       "unit_count": "1.0000",
+       "created": "2026-11-04 12:51:24",
+       "good": {
+        "id": 90000077
+       },
+       "warehouse_document": {
+        "id": 900000070
+       }
+      }
+     },
+     "1": {
+      "warehouse_document_content": {
+       "id": "900000637",
+       "count": "1.0000",
+       "unit_count": "1.0000",
+       "created": "2026-11-04 12:51:24",
+       "good": {
+        "id": 90000049
+       },
+       "warehouse_document": {
+        "id": 900000070
+       }
+      }
+     },
+     "2": {
+      "warehouse_document_content": {
+       "id": "900000644",
+       "count": "1.0000",
+       "unit_count": "1.0000",
+       "created": "2026-11-04 12:51:24",
+       "good": {
+        "id": 90000056
+       },
+       "warehouse_document": {
+        "id": 900000070
+       }
+      }
+     }
+    }
+   }
+  },
+  "9": {
+   "warehouse_document": {
+    "id": "900000077",
+    "fullnumber": "WZ 154/4/11/26",
+    "number": "154",
+    "date": "2026-11-04",
+    "type": "WZ",
+    "status": "pending",
+    "description": "",
+    "delivered": "Baselinker",
+    "created": "2026-11-04 13:29:32",
+    "modified": "2026-11-04 13:29:32",
+    "warehouse": {
+     "id": 900014
+    },
+    "invoice": {
+     "id": 900000252
+    },
+    "warehouse_document_contents": {
+     "0": {
+      "warehouse_document_content": {
+       "id": "900000651",
+       "count": "1.0000",
+       "unit_count": "1.0000",
+       "created": "2026-11-04 13:29:32",
+       "good": {
+        "id": 90000021
+       },
+       "warehouse_document": {
+        "id": 900000077
+       }
+      }
+     }
+    }
+   }
+  },
+  "parameters": {
+   "limit": "100",
+   "page": "1",
+   "total": "10"
+  }
+ },
+ "status": {
+  "code": "OK"
+ }
+}

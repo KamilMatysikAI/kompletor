@@ -1,0 +1,69 @@
+# prawdziwy WordPress + WooCommerce w Dockerze do sprawdzenia „Połącz z WooCommerce” (wc-auth) i adaptera Woo
+# bez dotykania żadnego sklepu. Tylko lokalnie, dane fikcyjne, hasła lokalne z pliku .env.stos (poza repo).
+# Ścieżki względem katalogu repo (pierwszy plik -f to docker-compose.dev.yml). Start razem z bazą testową:
+#   docker compose -p <projekt> --env-file <.env.stos> -f docker-compose.dev.yml -f <nadpisanie portu> -f tests/woo-prawdziwy/compose.yml up -d
+# Adresy: https://sklep.woo.test (WordPress) i https://panel.woo.test (Kompletor uruchomiony na hoście, port PANEL_PORT),
+# oba przez Caddy z własnym certyfikatem (tls internal). Sklep wysyła klucze na panel po nazwie z sieci Compose.
+services:
+  wpdb:
+    image: mariadb:11
+    environment:
+      MARIADB_DATABASE: wp
+      MARIADB_USER: wp
+      MARIADB_PASSWORD: ${WP_DB_HASLO:?brak WP_DB_HASLO w .env.stos}
+      MARIADB_RANDOM_ROOT_PASSWORD: '1'
+    healthcheck:
+      test: ['CMD', 'healthcheck.sh', '--connect', '--innodb_initialized']
+      interval: 3s
+      timeout: 3s
+      retries: 30
+  wp:
+    image: wordpress:php8.3-apache
+    depends_on:
+      wpdb:
+        condition: service_healthy
+    environment:
+      WORDPRESS_DB_HOST: wpdb
+      WORDPRESS_DB_USER: wp
+      WORDPRESS_DB_PASSWORD: ${WP_DB_HASLO}
+      WORDPRESS_DB_NAME: wp
+      WORDPRESS_CONFIG_EXTRA: |
+        if (($$_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https') { $$_SERVER['HTTPS'] = 'on'; }
+        define('WP_HOME', 'https://sklep.woo.test');
+        define('WP_SITEURL', 'https://sklep.woo.test');
+    volumes:
+      - wp_html:/var/www/html
+      - ./tests/woo-prawdziwy/mu-plugin-test.php:/var/www/html/wp-content/mu-plugins/kompletor-test.php:ro
+  wpcli:
+    image: wordpress:cli-php8.3
+    profiles: ['cli']
+    user: '33:33'
+    depends_on: [wp]
+    environment:
+      WORDPRESS_DB_HOST: wpdb
+      WORDPRESS_DB_USER: wp
+      WORDPRESS_DB_PASSWORD: ${WP_DB_HASLO}
+      WORDPRESS_DB_NAME: wp
+      WP_ADMIN_HASLO: ${WP_ADMIN_HASLO}
+      HOME: /tmp
+    volumes:
+      - wp_html:/var/www/html
+      - ./tests/woo-prawdziwy/mu-plugin-test.php:/var/www/html/wp-content/mu-plugins/kompletor-test.php:ro
+      - ./tests/woo-prawdziwy/sklep-init.sh:/sklep-init.sh:ro
+  caddy:
+    image: caddy:2
+    ports:
+      - '127.0.0.1:${CADDY_PORT:-443}:443'
+    extra_hosts:
+      - 'host.docker.internal:host-gateway'
+    environment:
+      PANEL_PORT: ${PANEL_PORT:-3199}
+    volumes:
+      - ./tests/woo-prawdziwy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+    networks:
+      default:
+        aliases: [sklep.woo.test, panel.woo.test]
+volumes:
+  wp_html:
+  caddy_data:

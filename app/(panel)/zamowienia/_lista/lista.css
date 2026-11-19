@@ -1,0 +1,161 @@
+/* Lista zamówień v2: ikony, numer z kopiowaniem, postęp akcji masowej. Jedno pole
+   szukania, jeden rząd filtrów, miniatura z pełną nazwą, stały pasek akcji, kolumna „Stan”, termin wysyłki, alerty.
+   Wzorzec układu: TwojOMS (MIT); kodu ani CSS stamtąd nie kopiowaliśmy, więc bez noty w THIRD_PARTY_NOTICES.md.
+   Wartości wyłącznie z tokenów (app/ui/tokeny.css, docs/ui.md). */
+
+.zl-glowna { min-width: 0; display: flex; flex-direction: column; gap: var(--odstep-3); }
+
+/* panel statusów: w menu bocznym (app/panel.css, sekcja „menu boczne”) */
+
+/* ── alerty nad listą (R9) ── */
+.zl-alerty { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--odstep-1); }
+.zl-alert { display: flex; align-items: center; gap: var(--odstep-2) var(--odstep-3); padding: var(--odstep-2) var(--odstep-3); border: 1px solid var(--kolor-ostrzezenie-linia); border-left-width: 4px; border-radius: var(--promien); background: var(--kolor-ostrzezenie-tlo); color: var(--kolor-tekst); font-size: var(--tekst-sm); }
+.zl-alert[data-ton='blad'] { border-color: var(--kolor-blad-linia); border-left-color: var(--kolor-blad); background: var(--kolor-blad-tlo); }
+.zl-alert[data-ton='ostrzezenie'] { border-left-color: var(--kolor-ostrzezenie); }
+.zl-alert-tekst { flex: 1 1 auto; min-width: 0; }
+.zl-alert-akcje { display: inline-flex; gap: var(--odstep-1); flex: none; }
+.zl-alert-akcje form { display: contents; }
+.zl-alert .btn { background: var(--kolor-powierzchnia); }
+
+/* ── jedno pole szukania (R6) ── */
+.zl-szukaj { display: flex; flex-wrap: wrap; align-items: center; gap: var(--odstep-2); }
+.zl-szukaj .input { flex: 1 1 260px; min-width: 0; }
+.zl-szukaj .btn { flex: none; }
+.zl-szukaj-klienci { display: inline-flex; align-items: center; gap: 6px; min-height: var(--wys-celu); font-size: var(--tekst-sm); color: var(--kolor-tekst-2); cursor: pointer; }
+.zl-wynik { margin: calc(var(--odstep-2) * -1) 0 0; }
+
+/* ── jeden rząd filtrów (R6): data od–do, wysyłka, płatność, kanał, „Więcej filtrów” ── */
+.zl-glowna .ui-filtry { margin-bottom: 0; flex-wrap: nowrap; }
+.zl-glowna .ui-filtry-pola { flex-wrap: nowrap; align-items: flex-end; }
+.zl-glowna .ui-filtry-pola .field { min-width: 0; flex: 1 1 9rem; margin-bottom: 0; }
+.zl-glowna .ui-filtry-pola .zl-pole-daty { flex: 0 1 9.5rem; }
+.zl-wiecej-filtrow { position: relative; flex: none; }
+.zl-wiecej-filtrow > summary { list-style: none; white-space: nowrap; }
+.zl-wiecej-filtrow > summary::-webkit-details-marker { display: none; }
+.zl-wiecej-pola { position: absolute; right: 0; top: calc(100% + 4px); z-index: var(--z-menu); display: grid; gap: var(--odstep-2); min-width: 15rem; padding: var(--odstep-3); background: var(--kolor-powierzchnia); border: 1px solid var(--kolor-linia-mocna); border-radius: var(--promien); box-shadow: var(--cien-2); }
+.zl-wiecej-pola .field { margin-bottom: 0; }
+
+/* ── stały pasek akcji masowych (R7), ciemny jak dotąd (`.bulk`, app/panel.css) ── */
+.ui-akcje-masowe[data-stale] { gap: var(--odstep-2) var(--odstep-3); }
+.ui-akcje-masowe[data-puste='tak'] { position: static; } /* bez zaznaczenia nie przykleja się nad nagłówkiem tabeli */
+.ui-am-akcje { display: flex; flex-wrap: wrap; align-items: center; gap: var(--odstep-2); flex: 1 1 auto; min-width: 0; }
+.ui-am-narzedzia { display: flex; align-items: center; gap: var(--odstep-1); margin-left: auto; flex: none; }
+.ui-am-podpowiedz { display: none; color: var(--kolor-ciemny-tekst-2); font-size: var(--tekst-sm); }
+.ui-ikona-btn { display: inline-flex; align-items: center; justify-content: center; min-width: 36px; padding: 0 var(--odstep-2); }
+.bulk .ui-ikona-btn { background: transparent; border-color: rgba(255, 255, 255, 0.4); color: var(--kolor-tekst-odwrotny); }
+.bulk .ui-ikona-btn:hover { background: rgba(255, 255, 255, 0.12); }
+.bulk .ui-kolumny-lista { color: var(--kolor-tekst); }
+.bulk b[role='status'] { white-space: nowrap; }
+/* bez zaznaczenia nie ma ciemnego paska ani wyłączonych przycisków. Zostaje jasny wiersz tej samej wysokości
+   (tabela nie skacze przy pierwszym zaznaczeniu) z cichą podpowiedzią i narzędziami tabeli po prawej. */
+.ui-akcje-masowe[data-stale][data-puste='tak'] { background: transparent; color: var(--kolor-tekst-2); padding-left: 0; padding-right: 0; flex-wrap: nowrap; }
+/* licznik zostaje w drzewie dostępności (czytnik ogłosi pierwsze „Zaznaczone: 1”), tylko niewidoczny */
+.ui-akcje-masowe[data-stale][data-puste='tak'] b[role='status'] { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.ui-akcje-masowe[data-stale][data-puste='tak'] .ui-am-akcje { display: none; }
+.ui-akcje-masowe[data-stale][data-puste='tak'] .ui-am-podpowiedz { display: inline; flex: 1 1 auto; min-width: 0; color: var(--kolor-tekst-3); }
+.ui-akcje-masowe[data-stale][data-puste='tak'] .ui-ikona-btn { background: var(--kolor-powierzchnia); border-color: var(--kolor-linia-mocna); color: var(--kolor-tekst); }
+.ui-akcje-masowe[data-stale][data-puste='tak'] .ui-ikona-btn:hover { background: var(--kolor-powierzchnia-2); }
+
+/* ── ikony ── */
+.zl-ikona { display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; flex: none; }
+.zl-przew { color: var(--kolor-tekst-2); }
+.zl-ton-sukces { color: var(--kolor-sukces); }
+.zl-ton-ostrzezenie { color: var(--kolor-ostrzezenie); }
+.zl-ton-blad { color: var(--kolor-blad); }
+.zl-ton-info { color: var(--kolor-info); }
+.zl-ton-neutralny { color: var(--kolor-neutralny); }
+
+/* ── kolumna „Stan” (R8): cztery ikony w ramce tonu ── */
+.zl-stan { display: inline-flex; gap: var(--odstep-1); }
+.zl-stan-ikona { display: inline-grid; place-items: center; width: 24px; height: 24px; border: 1px solid var(--kolor-linia); border-radius: var(--promien-sm); background: var(--kolor-powierzchnia-2); color: var(--kolor-tekst-3); }
+.zl-stan-ikona[data-ton='sukces'] { border-color: var(--kolor-sukces-linia); background: var(--kolor-sukces-tlo); color: var(--kolor-sukces); }
+.zl-stan-ikona[data-ton='blad'] { border-color: var(--kolor-blad-linia); background: var(--kolor-blad-tlo); color: var(--kolor-blad); }
+.zl-stan-ikona[data-ton='ostrzezenie'] { border-color: var(--kolor-ostrzezenie-linia); background: var(--kolor-ostrzezenie-tlo); color: var(--kolor-ostrzezenie); }
+.zl-stan-ikona[data-ton='info'] { border-color: var(--kolor-info-linia); background: var(--kolor-info-tlo); color: var(--kolor-info); }
+
+/* ── komórki ── */
+.ui-tabela[data-tabela='zamowienia'] { table-layout: fixed; }
+.ui-tabela[data-tabela='zamowienia'] .ui-kol-ck { width: 2.5rem; }
+.zl-numer { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--odstep-1) var(--odstep-2); }
+.zl-numer-link { overflow-wrap: anywhere; word-break: break-word; font-weight: var(--waga-polmocna); }
+.zl-przedrostek { color: var(--kolor-tekst-2); white-space: nowrap; }
+.zl-kopiuj { border: 0; background: none; padding: 0; font: inherit; font-size: var(--tekst-xs); color: var(--kolor-tekst-3); text-decoration: underline; cursor: pointer; min-height: auto; }
+.zl-kopiuj:hover { color: var(--kolor-tekst); }
+.zl-kopiuj:focus-visible { outline: 3px solid var(--kolor-focus); outline-offset: 2px; }
+.zl-zrodlo { margin-left: var(--odstep-2); color: var(--kolor-tekst-3); font-size: var(--tekst-xs); }
+/* termin wysyłki pod numerem (R9): dziś = bursztyn, po terminie = czerwień, reszta cicho */
+.zl-termin { display: block; margin-top: var(--odstep-1); font-size: var(--tekst-xs); color: var(--kolor-tekst-2); }
+.zl-termin[data-rodzaj='dzis'] { color: var(--kolor-ostrzezenie); font-weight: var(--waga-polmocna); }
+.zl-termin[data-rodzaj='po_terminie'] { color: var(--kolor-blad); font-weight: var(--waga-polmocna); }
+/* kwota w jednej linii, opis płatności pod nią zawija się w kolumnie (komórka do prawej ma domyślnie nowrap) */
+.ui-tabela[data-tabela='zamowienia'] td.right { white-space: normal; }
+.zl-kwota { display: block; font-weight: var(--waga-polmocna); white-space: nowrap; }
+.zl-platnosc { display: block; margin-top: var(--odstep-1); }
+.zl-meta { display: block; color: var(--kolor-tekst-3); font-size: var(--tekst-xs); line-height: var(--interlinia-ciasna); margin-top: var(--odstep-1); overflow-wrap: anywhere; }
+.zl-nadanie { font-family: var(--font-mono); overflow-wrap: anywhere; }
+.zl-wysylka { display: inline-flex; align-items: center; gap: var(--odstep-1); }
+.zl-data { color: var(--kolor-tekst-2); font-size: var(--tekst-sm); }
+
+/* ── produkty (R5): miniatura 36 px + pełna nazwa do dwóch linii; „Gęsto” 28 px ── */
+.zl-glowna .zp-nazwy li { grid-template-columns: 36px minmax(0, 1fr); column-gap: var(--odstep-3); align-items: start; padding: 2px 0; }
+.zl-glowna .zp-nazwy img.pimg, .zl-glowna .zp-nazwy .thumb { width: 36px; height: 36px; border-radius: var(--promien-sm); font-size: 11px; }
+.zl-glowna .zp-nazwy .zp-tresc { min-width: 0; }
+.zl-glowna .zp-nazwy .zp-n { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; }
+.zl-glowna .zp-nazwy .zp-q { text-align: left; }
+.zl-glowna .zp-nazwy li.miss .zp-q { color: var(--kolor-blad); }
+.zl-glowna .zp-nazwy .zp-brak { display: inline-block; margin: 2px 0 0; }
+.zl-glowna .zp-more { margin-left: calc(36px + var(--odstep-3)); }
+[data-gestosc='gesto'] .zl-glowna .zp-nazwy li { grid-template-columns: 28px minmax(0, 1fr); padding: 1px 0; }
+[data-gestosc='gesto'] .zl-glowna .zp-nazwy img.pimg, [data-gestosc='gesto'] .zl-glowna .zp-nazwy .thumb { width: 28px; height: 28px; font-size: 9px; }
+[data-gestosc='gesto'] .zl-glowna .zp-more { margin-left: calc(28px + var(--odstep-3)); }
+
+/* „Produkty (skrót)” (kolumna w „Kolumny”, domyślnie ukryta): dawny widok gęsty, miniatura i ilość w jednym rzędzie */
+.zl-glowna .zp-kody { display: flex; flex-wrap: wrap; align-items: center; gap: var(--odstep-1) var(--odstep-2); }
+.zl-glowna .zp-kody li { display: inline-flex; align-items: center; gap: var(--odstep-1); padding: 0; }
+.zl-glowna .zp-kody .thumb, .zl-glowna .zp-kody img.pimg { width: 20px; height: 20px; border-radius: var(--promien-sm); font-size: 9px; }
+.zl-glowna .zp-kody .zp-q { text-align: left; }
+.zl-glowna .zp-kody li.miss { outline: 1px solid var(--kolor-blad-linia); border-radius: var(--promien-sm); padding: 0 var(--odstep-1); }
+
+/* ── postęp i raport akcji masowej ── */
+.zl-postep, .zl-raport { background: var(--kolor-powierzchnia); border: 1px solid var(--kolor-linia); border-radius: var(--promien); padding: var(--odstep-3); font-size: var(--tekst-sm); }
+.zl-postep-glowa { display: flex; flex-wrap: wrap; gap: var(--odstep-2); justify-content: space-between; margin-bottom: var(--odstep-2); }
+.zl-postep progress { width: 100%; accent-color: var(--kolor-akcent); }
+.zl-postep-bledy, .zl-raport ul { margin: var(--odstep-2) 0 0; padding-left: var(--odstep-4); color: var(--kolor-blad); }
+.zl-postep-blad { border-color: var(--kolor-blad-linia); }
+.zl-postep-uwaga { margin: var(--odstep-2) 0 0; color: var(--kolor-tekst-2); }
+.zl-postep-blad .zl-postep-uwaga { color: var(--kolor-blad); }
+.zl-za-duzo { color: var(--kolor-blad); }
+.zl-raport { flex-basis: 100%; border-color: var(--kolor-blad-linia); background: var(--kolor-blad-tlo); color: var(--kolor-blad); }
+
+/* ── wąski ekran: filtry pod przyciskiem „Filtry (n)” (PasekFiltrow), pola jedno pod drugim ── */
+@media (max-width: 900px) {
+  .zl-kopiuj { min-height: var(--wys-celu); padding: 0 var(--odstep-2); }
+  .zl-glowna .ui-filtry { flex-wrap: wrap; }
+  .zl-glowna .ui-filtry-pola { flex-wrap: wrap; }
+  .zl-glowna .ui-filtry-pola .field, .zl-glowna .ui-filtry-pola .zl-pole-daty { flex: 1 1 100%; }
+  .zl-wiecej-filtrow { flex: 1 1 100%; }
+  .zl-wiecej-filtrow > summary { width: 100%; justify-content: center; }
+  .zl-wiecej-pola { position: static; box-shadow: none; margin-top: var(--odstep-2); min-width: 0; }
+}
+@media (max-width: 760px) {
+  /* karta zamówienia na telefonie: pole zaznaczenia w prawym górnym rogu nie zasłania numeru */
+  .ui-tabela[data-tabela='zamowienia'] td[data-kol='numer'] { padding-right: calc(var(--wys-celu) + var(--odstep-2)); }
+  /* pasek akcji bez zaznaczenia: jedna linijka z podpowiedzią i ikonami, przyciski dopiero po zaznaczeniu */
+  .ui-akcje-masowe[data-stale] { padding: var(--odstep-2) var(--odstep-3); }
+  .ui-am-narzedzia .ui-ikona-btn { min-width: var(--wys-celu); min-height: var(--wys-celu); }
+  .zl-alert { flex-wrap: wrap; }
+  .zl-alert-akcje { flex: 1 1 100%; justify-content: flex-end; }
+  .zl-alert-akcje .btn { min-height: var(--wys-celu); }
+}
+
+
+/* lista przesyłek — akcje w wierszu obok siebie, zawijane na wąskim ekranie */
+.pl-akcje-wiersza { display: inline-flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.pl-akcje-wiersza form.inline { display: inline; }
+
+/* jeden „Eksport” w pasku: zakres (zaznaczone albo widok) i format (CSV albo XLSX) */
+.zl-eksport-menu { min-width: 260px; gap: var(--odstep-2); }
+.zl-eksport-menu fieldset { display: grid; gap: 2px; margin: 0; padding: 0; border: 0; }
+.zl-eksport-menu legend { padding: 0 6px 4px; font-size: var(--tekst-sm); color: var(--kolor-tekst-2); }
+.zl-eksport-menu .ui-pomoc { margin: 0; padding: 0 6px; }
+.zl-eksport-pliki { display: flex; flex-wrap: wrap; gap: var(--odstep-2); padding: var(--odstep-2) 6px 0; border-top: 1px solid var(--kolor-linia); }

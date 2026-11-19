@@ -1,0 +1,6 @@
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.ico binary
+# Schematy XSD FA(3) z MF, bajty 1:1 (oryginał ma CRLF)
+lib/ksef/xsd/*.xsd -text

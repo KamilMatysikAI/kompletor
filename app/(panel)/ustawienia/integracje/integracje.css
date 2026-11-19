@@ -1,0 +1,26 @@
+/* lista integracji — wiersz: logo w jasnym kwadracie, nazwa i jedna linia szczegółu, odznaki stanu, jeden
+   przycisk. Pozycje niepodłączone bez tła logo w kolorze (przygaszone), żeby od razu było widać, co działa. */
+.integracje-lista { display: flex; flex-direction: column; }
+.integracja {
+  display: grid; grid-template-columns: 40px minmax(0, 1fr) auto auto; align-items: center; gap: var(--odstep-3);
+  padding: var(--odstep-3) 0; border-top: 1px solid var(--kolor-linia);
+}
+.integracja:first-child { border-top: 0; padding-top: 0; }
+.integracja:last-child { padding-bottom: 0; }
+.integracja-logo {
+  display: grid; place-items: center; width: 40px; height: 40px;
+  border: 1px solid var(--kolor-linia); border-radius: var(--promien); background: var(--kolor-powierzchnia);
+}
+.integracja[data-stan='brak'] .integracja-logo { background: var(--kolor-powierzchnia-2); }
+.integracja[data-stan='brak'] .integracja-logo img { opacity: 0.55; filter: grayscale(1); }
+.integracja-opis { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.integracja-nazwa { font-weight: var(--waga-polmocna); }
+.integracja-szczegol { font-size: var(--tekst-sm); color: var(--kolor-tekst-2); overflow-wrap: anywhere; }
+.integracja-stany { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--odstep-1); }
+
+/* Telefon: przycisk zostaje w wierszu nazwy (lista 17 pozycji nie rośnie o 17 pełnych przycisków), stany pod nazwą */
+@media (max-width: 760px) {
+  .integracja { grid-template-columns: 40px minmax(0, 1fr) auto; row-gap: var(--odstep-1); align-items: start; }
+  .integracja-stany { grid-column: 2 / -1; grid-row: 2; justify-content: flex-start; }
+  .integracja > .btn { grid-column: 3; grid-row: 1; }
+}

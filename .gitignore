@@ -1,0 +1,26 @@
+node_modules/
+.next/
+out/
+dist/
+coverage/
+*.tsbuildinfo
+next-env.d.ts
+.env
+.env.*
+!.env.example
+.local-db.json
+# wyjście raportów workera (RAPORTY_DIR, domyślnie ./raporty) tylko w katalogu głównym: trasy app/**/raporty/ to kod
+/raporty/
+*.log
+# Zrzuty importu (--zapisz-zrzut) zawierają dane produktów i id zamówień — zawsze poza repo
+zrzuty/
+*.zrzut.json
+
+# zdjęcia produktów lokalnie (ZDJECIA_DIR puste)
+.dane/
+
+# kopie bazy ze scripts/aktualizuj.sh (dane firmy, nigdy do repozytorium)
+kopie/
+*.dump
+# prywatna nakładka firmy (preset, nadpisania ofert) poza publicznym repo; w kontenerze pliki się montuje
+/prywatne/

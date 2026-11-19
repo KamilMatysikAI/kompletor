@@ -1,0 +1,62 @@
+/* Pulpit: lista startu, stan kanałów, własna firma po demo. Tylko tokeny z app/ui/tokeny.css (docs/ui.md). */
+
+.st-pasek {
+  height: 6px;
+  border-radius: var(--promien-pelny);
+  background: var(--kolor-neutralny-tlo);
+  overflow: hidden;
+  margin: 0 0 var(--odstep-3);
+}
+.st-pasek > i {
+  display: block;
+  height: 100%;
+  background: var(--kolor-akcent);
+}
+.st-lista {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0;
+}
+.st-krok {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: var(--odstep-3);
+  padding: var(--odstep-3) 0;
+  border-top: 1px solid var(--kolor-linia);
+}
+.st-krok:first-child { border-top: 0; }
+.st-znak {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 2px solid var(--kolor-linia-mocna);
+  color: var(--kolor-tekst-2);
+  font-weight: 600;
+  font-size: var(--tekst-sm);
+}
+.st-krok[data-stan='zrobione'] .st-znak { background: var(--kolor-sukces-pelny); border-color: var(--kolor-sukces-pelny); color: var(--kolor-tekst-odwrotny); }
+.st-krok[data-stan='pominiete'] .st-znak { border-style: dashed; }
+.st-krok[data-stan='pominiete'] .st-tytul,
+.st-krok[data-stan='zrobione'] .st-tytul { color: var(--kolor-tekst-2); }
+.st-tytul { font-weight: 600; }
+.st-tytul a { color: inherit; }
+.st-opis { margin: 2px 0 0; color: var(--kolor-tekst-2); font-size: var(--tekst-sm); }
+.st-akcje { display: flex; gap: var(--odstep-2); align-items: center; flex-wrap: wrap; justify-content: flex-end; }
+.st-akcje form { display: inline; }
+.st-stopka { display: flex; gap: var(--odstep-3); align-items: center; flex-wrap: wrap; justify-content: space-between; }
+.st-stopka p { margin: 0; }
+.st-mb { margin-bottom: var(--odstep-4); }
+.st-mt { margin-top: var(--odstep-4); }
+.st-konta { list-style: none; margin: 0 0 var(--odstep-3); padding: 0; display: grid; gap: var(--odstep-2); }
+.st-konta li { display: flex; justify-content: space-between; gap: var(--odstep-3); align-items: center; }
+.st-wlasna { display: grid; gap: var(--odstep-3); max-width: 520px; }
+
+@media (max-width: 900px) {
+  .st-krok { grid-template-columns: auto 1fr; }
+  .st-akcje { grid-column: 2; justify-content: flex-start; }
+}

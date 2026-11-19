@@ -1,0 +1,53 @@
+# Symulacja grudnia (spec 11: 48–50, tests/rdzen-symulacja.integration.test.ts).
+# Tylko ręcznie: lokalnie trwa ok. 75–90 min, na runnerze 2-core może dłużej, a repo prywatne ma ok. 2 000 min
+# miesięcznie (docs/ci.md). Uruchomienie: Actions → „Symulacja grudnia” → Run workflow, albo
+#   gh workflow run symulacja.yml --ref <gałąź>
+# Po upublicznieniu repo można dopisać harmonogram nocny.
+name: Symulacja grudnia
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: symulacja-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: '22'
+  PG_OBRAZ: postgres:16-alpine@sha256:aa6cb33cf4c19c765cefcf48d96176258800870a9a1e930ad126200f9d825139
+
+jobs:
+  symulacja:
+    name: Symulacja grudnia (48, 48q, 49, 50)
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Zmienne testowe (losowe klucze, bez sekretów)
+        run: bash scripts/ci/srodowisko.sh
+
+      - name: Baza testowa (Postgres 16, losowe hasła, bez fsync)
+        run: bash scripts/ci/baza.sh
+
+      - name: Instalacja zależności (z prisma generate w postinstall)
+        run: npm ci
+
+      - name: Symulacja grudnia
+        env:
+          SYM_RAPORT: ${{ runner.temp }}/symulacja-raport.json
+        run: npx vitest run --mode integration --no-file-parallelism tests/rdzen-symulacja.integration.test.ts
+
+      - name: Raport symulacji (JSON w logu)
+        if: always()
+        run: cat "${{ runner.temp }}/symulacja-raport.json" 2>/dev/null || echo "brak raportu"

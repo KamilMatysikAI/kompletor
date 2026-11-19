@@ -1,0 +1,20 @@
+/* Ustawienia → Przeprowadzka z BaseLinkera. Tylko tokeny z app/ui/tokeny.css (docs/ui.md). */
+.pz-mt { margin-top: var(--odstep-4); }
+.pz-bez-marginesu { margin-top: 0; }
+.pz-formularz { display: grid; gap: var(--odstep-3); max-width: 640px; }
+.pz-formularz h3 { margin: var(--odstep-2) 0 0; }
+.pz-siatka { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr)); gap: var(--odstep-4); margin-bottom: var(--odstep-3); }
+.pz-siatka h3 { margin: 0 0 var(--odstep-2); }
+.pz-lista { margin: var(--odstep-2) 0 0; padding-left: var(--odstep-5); display: grid; gap: var(--odstep-1); overflow-wrap: anywhere; }
+/* listy spraw z raportu, źródła do pominięcia */
+.pz-listy { display: grid; gap: var(--odstep-2); margin-bottom: var(--odstep-3); }
+.pz-listy h3 { margin: 0; }
+.pz-zrodla { display: grid; gap: var(--odstep-2); border: 0; padding: 0; margin: 0; }
+.pz-zrodla legend { font-weight: 600; padding: 0; margin-bottom: var(--odstep-1); }
+.pz-zrodlo { display: flex; gap: var(--odstep-2); align-items: flex-start; overflow-wrap: anywhere; }
+.pz-zrodlo input[type='checkbox'] { margin-top: 3px; }
+/* statusy z BaseLinkera jako statusy firmy */
+.pz-tabela-wrap { overflow-x: auto; margin: var(--odstep-2) 0; }
+.pz-tabela { border-collapse: collapse; width: 100%; min-width: 520px; }
+.pz-tabela th, .pz-tabela td { text-align: left; padding: var(--odstep-1) var(--odstep-2); border-bottom: 1px solid var(--kolor-linia); vertical-align: top; }
+.pz-tabela th { font-weight: 600; color: var(--kolor-tekst-2); }

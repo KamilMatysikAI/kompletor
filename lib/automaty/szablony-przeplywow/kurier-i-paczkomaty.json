@@ -1,0 +1,336 @@
+{
+  "_komentarz": "Szablon przepływu dla nowej firmy. Format i zasady: lib/automaty/szablon.ts i docs/automatyczne-akcje.md, sekcja „Szablony”. Bez nazw firm i bez sekretów.",
+  "id": "kurier-i-paczkomaty",
+  "nazwa": "Kurier i paczkomaty",
+  "dlaKogo": "Sklep, który wysyła paczki kurierem albo do paczkomatów.",
+  "opis": [
+    "Statusy: Nowe → Do realizacji → Zbieranie → Spakowane → Do wysłania → Wysłane.",
+    "Opłacone zamówienie i zamówienie za pobraniem idą od razu do realizacji.",
+    "Po utworzeniu przesyłki zamówienie przechodzi do „Do wysłania”, a etykieta idzie na drukarkę.",
+    "Gdy kurier odbierze paczkę, zamówienie przechodzi do „Wysłane”.",
+    "Bez płatności przez 2 dni robocze klient dostaje przypomnienie, po 5 dniach zamówienie jest anulowane."
+  ],
+  "kolejnosc": 10,
+  "statusGroups": [
+    {
+      "key": "W_REALIZACJI",
+      "name": "W realizacji",
+      "sortOrder": 10,
+      "collapsed": false
+    },
+    {
+      "key": "GOTOWE",
+      "name": "Gotowe",
+      "sortOrder": 20,
+      "collapsed": false
+    },
+    {
+      "key": "ZAKONCZONE",
+      "name": "Zakończone",
+      "sortOrder": 30,
+      "collapsed": true
+    },
+    {
+      "key": "PROBLEMOWE",
+      "name": "Problemowe",
+      "sortOrder": 40,
+      "collapsed": false
+    }
+  ],
+  "statuses": [
+    {
+      "key": "NOWE",
+      "name": "Nowe",
+      "customerName": "Zamówienie przyjęte",
+      "color": "niebieski",
+      "groupKey": null,
+      "sortOrder": 10,
+      "baseStatus": "NOWE",
+      "carriers": [],
+      "active": true
+    },
+    {
+      "key": "DO_REALIZACJI",
+      "name": "Do realizacji",
+      "customerName": "Zamówienie w realizacji",
+      "color": "pomaranczowy",
+      "groupKey": "W_REALIZACJI",
+      "sortOrder": 20,
+      "baseStatus": "DO_REALIZACJI",
+      "carriers": [],
+      "active": true
+    },
+    {
+      "key": "ZBIERANIE",
+      "name": "Zbieranie",
+      "customerName": "Zamówienie w realizacji",
+      "color": "zolty",
+      "groupKey": "W_REALIZACJI",
+      "sortOrder": 30,
+      "baseStatus": "ZBIERANIE",
+      "carriers": [],
+      "active": true
+    },
+    {
+      "key": "ZEBRANE",
+      "name": "Zebrane",
+      "customerName": "Zamówienie w realizacji",
+      "color": "zolty",
+      "groupKey": "W_REALIZACJI",
+      "sortOrder": 40,
+      "baseStatus": "ZEBRANE",
+      "carriers": [],
+      "active": true
+    },
+    {
+      "key": "SPAKOWANE",
+      "name": "Spakowane",
+      "customerName": "Zamówienie spakowane",
+      "color": "turkusowy",
+      "groupKey": "GOTOWE",
+      "sortOrder": 50,
+      "baseStatus": "SPAKOWANE",
+      "carriers": [],
+      "active": true
+    },
+    {
+      "key": "DO_WYSLANIA",
+      "name": "Do wysłania",
+      "customerName": "Paczka czeka na kuriera",
+      "color": "turkusowy",
+      "groupKey": "GOTOWE",
+      "sortOrder": 60,
+      "baseStatus": "DO_WYSLANIA",
+      "carriers": [],
+      "active": true
+    },
+    {
+      "key": "DO_ODBIORU",
+      "name": "Do odbioru",
+      "customerName": "Gotowe do odbioru",
+      "color": "turkusowy",
+      "groupKey": "GOTOWE",
+      "sortOrder": 70,
+      "baseStatus": "DO_ODBIORU",
+      "carriers": [],
+      "active": true
+    },
+    {
+      "key": "WYSLANE",
+      "name": "Wysłane",
+      "customerName": "Paczka wysłana",
+      "color": "zielony",
+      "groupKey": "ZAKONCZONE",
+      "sortOrder": 80,
+      "baseStatus": "WYSLANE",
+      "carriers": [],
+      "active": true
+    },
+    {
+      "key": "ODEBRANE",
+      "name": "Odebrane",
+      "customerName": "Zamówienie zrealizowane",
+      "color": "zielony",
+      "groupKey": "ZAKONCZONE",
+      "sortOrder": 90,
+      "baseStatus": "ODEBRANE",
+      "carriers": [],
+      "active": true
+    },
+    {
+      "key": "ANULOWANE",
+      "name": "Anulowane",
+      "customerName": "Zamówienie anulowane",
+      "color": "czerwony",
+      "groupKey": "ZAKONCZONE",
+      "sortOrder": 100,
+      "baseStatus": "ANULOWANE",
+      "carriers": [],
+      "active": true
+    },
+    {
+      "key": "DO_WYJASNIENIA",
+      "name": "Do wyjaśnienia",
+      "customerName": "Zamówienie w realizacji",
+      "color": "fioletowy",
+      "groupKey": "PROBLEMOWE",
+      "sortOrder": 110,
+      "baseStatus": "DO_WYJASNIENIA",
+      "carriers": [],
+      "active": true
+    },
+    {
+      "key": "REKLAMACJA",
+      "name": "Reklamacja",
+      "customerName": "Reklamacja w toku",
+      "color": "rozowy",
+      "groupKey": "PROBLEMOWE",
+      "sortOrder": 120,
+      "baseStatus": "REKLAMACJA",
+      "carriers": [],
+      "active": true
+    }
+  ],
+  "automationGroups": [
+    {
+      "key": "przyjecie",
+      "name": "Przyjęcie zamówień",
+      "sortOrder": 10,
+      "collapsed": false
+    },
+    {
+      "key": "wysylka",
+      "name": "Wysyłka",
+      "sortOrder": 20,
+      "collapsed": false
+    },
+    {
+      "key": "platnosci",
+      "name": "Płatności",
+      "sortOrder": 30,
+      "collapsed": false
+    }
+  ],
+  "automationRules": [
+    {
+      "key": "oplacone-do-realizacji",
+      "groupKey": "przyjecie",
+      "name": "Opłacono → Do realizacji",
+      "event": "OPLACONO",
+      "conditions": [],
+      "actions": [
+        {
+          "typ": "ustawStatus",
+          "status": "DO_REALIZACJI"
+        }
+      ]
+    },
+    {
+      "key": "pobranie-do-realizacji",
+      "groupKey": "przyjecie",
+      "name": "Nowe za pobraniem → Do realizacji",
+      "event": "POBRANO",
+      "conditions": [
+        {
+          "typ": "pobranie",
+          "wartosc": true
+        }
+      ],
+      "actions": [
+        {
+          "typ": "ustawStatus",
+          "status": "DO_REALIZACJI"
+        }
+      ]
+    },
+    {
+      "key": "przesylka-do-wyslania",
+      "groupKey": "wysylka",
+      "name": "Utworzono przesyłkę → Do wysłania i etykieta",
+      "event": "UTWORZONO_PRZESYLKE",
+      "conditions": [
+        {
+          "typ": "status",
+          "wartosci": [
+            "SPAKOWANE"
+          ]
+        }
+      ],
+      "actions": [
+        {
+          "typ": "ustawStatus",
+          "status": "DO_WYSLANIA"
+        },
+        {
+          "typ": "drukujEtykiete",
+          "stanowisko": null
+        }
+      ]
+    },
+    {
+      "key": "kurier-odebral-wyslane",
+      "groupKey": "wysylka",
+      "name": "Kurier odebrał paczkę → Wysłane",
+      "event": "STATUS_PRZESYLKI",
+      "conditions": [
+        {
+          "typ": "statusPrzesylki",
+          "frazy": [
+            "taken_by_courier",
+            "collected_from_sender",
+            "adopted_at_source_branch",
+            "sent_from_source_branch",
+            "odebrana przez kuriera",
+            "nadana",
+            "w drodze"
+          ]
+        },
+        {
+          "typ": "status",
+          "wartosci": [
+            "DO_WYSLANIA"
+          ]
+        }
+      ],
+      "actions": [
+        {
+          "typ": "ustawStatus",
+          "status": "WYSLANE"
+        }
+      ]
+    },
+    {
+      "key": "przypomnienie-o-platnosci",
+      "groupKey": "platnosci",
+      "name": "Brak płatności 2 dni robocze → przypomnienie e-mailem",
+      "event": "W_STATUSIE_DNI",
+      "conditions": [
+        {
+          "typ": "dniWStatusie",
+          "dni": 2,
+          "robocze": true
+        },
+        {
+          "typ": "status",
+          "wartosci": [
+            "NOWE"
+          ]
+        }
+      ],
+      "actions": [
+        {
+          "typ": "wyslijEmail",
+          "szablon": "brak-platnosci"
+        }
+      ]
+    },
+    {
+      "key": "anuluj-bez-platnosci",
+      "groupKey": "platnosci",
+      "name": "Brak płatności 5 dni roboczych → anuluj",
+      "event": "W_STATUSIE_DNI",
+      "conditions": [
+        {
+          "typ": "dniWStatusie",
+          "dni": 5,
+          "robocze": true
+        },
+        {
+          "typ": "status",
+          "wartosci": [
+            "NOWE"
+          ]
+        },
+        {
+          "typ": "pobranie",
+          "wartosc": false
+        }
+      ],
+      "actions": [
+        {
+          "typ": "anulujZamowienie"
+        }
+      ]
+    }
+  ]
+}

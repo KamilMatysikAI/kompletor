@@ -1,0 +1,137 @@
+# CI Kompletora. Opis, koszt minut i ochrona main: docs/ci.md.
+#
+# Repo jest prywatne, więc minuty są limitowane (GitHub Free: 12 USD miesięcznie, czyli ok. 2 000 min runnera
+# Linux 2-core). Dlatego dwa poziomy:
+#   szybki  (typy + testy jednostkowe, ok. 3 min): każdy push do main, każdy PR do main, gałęzie ci/**, ręcznie;
+#   pełny   (db:check, migracje, testy integracyjne bez symulacji grudnia, next build, ok. 13 min):
+#           PR do main, gałęzie ci/**, noc (tylko gdy main zmienił się w ostatniej dobie), ręcznie.
+# Gałęzie robocze agentów nie uruchamiają CI same: integrator wypycha sumę gałęzi jako ci/<nazwa>.
+# Symulacja grudnia (ok. 80 min i więcej) jest osobno: .github/workflows/symulacja.yml, tylko ręcznie.
+# Po upublicznieniu repo minuty są darmowe i pełny poziom może iść na każdy push.
+name: CI
+
+on:
+  push:
+    branches: [main, 'ci/**']
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '30 2 * * *' # 03:30 czasu zimowego w Polsce
+  workflow_dispatch:
+    inputs:
+      pelny:
+        description: 'Także testy integracyjne i next build'
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: '22'
+  # postgres:16-alpine, przypięty do skrótu (odczyt 08.11.2026); zmiana obrazu = świadoma zmiana tej linii
+  PG_OBRAZ: postgres:16-alpine@sha256:aa6cb33cf4c19c765cefcf48d96176258800870a9a1e930ad126200f9d825139
+
+jobs:
+  szybki:
+    name: Typy i testy jednostkowe
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Zmienne testowe (losowe klucze, bez sekretów)
+        run: bash scripts/ci/srodowisko.sh
+
+      - name: Instalacja zależności (z prisma generate w postinstall)
+        run: npm ci
+
+      - name: Typy (tsc bez pamięci podręcznej)
+        run: npm run typecheck
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096 # domyślne ok. 2 GB nie wystarcza na pełny projekt
+
+      - name: Testy jednostkowe
+        run: npm run test:unit
+
+  zmiany:
+    name: Czy main zmienił się w ostatniej dobie
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      swieze: ${{ steps.sprawdz.outputs.swieze }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: sprawdz
+        name: Data ostatniego commita
+        run: |
+          ostatni=$(git log -1 --format=%ct)
+          teraz=$(date +%s)
+          if [ $(( teraz - ostatni )) -lt 90000 ]; then echo "swieze=tak" >> "$GITHUB_OUTPUT"; else echo "swieze=nie" >> "$GITHUB_OUTPUT"; fi
+          echo "ostatni commit: $(git log -1 --format='%h %ci')"
+
+  pelny:
+    name: Migracje, testy integracyjne, build
+    needs: [zmiany]
+    if: >-
+      !cancelled() && (
+        (github.event_name == 'schedule' && needs.zmiany.outputs.swieze == 'tak') ||
+        github.event_name == 'pull_request' ||
+        (github.event_name == 'push' && startsWith(github.ref, 'refs/heads/ci/')) ||
+        (github.event_name == 'workflow_dispatch' && inputs.pelny)
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Zmienne testowe (losowe klucze, bez sekretów)
+        run: bash scripts/ci/srodowisko.sh
+
+      - name: Baza testowa (Postgres 16, losowe hasła, bez fsync)
+        run: bash scripts/ci/baza.sh
+
+      - name: Instalacja zależności (z prisma generate w postinstall)
+        run: npm ci
+
+      - name: Kontrola dryfu schematu (migracje == schema.prisma)
+        run: npm run db:check
+
+      - name: Migracje na czystej bazie
+        run: npx prisma migrate deploy
+
+      # Symulacja grudnia ma osobny workflow (symulacja.yml); global-setup i tak zakłada schemat od zera.
+      - name: Testy integracyjne (bez symulacji grudnia)
+        run: npm run test:integration -- --exclude tests/rdzen-symulacja.integration.test.ts
+
+      # Sprawdzanie typów w `next build` potrzebuje więcej sterty niż domyślny limit Node (jak w Dockerfile).
+      - name: Build panelu
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
+        run: npm run build
+
+      - name: Log bazy przy błędzie
+        if: failure()
+        run: docker logs --tail 200 kompletor-pg || true

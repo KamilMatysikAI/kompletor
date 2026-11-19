@@ -1,0 +1,29 @@
+Temat: Faktura FV 123/10/2026 do zamówienia ZAM-2026-00123
+Do: (adres klienta)
+Odpowiedź do: sklep@example.com
+Załącznik: Faktura-FV-123-10-2026.pdf (application/pdf, 45 B)
+
+Żółwik
+Faktura do zamówienia
+
+Dzień dobry Jan,
+
+w załączniku przesyłamy fakturę do zamówienia złożonego w sklepie Żółwik.
+
+Numer faktury: FV 123/10/2026
+Numer zamówienia: ZAM-2026-00123
+
+Faktura jest w pliku PDF dołączonym do tej wiadomości. W razie pytań wystarczy odpowiedzieć na ten e-mail.
+
+Dziękujemy za zakupy.
+
+Pozdrawiamy
+Zespół sklepu Żółwik
+
+-- 
+Firma Testowa sp. z o.o.
+ul. Przykładowa 1, 00-000 Testowo
+NIP 000-000-00-00
+Kontakt: kontakt@example.com, +48 000 000 000
+Ta wiadomość dotyczy zamówienia w sklepie Żółwik. Na pytania odpowiadamy pod adresem sklep@example.com.
+https://sklep.example.com

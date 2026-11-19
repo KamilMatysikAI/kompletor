@@ -1,0 +1,39 @@
+Temat: Zamówienie ZAM-2026-00123 czeka na odbiór
+Do: (adres klienta)
+Odpowiedź do: sklep@example.com
+
+Żółwik
+Zamówienie gotowe do odbioru
+
+Dzień dobry Jan,
+
+zamówienie ZAM-2026-00123 jest już gotowe do odbioru osobistego.
+
+Adres odbioru:
+- Sklep Żółwik
+- ul. Przykładowa 1
+- 00-000 Testowo
+
+Godziny odbioru:
+- poniedziałek-piątek 9:00-17:00
+- sobota 10:00-14:00
+
+Wejście od podwórza, dzwonek „Sklep”.
+
+>> Zamówienie czeka na odbiór do 6 listopada 2026.
+
+Zamówione produkty:
+- 2 × Kubek ceramiczny 300 ml
+
+Przy odbiorze prosimy podać numer zamówienia.
+
+Pozdrawiamy
+Zespół sklepu Żółwik
+
+-- 
+Firma Testowa sp. z o.o.
+ul. Przykładowa 1, 00-000 Testowo
+NIP 000-000-00-00
+Kontakt: kontakt@example.com, +48 000 000 000
+Ta wiadomość dotyczy zamówienia w sklepie Żółwik. Na pytania odpowiadamy pod adresem sklep@example.com.
+https://sklep.example.com

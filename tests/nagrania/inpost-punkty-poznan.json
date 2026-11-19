@@ -1,0 +1,14 @@
+{
+  "_opis": "Odpowiedź w kształcie publicznego API punktów InPost (GET /v1/points?city=Poznań&per_page=20), skrócona do trzech punktów; nazwy i adresy fikcyjne",
+  "count": 3,
+  "page": 1,
+  "per_page": 20,
+  "total_pages": 1,
+  "items": [
+    { "name": "POZ99X", "type": ["parcel_locker"], "status": "Operating", "location_type": "Outdoor", "address": { "line1": "ul. Testowa 1", "line2": "60-001 Poznań" }, "address_details": { "city": "Poznań", "post_code": "60-001", "street": "Testowa", "building_number": "1" }, "location_description": "Przy wejściu do sklepu spożywczego", "payment_available": true },
+    { "name": "POZ98X", "type": ["parcel_locker", "pop"], "status": "NonOperating", "address": { "line1": "ul. Próbna 7", "line2": "60-002 Poznań" }, "location_description": "", "payment_available": false },
+    { "name": "POZ97X", "type": "pop", "status": "Operating", "address": { "line1": "os. Zielone 3" }, "payment_available": null },
+    { "type": ["parcel_locker"], "status": "Operating", "address": { "line1": "bez nazwy" } },
+    { "name": "../zly", "status": "Operating" }
+  ]
+}

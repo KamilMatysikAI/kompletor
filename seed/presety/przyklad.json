@@ -1,0 +1,43 @@
+{
+  "_komentarz": [
+    "Przykładowy preset firmy z danymi fikcyjnymi. Wzór dla własnego pliku: skopiuj, zmień i uruchom",
+    "npm run org:seed -- --plik <ścieżka> albo w kontenerze KOMPLETOR_SEED=<nazwa> z plikiem zamontowanym do prywatne/presety/<nazwa>.json",
+    "(albo KOMPLETOR_PRESET_PLIK=<ścieżka>; docs/instalacja.md, „Własny preset firmy”). Bez sekretów: klucze API idą do sekretów firmy (npm run sekret).",
+    "Seed jest idempotentny: zakłada brakujące wiersze, niczego nie nadpisuje. Konta kanałów nieaktywne, dopóki nie wpiszesz kluczy.",
+    "Bez list statusGroups i statuses firma dostaje neutralne statusy zamówień (po jednym na etap); własne listy statusGroups i statuses w tym pliku albo zmiana w Ustawienia → Statusy zamówień."
+  ],
+  "id": "przyklad",
+  "slug": "przyklad",
+  "name": "Sklep Przykładowy",
+  "settings": {},
+  "warehouses": [{ "id": "glowny", "name": "Główny", "wfirmaWarehouseId": null }],
+  "channels": [
+    {
+      "_komentarz": "Sklep WooCommerce: adres w config.baseUrl, klucze w sekretach konta albo env <envPrefix>_URL/_KEY/_SECRET.",
+      "channel": "WOO",
+      "channelAccountId": "sklep1",
+      "name": "Sklep internetowy",
+      "active": false,
+      "adapterKey": "woo.rest.v1",
+      "config": { "baseUrl": "https://sklep.example.com", "envPrefix": "SKLEP1_WC" }
+    }
+  ],
+  "carrierRules": [
+    { "priority": 10, "channel": "ALLEGRO", "pattern": null, "carrier": "ALLEGRO", "shippingModule": "WYSYLAM_Z_ALLEGRO", "adapterKey": "allegro.wysylam.v1" },
+    { "priority": 20, "channel": null, "pattern": "paczkomat", "carrier": "PACZKOMATY", "shippingModule": "BRAK" },
+    { "priority": 40, "channel": null, "pattern": "dpd|kurier", "carrier": "DPD", "shippingModule": "BRAK" },
+    { "priority": 50, "channel": null, "pattern": "osobist", "carrier": "OSOBISTY", "shippingModule": "BRAK" }
+  ],
+  "carrierPickups": [
+    { "carrier": "DPD", "weekdays": [1, 2, 3, 4, 5], "pickupMinute": 780, "promiseUntilMinute": 720, "active": true, "example": true },
+    { "carrier": "PACZKOMATY", "weekdays": [1, 2, 3, 4, 5], "pickupMinute": 900, "promiseUntilMinute": 840, "active": true, "example": true }
+  ],
+  "zones": [
+    { "key": "MAGAZYN", "name": "magazyn", "color": "ziemia", "sortOrder": 10 },
+    { "key": "PRZY_STANOWISKU", "name": "przy stanowisku", "color": "niebo", "sortOrder": 20 }
+  ],
+  "zoneRules": [
+    { "priority": 10, "pattern": "akcesori|kubek|drobn", "zone": "PRZY_STANOWISKU" },
+    { "priority": 20, "pattern": "karton|zgrzewk|paleta", "zone": "MAGAZYN" }
+  ]
+}

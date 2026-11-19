@@ -1,0 +1,14 @@
+{
+	local_certs
+	skip_install_trust
+}
+sklep.woo.test {
+	tls internal
+	reverse_proxy wp:80 {
+		header_up X-Forwarded-Proto https
+	}
+}
+panel.woo.test {
+	tls internal
+	reverse_proxy host.docker.internal:{$PANEL_PORT}
+}

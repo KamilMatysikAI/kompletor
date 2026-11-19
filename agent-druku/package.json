@@ -1,0 +1,24 @@
+{
+  "name": "kompletor-agent-druku",
+  "version": "0.2.0",
+  "private": true,
+  "description": "Agent druku dla komputera w magazynie (Windows): pobiera zlecenia z Kompletora i drukuje na A4 i drukarkach termicznych.",
+  "license": "AGPL-3.0-only",
+  "type": "module",
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "start": "node dist/main.js",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run",
+    "paczka": "npm run build && node skrypty/paczka.mjs"
+  },
+  "engines": {
+    "node": ">=20.19"
+  },
+  "devDependencies": {
+    "@types/node": "20.19.43",
+    "typescript": "5.9.3",
+    "vitest": "3.2.7"
+  }
+}

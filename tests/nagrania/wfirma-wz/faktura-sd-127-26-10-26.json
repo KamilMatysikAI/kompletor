@@ -1,0 +1,71 @@
+{
+ "invoices": {
+  "0": {
+   "invoice": {
+    "id": "900000084",
+    "fullnumber": "SD 127/26/10/26",
+    "date": "2026-10-26",
+    "type": "normal",
+    "created": "2026-10-26 17:18:43",
+    "invoicecontents": {
+     "0": {
+      "invoicecontent": {
+       "count": "1.0000",
+       "good": {
+        "id": 90000028
+       }
+      }
+     },
+     "1": {
+      "invoicecontent": {
+       "count": "1.0000",
+       "good": {
+        "id": 90000007
+       }
+      }
+     },
+     "2": {
+      "invoicecontent": {
+       "count": "1.0000",
+       "good": {
+        "id": 90000021
+       }
+      }
+     },
+     "3": {
+      "invoicecontent": {
+       "count": "1.0000",
+       "good": {
+        "id": 90000014
+       }
+      }
+     },
+     "4": {
+      "invoicecontent": {
+       "count": "1.0000",
+       "good": {
+        "id": 90000035
+       }
+      }
+     },
+     "5": {
+      "invoicecontent": {
+       "count": "1.0000",
+       "good": {
+        "id": 0
+       }
+      }
+     }
+    }
+   }
+  },
+  "parameters": {
+   "limit": "5",
+   "page": "1",
+   "total": "1"
+  }
+ },
+ "status": {
+  "code": "OK"
+ }
+}

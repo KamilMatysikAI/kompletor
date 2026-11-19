@@ -1,0 +1,2872 @@
+// logistyka — schemat bazy.
+// Źródło modelu: specyfikacja modelu stanów v1.4, rozdz. 2 i 8.
+// katalog, lustro stanu (tylko INITIAL_IMPORT), oferty kanałów, kopie danych BL/wFirmy, importy, kolejka workera.
+// (niżej): zamówienia, rezerwacje, kolejka „brakuje”, ruchy niepotwierdzone, outbox propagacji, konfiguracja okresów.
+// wiele firm w jednej bazie. Każda tabela danych ma `organizationId`; izolację wymusza Postgres (RLS,
+// migracja 00000000000000_baza): klient aplikacji łączy się jako rola `logistyka_app` z ustawieniem sesji
+// `app.org_id` = id firmy (lib/db.ts) i widzi wyłącznie jej wiersze; domyślna wartość `organizationId` pochodzi
+// z tego samego ustawienia, więc zapis bez organizacji jest niemożliwy. Unikalności są złożone z `organizationId`.
+// Nazwy tabel po angielsku (konwencja system-najmu), opisy po polsku. Ilości w jednostce bazowej (szt. albo g).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ─── Słowniki ────────────────────────────────────────────────────────────────
+
+enum ProductKind {
+  STOCKED // towar albo komplet wFirmy z własnym stanem
+  BUNDLE // zestaw wirtualny (tylko u nas), rezerwuje składniki
+  // bez stanu (e-book, usługa): nie rezerwuje, nie trafia do „brakuje” ani na kanały, na fakturze jako usługa
+  DIGITAL
+}
+
+// skąd pochodzą dane produktu. WFIRMA = towar wFirmy (nazwa księgowa, ceny, VAT tylko do odczytu w panelu),
+// BL = kopia z BaseLinkera (import, przeprowadzka), KANAL = założony z oferty sklepu, CSV = import pliku (później),
+// RECZNE = założony w panelu. Przy RECZNE/KANAL/CSV wszystkie pola edytowalne w karcie produktu.
+enum ProductDataSource {
+  RECZNE
+  KANAL
+  CSV
+  BL
+  WFIRMA
+}
+
+enum Unit {
+  SZT
+  KG // ilości w gramach
+}
+
+// Typ kanału. Konkretny sklep/konto rozróżnia `channelAccountId` (konfiguracja firmy w ChannelConfig).
+enum Channel {
+  WOO
+  ALLEGRO
+  EMPIK
+  EASYTOOLS
+  BL_INNE // InPost Buy, TikTok i inne źródła obsługiwane jeszcze przez BL
+  RECZNE
+  AI // dostawca AI jako zwykła integracja (adapterKey np. „ai.anthropic.v1”, model i limity w config); nie kanał sprzedaży
+  SHOPER
+  PRESTASHOP
+  IDOSELL
+}
+
+enum ChannelMode {
+  CIEN
+  PRACA
+}
+
+enum MappingState {
+  MAPPED // dokładnie jeden produkt BL
+  UNMAPPED // brak powiązania z magazynem
+  AMBIGUOUS // więcej niż jeden produkt BL
+}
+
+enum MappingSource {
+  BL_LINK // links w getInventoryProductsData (sklepy Woo)
+  BL_ORDERS // pozycje zamówień BL (Allegro, Empik, inne)
+  SKU // dopasowanie po SKU (Empik shop_sku; Woo bez linku BL — tylko propozycja do zatwierdzenia)
+  OVERRIDE // tabela nadpisań w repo (dane/nadpisania-ofert/<firma>.csv): oferta powiązana w BL po fakcie
+  MANUAL // powiązanie z panelu — import nie zmienia productId, active ani qtyBasePerOffer
+  CONFIG // reguła firmy (Organization.settings.catalog.noStock): oferta produktu bez stanu
+  NONE
+}
+
+enum MovementSource {
+  WFIRMA_SYNC
+  OWN_INVOICE
+  BL_INVOICE
+  OWN_CORRECTION
+  ISSUED_WITHOUT_DOCUMENT
+  STOCK_MISSING
+  INITIAL_IMPORT
+  // wydanie z magazynu prowadzonego przez Kompletor (źródło stanu KOMPLETOR) przy „Do wysyłki / Do odbioru”
+  OWN_DISPATCH
+  // zwrot przyjęty na stan w magazynie prowadzonym przez Kompletor (bez korekty w programie do faktur)
+  OWN_RETURN
+}
+
+// kto prowadzi stan fizyczny magazynu. WFIRMA = lustro magazynu wFirmy (rozchód fakturą z WZ, potwierdza
+// odczyt wFirmy); KOMPLETOR = stan prowadzi Kompletor (rozchód przy wydaniu, korekta z panelu).
+enum StockSource {
+  KOMPLETOR
+  WFIRMA
+}
+
+enum ImportStatus {
+  RUNNING
+  OK
+  PARTIAL // część elementów z błędem (ImportIssue), reszta zapisana
+  FAILED
+}
+
+enum JobStatus {
+  PENDING
+  RUNNING
+  DONE
+  FAILED
+}
+
+// ─── Katalog (spec 2.1, 8) ───────────────────────────────────────────────────
+
+model Product {
+  organizationId    String            @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization      Organization      @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  id                String            @id @default(cuid())
+  sku               String // SKU unikalne w firmie (przy towarze wFirmy = kod towaru w wFirmie)
+  kind              ProductKind
+  // źródło danych produktu (patrz enum); pola z WFIRMA są tylko do odczytu
+  dataSource        ProductDataSource @default(RECZNE)
+  unit              Unit
+  groupId           String? // grupa wariantów (id produktu-rodzica w BL)
+  // ceny, VAT, nazwa księgowa: przy dataSource WFIRMA z wFirmy (tylko odczyt), w pozostałych edytowalne w panelu
+  wfirmaGoodId      String?
+  wfirmaType        String?
+  nameAccounting    String
+  priceNet          Decimal?          @db.Decimal(12, 2) // good_prices[detaliczna].netto
+  priceGross        Decimal?          @db.Decimal(12, 2)
+  vatRate           String?
+  purchasePriceNet  Decimal?          @db.Decimal(12, 4) // value / count
+  wfirmaSyncedAt    DateTime?
+  wfirmaHash        String?
+  // własne
+  ean               String?
+  title             String
+  description       String?
+  details           Json?
+  lowStockThreshold Int?
+  // waga i wymiary do przesyłki (podpowiedź wagi paczki)
+  weightG           Int?
+  lengthCm          Decimal?          @db.Decimal(7, 1)
+  widthCm           Decimal?          @db.Decimal(7, 1)
+  heightCm          Decimal?          @db.Decimal(7, 1)
+  // strefa magazynu ustawiona ręcznie w karcie produktu; null = z reguł firmy (ProductZoneRule).
+  // klucz strefy firmy (PackingZoneDef.key), nie enum
+  packingZone       String?
+  active            Boolean           @default(true)
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+
+  bundleComponents BundleComponent[] @relation("Bundle")
+  usedInBundles    BundleComponent[] @relation("Component")
+  stocks           Stock[]
+  movements        StockMovement[]
+  offers           ChannelOffer[]
+  blProducts       BlProduct[]
+  packDrillFixes   PackDrillFix[]
+  images           ProductImage[]
+
+  @@unique([organizationId, sku])
+  @@unique([organizationId, wfirmaGoodId])
+  @@index([ean])
+}
+
+// zdjęcia produktu. Pliki w katalogu zdjęć (ZDJECIA_DIR, wolumen kontenera): <firma>/<id>.webp (do 1600 px),
+// <id>-m.webp (miniatura 160 px), <id>-p.jpg (do wydruku 96 px). Kolejność `position` rosnąco, pierwsze = główne.
+// `sourceUrl` = zdjęcie pobrane z oferty sklepu (import), unikalne w produkcie, żeby kolejne pobranie go nie dublowało.
+model ProductImage {
+  organizationId String       @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  id             String       @id @default(cuid())
+  productId      String
+  position       Int
+  width          Int
+  height         Int
+  bytes          Int
+  sourceUrl      String?
+  actorId        String
+  createdAt      DateTime     @default(now())
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([productId, sourceUrl])
+  @@index([productId, position])
+}
+
+/// bajty zdjęcia produktu w bazie (zamiast katalogu ZDJECIA_DIR), żeby panel i worker w osobnych kontenerach
+/// widziały te same zdjęcia, a kopia bazy obejmowała zdjęcia. Jeden wiersz na zdjęcie: webp do 1600 px, miniatura
+/// 160 px, JPEG do wydruku 96 px (wszystkie zapisane od nowa przez sharp). Bez klucza obcego do ProductImage: usunięte
+/// zdjęcie zostaje tu jako archiwum (`archivedAt`), jak wcześniej pliki w `old/`, nic nie jest kasowane.
+model ProductImageData {
+  organizationId String       @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  imageId        String       @id
+  productId      String
+  full           Bytes
+  mini           Bytes
+  druk           Bytes
+  /// „panel” (wgrane w panelu albo pobrane z oferty) albo „dysk” (przeniesione z katalogu ZDJECIA_DIR)
+  zrodlo         String       @default("panel")
+  createdAt      DateTime     @default(now())
+  archivedAt     DateTime?
+
+  @@index([productId])
+}
+
+model BundleComponent {
+  organizationId String       @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  bundleId       String
+  componentId    String
+  qtyBase        Int
+  priceShare     Decimal?     @db.Decimal(6, 4)
+
+  bundle    Product @relation("Bundle", fields: [bundleId], references: [id], onDelete: Cascade)
+  component Product @relation("Component", fields: [componentId], references: [id], onDelete: Restrict)
+
+  @@id([bundleId, componentId])
+}
+
+// ─── Stan: lustro wFirmy (spec 2.2). Zakłada tylko wiersz startowy. ─────
+
+model Warehouse {
+  organizationId    String       @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization      Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  id                String // np. „glowny”; unikalne w obrębie firmy
+  name              String
+  wfirmaWarehouseId String? // magazyn wFirmy, z którego idzie lustro stanu
+  // źródło stanu; null = wywnioskowane z wfirmaWarehouseId (lib/rdzen/zrodlo-stanu.ts, zgodność wstecz)
+  stockSource       StockSource?
+  stocks            Stock[]
+
+  @@id([organizationId, id])
+  @@unique([organizationId, wfirmaWarehouseId])
+}
+
+model Stock {
+  organizationId         String       @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization           Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  productId              String
+  warehouseId            String
+  wfirmaCount            Int
+  wfirmaReadAt           DateTime
+  pendingDelta           Int          @default(0)
+  physical               Int
+  reserved               Int          @default(0)
+  overcommitSince        DateTime?
+  overcommitListedAt     DateTime? // produkt na liście „Nadmiar rezerwacji” (4.4)
+  allocationPendingSince DateTime?
+  version                Int          @default(0)
+  location               String? // miejsce na półce z BL (np. B-3-4) — sortowanie kart zbierania
+
+  product   Product   @relation(fields: [productId], references: [id], onDelete: Restrict)
+  warehouse Warehouse @relation(fields: [organizationId, warehouseId], references: [organizationId, id])
+
+  @@id([productId, warehouseId])
+}
+
+model StockMovement {
+  organizationId String         @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization   Organization   @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  id             String         @id @default(cuid())
+  productId      String
+  warehouseId    String
+  deltaPhysical  Int
+  source         MovementSource
+  reason         String
+  actorId        String
+  orderId        String?
+  createdAt      DateTime       @default(now())
+
+  // Historia tylko dopisywana (spec 2.2): produkt wyłącza się przez active = false, nie kasuje.
+  product Product @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  @@index([productId, createdAt])
+}
+
+// ─── Kanały (spec 2.4, 2.5) ──────────────────────────────────────────────────
+
+// wyzwalacze `ChannelOffer_rejestr_zmiana` i `ChannelOffer_rejestr_usuniecie` (migracja 20261109116700)
+// kasują wpis `ChannelSyncState` przy zmianie active / productId / qtyBasePerOffer / externalId / konta i przy usunięciu
+// oferty. Prisma ich nie widzi: odtworzenie tabeli albo zmiana klucza wymaga ponownego założenia wyzwalaczy (pilnuje
+// tego test tests/rejestr-synchronizacji.integration.test.ts).
+model ChannelOffer {
+  organizationId        String        @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization          Organization  @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  id                    String        @id @default(cuid())
+  channel               Channel
+  channelAccountId      String
+  externalId            String // Woo: "<productId>" albo "<productId>/<variantId>"; Allegro: id oferty; Empik: product_sku
+  productId             String
+  qtyBasePerOffer       Int           @default(1)
+  safetyBuffer          Int?
+  lastPushedQty         Int?
+  lastPushedAt          DateTime?
+  lastSeenQty           Int?
+  active                Boolean       @default(true)
+  mappingSource         MappingSource @default(NONE)
+  // Propozycja importu (Woo po samym SKU, bez linku BL): nieaktywna do zatwierdzenia w panelu (F2).
+  needsApproval         Boolean       @default(false)
+  // Kiedy ofertę wyłączył import. Import włącza z powrotem tylko ofertę, którą sam wyłączył;
+  // wyłączenie w panelu zostawia to pole puste i jest trwałe.
+  deactivatedByImportAt DateTime?
+  createdAt             DateTime      @default(now())
+  updatedAt             DateTime      @updatedAt
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  @@unique([organizationId, channel, channelAccountId, externalId])
+  @@index([productId])
+}
+
+model ChannelConfig {
+  organizationId      String              @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization        Organization        @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  channel             Channel
+  channelAccountId    String
+  name                String
+  stockMode           ChannelMode         @default(CIEN)
+  statusMode          ChannelMode         @default(CIEN)
+  trackingMode        ChannelMode         @default(CIEN)
+  publishMode         ChannelMode         @default(CIEN)
+  defaultSafetyBuffer Int                 @default(0)
+  goBy                String?
+  goAt                DateTime?
+  goRef               String?
+  // konfiguracja konta w bazie zamiast stałych w kodzie
+  active              Boolean             @default(true)
+  // Zgoda człowieka na masowe wyłączenie ofert przez import do tej chwili (bezpiecznik drobna 3)
+  allowMassOffUntil   DateTime?
+  blStorageId         String? // magazyn zewnętrzny sklepu w BL (np. „shop_1234567”): import ofert z BL
+  // Adapter konta jako tekst (np. „woo.rest.v1”, „allegro.v1”): nowy adapter nie wymaga migracji rdzenia;
+  // enum `channel` zostaje rodziną kanału dla logiki rdzenia (np. SELF_DECREMENTING). Porównanie z OpenLinkerem 25.10.
+  adapterKey          String
+  config              Json                @default("{}") // ustawienia konta dla adaptera (bez sekretów)
+  updatedAt           DateTime            @updatedAt
+  secrets             IntegrationSecret[]
+
+  @@id([organizationId, channel, channelAccountId])
+}
+
+// ─── Kopie źródeł (tylko odczyt, bez danych osobowych) ───────────────────────
+
+model BlProduct {
+  organizationId   String       @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization     Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  id               String // product_id z magazynu BL (unikalny w obrębie firmy)
+  inventoryId      String
+  parentId         String? // wariant: id produktu-rodzica
+  sku              String?
+  ean              String?
+  name             String
+  isBundle         Boolean      @default(false)
+  bundleProducts   Json? // { blProductId: ilość }
+  taxRate          Decimal?     @db.Decimal(5, 2)
+  priceGross       Decimal?     @db.Decimal(12, 2) // domyślna grupa cen
+  stockAccounting  Decimal?     @db.Decimal(14, 4) // magazyn accounting_1 (= wFirma)
+  stockBl          Decimal?     @db.Decimal(14, 4)
+  links            Json? // { "shop_1234567": {product_id, variant_id}, "accounting_1": {...} }
+  wfirmaGoodIdLink String? // links.accounting_1.product_id
+  locations        Json? // { "bl_<id magazynu>": "B-3-4" } z getInventoryProductsData
+  productId        String? // nasz Product po imporcie
+  importRunId      String
+  importedAt       DateTime     @default(now())
+
+  product Product? @relation(fields: [productId], references: [id], onDelete: SetNull)
+
+  @@id([organizationId, id])
+  @@index([sku])
+  @@index([ean])
+}
+
+model WfirmaGood {
+  organizationId   String       @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization     Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  id               String
+  code             String?
+  name             String
+  type             String // good | set | service
+  unit             String
+  vatCodeId        String?
+  vatRate          String?
+  priceNetRetail   Decimal?     @db.Decimal(12, 2)
+  priceGrossRetail Decimal?     @db.Decimal(12, 2)
+  purchasePriceNet Decimal?     @db.Decimal(12, 4)
+  count            Decimal?     @db.Decimal(14, 4) // w jednostce wFirmy (szt. albo kg)
+  warehouseId      String?
+  ean              String?
+  visibility       String?
+  modified         String?
+  importRunId      String
+  importedAt       DateTime     @default(now())
+
+  @@id([organizationId, id])
+  @@index([code])
+}
+
+// Oferta/produkt kanału z wynikiem mapowania — też te bez powiązania (raport).
+model ChannelOfferImport {
+  organizationId   String        @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization     Organization  @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  id               String        @id @default(cuid())
+  channel          Channel
+  channelAccountId String
+  externalId       String
+  sku              String?
+  ean              String?
+  name             String?
+  state            MappingState
+  source           MappingSource
+  blProductIds     String[]
+  productId        String?
+  sales90dQty      Int           @default(0)
+  sales90dOrders   Int           @default(0)
+  lastSoldAt       DateTime?
+  notes            String[]
+  importRunId      String
+  updatedAt        DateTime      @updatedAt
+
+  @@unique([organizationId, channel, channelAccountId, externalId])
+  @@index([state])
+}
+
+// ─── Importy i błędy per element ─────────────────────────────────────────────
+
+model ImportRun {
+  organizationId String        @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization   Organization  @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  id             String        @id @default(cuid())
+  kind           String
+  status         ImportStatus  @default(RUNNING)
+  startedAt      DateTime      @default(now())
+  finishedAt     DateTime?
+  stats          Json?
+  error          String?
+  /// raport Markdown przebiegu przeprowadzki z panelu (do pobrania z ekranu; bez danych klientów).
+  reportMarkdown String?
+  issues         ImportIssue[]
+}
+
+model ImportIssue {
+  organizationId String       @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  id             String       @id @default(cuid())
+  runId          String
+  kind           String
+  ref            String
+  message        String
+  createdAt      DateTime     @default(now())
+
+  run ImportRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@index([runId])
+}
+
+// ─── Kolejka zadań workera (Postgres, FOR UPDATE SKIP LOCKED) ────────────────
+
+model Job {
+  organizationId String       @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  id             String       @id @default(cuid())
+  kind           String
+  payload        Json?
+  status         JobStatus    @default(PENDING)
+  runAfter       DateTime     @default(now())
+  attempts       Int          @default(0)
+  maxAttempts    Int          @default(5)
+  lastError      String?
+  lockedAt       DateTime?
+  lockedBy       String?
+  dedupeKey      String?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  @@unique([organizationId, dedupeKey])
+  @@index([status, runAfter])
+}
+
+// ═══: rdzeń stanów i rezerwacji (spec 2.2–2.5, 3–6) ═══════════════
+
+enum OrderStatus {
+  NOWE
+  DO_REALIZACJI
+  ZBIERANIE
+  ZEBRANE
+  SPAKOWANE
+  DO_WYSLANIA
+  DO_ODBIORU
+  WYSLANE
+  ODEBRANE
+  ANULOWANE
+  DO_WYJASNIENIA
+  REKLAMACJA
+}
+
+enum PaymentState {
+  UNPAID
+  PAID
+  COD // pobranie: traktowane jak opłacone, rezerwacja nie wygasa
+  PARTIAL // niedopłata: wygasa jak UNPAID, z flagą
+}
+
+enum Carrier {
+  PACZKOMATY
+  DPD
+  DPD_EMPIK
+  INPOST_KURIER // kurier InPost przez ShipX (paczkomat to PACZKOMATY)
+  ORLEN_PACZKA // punkty i automaty Orlen Paczki (bez kuriera pod adres)
+  GLS // GLS Polska (kurier i punkty ParcelShop)
+  POCZTA_POLSKA // Pocztex Kurier pod adres przez eNadawcę
+  ALLEGRO
+  OSOBISTY
+  BRAK
+  // same pozycje bez stanu (e-book) na koncie w PRACA — bez zbierania i kuriera, po fakturze ODEBRANE
+  BEZ_WYSYLKI
+}
+
+enum ShippingModule {
+  BASE_COURIER
+  WYSYLAM_Z_ALLEGRO
+  INPOST_SHIPX
+  DPD_BEZPOSREDNIO
+  ORLEN_PACZKA
+  GLS_ADE
+  POCZTA_POLSKA
+  BRAK
+}
+
+enum ReservationState {
+  ACTIVE
+  CONSUMING // faktura w drodze do wFirmy
+  CONSUMED
+  RELEASED
+}
+
+enum ShortageState {
+  OPEN
+  SHIP_LATER
+  RESOLVED // dostała rezerwację (reservationId)
+  REFUND_PENDING
+  REFUNDED
+  COD_REDUCED
+  CANCELLED
+}
+
+// Decyzja obsługi o brakującej pozycji. WYSLIJ_RESZTE = domyślna: reszta wychodzi, za brak zwrot albo
+// mniejsze pobranie (spec 4.2); DOSLIJ = druga paczka; POCZEKAJ = nie pakować do dostawy; ZAMIEN = inny produkt.
+enum ShortageAction {
+  WYSLIJ_RESZTE
+  DOSLIJ
+  POCZEKAJ
+  ZAMIEN
+}
+
+enum PendingType {
+  OWN_INVOICE
+  BL_INVOICE
+  ISSUED_WITHOUT_DOCUMENT
+  STOCK_MISSING
+  DAMAGED_RETURN // (3.6 v1.5): uszkodzony zwrot wrócił korektą na stan wFirmy — do RW, pomniejsza available
+}
+
+enum PendingState {
+  IN_FLIGHT
+  APPLIED
+  CONFIRMED
+  CANCELLED
+  MANUAL
+}
+
+enum InvoiceState {
+  SENDING // ruch IN_FLIGHT zapisany, żądanie w drodze
+  UNKNOWN // timeout: rozstrzyga invoices/find
+  ISSUED
+  FAILED
+}
+
+enum OutboxKind {
+  AVAILABLE_CHANGED
+  ALLOCATE
+  WFIRMA_READ // zlecony odczyt goods/get (po fakturze, po kliknięciu biura)
+  FORCE_PUSH // (6.1 pkt 4): kanał sam zmienił stan oferty (anulowanie, odrzucenie) — job wymuszony
+}
+
+model Order {
+  organizationId      String          @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization        Organization    @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  id                  String          @id @default(cuid())
+  channel             Channel
+  channelAccountId    String
+  externalId          String
+  externalRevision    String?
+  channelStatusRank   Int? // ostatni status kanału jako liczba porządkowa (cofnięcie → DO_WYJASNIENIA)
+  status              OrderStatus     @default(NOWE)
+  statusBeforeClarify OrderStatus? // T15: powrót z DO_WYJASNIENIA
+  carrier             Carrier?
+  shippingModule      ShippingModule?
+  deliveryMethod      String?
+  paymentState        PaymentState
+  paymentMethod       String
+  totalGross          Decimal         @db.Decimal(12, 2)
+  wantInvoiceNip      Boolean         @default(false)
+  termsSeasonMode     Boolean? // tryb, wg którego policzono terminy (przełącznik sezonu nie zmienia starych)
+  remindAt            DateTime?
+  reminderSentAt      DateTime?
+  reservationDeadline DateTime?
+  // nieudana płatność online: kiedy zwolnić towar (krótki termin z zasad firmy, zamówienie zostaje otwarte) i kiedy
+  // zwolniono (zamówienie bez rezerwacji czeka na płatność do `reservationDeadline`)
+  stockReleaseAt      DateTime?
+  stockReleasedAt     DateTime?
+  shortageWaitUntil   DateTime? // „brakuje wszystkiego”: po tym terminie DO_WYJASNIENIA (4.2)
+  pendingAction       String? // anulowanie odłożone, bo faktura w drodze (3.5)
+  cancelReason        String?
+  flags               Json            @default("{}")
+  parentOrderId       String? // podzamówienie „dośle później”
+  packageNo           Int             @default(1) // numer paczki w id_external faktury
+  blOrderId           Int?
+  // numer zamówienia widoczny w kanale, gdy inny niż externalId (Woo z numeracją wtyczki), i koszt wysyłki
+  // brutto z kanału (null = kanał nie podał albo zamówienie sprzed zmiany). Numer opisowy. Koszt wysyłki ma skutek
+  // księgowy: dzieli kwotę faktury na towar i wysyłkę (`kosztWysylkiZamowienia`, lib/dokumenty/pozycje.ts); aktualizacja
+  // z kanału (`zapiszOpisZKanalu`) może go zmienić po przyjęciu zamówienia bez wpisu w historii.
+  channelNumber       String?
+  shippingCostGross   Decimal?        @db.Decimal(12, 2)
+  // źródło zamówienia wpisanego w panelu albo przez API ogólne (np. „Telefon”, „Hurt”),
+  // jak „Źródło zam.” w BaseLinkerze. Opisowe, bez danych klienta; rdzeń na nim nic nie liczy.
+  sourceLabel         String?
+  // status firmy przypisany wprost (OrderStatusDef.key). Obowiązuje tylko, gdy jego status bazowy równa
+  // się `status`; inaczej (null albo rdzeń przeniósł zamówienie dalej) status firmy wylicza się z `status` i
+  // `carrier` (lib/panel/statusy.ts, `wybierzStatusFirmy`). Opisowe: rdzeń na nim nic nie liczy.
+  companyStatus       String?
+  createdAtChannel    DateTime
+  createdAt           DateTime        @default(now())
+  updatedAt           DateTime        @updatedAt
+
+  lines             OrderLine[]
+  reservations      Reservation[]
+  shortages         Shortage[]
+  events            OrderEvent[]
+  invoices          InvoiceAttempt[]
+  cardPrints        OrderCardPrint[]
+  packDrills        PackDrill[]
+  shortageDecisions ShortageDecision[]
+  shipments         PreparedShipment[]
+  carrierShipments  Shipment[]
+  returns           Return[]
+  customer          OrderCustomer?
+  notes             OrderNote[]
+  payments          OrderPayment[]
+  channelWrites     ChannelWrite[]
+  packBasket        PackBasket?
+  automationRuns    AutomationRun[]
+
+  @@unique([organizationId, channel, channelAccountId, externalId])
+  @@index([organizationId, status, reservationDeadline])
+  @@index([parentOrderId])
+  @@index([organizationId, createdAtChannel]) // sprzedaż dnia/miesiąca na pulpicie
+  @@index([organizationId, updatedAt, id]) // lista zmienionych zamówień w API
+  // liczniki panelu; z `companyStatus`, jedno groupBy menu i statusów firmy
+  @@index([organizationId, status, carrier, companyStatus])
+  @@index([organizationId, totalGross]) // sortowanie listy po kwocie
+}
+
+model OrderLine {
+  organizationId String       @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  id             String       @id @default(cuid())
+  orderId        String
+  externalLineId String
+  offerId        String?
+  productId      String? // STOCKED, BUNDLE albo DIGITAL; null = niezmapowana → DO_WYJASNIENIA (RECZNE: zawsze produkt z katalogu)
+  qty            Int // jednostka bazowa produktu; dla zestawu liczba zestawów
+  // ilość z kanału (sztuki oferty) przy pozycji z ofertą; null = pozycja bez oferty albo
+  // sprzed migracji bez możliwego wyliczenia. Przepięcie i zmiana przelicznika liczą z niej nową ilość bazową.
+  qtyChannel     Int?
+  qtyRejected    Int          @default(0)
+  unitPriceGross Decimal      @db.Decimal(12, 2)
+  vatRate        String?
+  // opis pozycji z kanału (bez danych klienta): nazwa, SKU/sygnatura i EAN tak, jak podał kanał. Opisowe:
+  // mapowanie dalej idzie po `offerId`; karta pokazuje je zwłaszcza przy pozycji bez produktu.
+  channelName    String?
+  channelSku     String?
+  channelEan     String?
+  removed        Boolean      @default(false) // pozycja usunięta w kanale (3.7)
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  order        Order         @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  reservations Reservation[]
+  shortages    Shortage[]
+
+  @@unique([orderId, externalLineId])
+}
+
+model Reservation {
+  organizationId String           @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization   Organization     @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  id             String           @id @default(cuid())
+  orderId        String
+  orderLineId    String
+  productId      String // zawsze STOCKED (składnik przy zestawie)
+  warehouseId    String
+  qtyBase        Int
+  state          ReservationState @default(ACTIVE)
+  releasedReason String? // CANCELLED | EXPIRED_UNPAID | LINE_CHANGED | MOVED_TO_SHORTAGE | FAILED_ONLINE_PAYMENT
+  invoiceId      String?
+  createdAt      DateTime         @default(now())
+  consumedAt     DateTime?
+  releasedAt     DateTime?
+
+  order Order     @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  line  OrderLine @relation(fields: [orderLineId], references: [id], onDelete: Cascade)
+  // + w migracji: UNIQUE (orderLineId, productId, warehouseId) WHERE state = 'ACTIVE'
+
+  @@index([productId, state])
+  @@index([orderId, state])
+}
+
+model Shortage {
+  organizationId String        @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization   Organization  @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  id             String        @id @default(cuid())
+  orderId        String
+  orderLineId    String
+  productId      String // STOCKED (składnik przy zestawie)
+  qtyBase        Int
+  state          ShortageState @default(OPEN)
+  reservationId  String?
+  note           String?
+  createdAt      DateTime      @default(now())
+  resolvedAt     DateTime?
+  resolvedBy     String?
+
+  order Order     @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  line  OrderLine @relation(fields: [orderLineId], references: [id], onDelete: Cascade)
+
+  @@index([productId, state])
+  @@index([orderId, state])
+}
+
+model PendingMovement {
+  organizationId String       @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  id             String       @id @default(cuid())
+  productId      String
+  warehouseId    String
+  delta          Int // zawsze < 0 (wzrosty pokazuje wyłącznie odczyt wFirmy)
+  type           PendingType
+  state          PendingState
+  sentAt         DateTime // nasz zegar
+  effectiveAt    DateTime?
+  wfirmaDocId    String?
+  wzQty          Int?
+  orderId        String?
+  invoiceId      String?
+  confirmedAt    DateTime?
+  idempotencyKey String
+  // (2.2 pkt 5 v1.5): ilość WZ z osobnego odczytu dokumentu; null po fakturze = odczyt WZ nieudany,
+  // ponowienia po 30 s / 2 min / 5 min (`wzTries`, `nextWzReadAt`), dopiero potem jak 0 (MANUAL)
+  wzTries        Int          @default(0)
+  nextWzReadAt   DateTime?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  @@unique([organizationId, idempotencyKey])
+  @@index([productId, state])
+  @@index([invoiceId])
+}
+
+model InvoiceAttempt {
+  organizationId String       @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  id             String       @id @default(cuid())
+  orderId        String
+  packageNo      Int
+  attemptNo      Int
+  idExternal     String // <orderId>/<n>/<próba>
+  state          InvoiceState @default(SENDING)
+  wfirmaDocId    String?
+  /// Numer dokumentu z programu (np. „SD 15/5/11/26”); null = nieznany (rozstrzygnięty przez find albo wiersz sprzed dodania tego pola)
+  number         String?
+  /// dokument bez rozchodu (źródło stanu Kompletor) — wystawiany przy „wystawiaj przy” firmy, bez ruchu stanu
+  documentOnly   Boolean      @default(false)
+  findTries      Int          @default(0)
+  nextFindAt     DateTime?
+  payload        Json? // pozycje faktury (zestawy rozbite na składniki), bez danych klienta
+  lastError      String?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, idExternal])
+  @@index([orderId, packageNo])
+}
+
+model OrderEvent {
+  organizationId String       @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  id             String       @id @default(cuid())
+  orderId        String
+  kind           String
+  actorId        String
+  data           Json?
+  createdAt      DateTime     @default(now())
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId, createdAt])
+  @@index([organizationId, kind, createdAt]) // host zapisu czyta „Wysłane” z numerem nadania z ostatnich dób
+}
+
+model InboundEvent {
+  organizationId String       @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  id             String       @id @default(cuid())
+  source         String
+  eventKey       String
+  receivedAt     DateTime     @default(now())
+  processedAt    DateTime?
+  error          String?
+  outcome        String?
+
+  @@unique([organizationId, source, eventKey])
+}
+
+model OutboxEvent {
+  organizationId String       @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  id             String       @id @default(cuid())
+  kind           OutboxKind
+  productId      String
+  offerId        String? // FORCE_PUSH: oferta, której stan zmienił sam kanał
+  version        Int?
+  createdAt      DateTime // zegar wstrzykiwany (symulacja)
+  processedAt    DateTime?
+  attempts       Int          @default(0)
+  lastError      String?
+
+  @@index([organizationId, kind, processedAt, createdAt])
+}
+
+model StockSyncJob {
+  organizationId   String       @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization     Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  offerId          String       @id
+  channel          Channel
+  channelAccountId String // wysyłka, limity i zdrowie per konto kanału
+  targetQty        Int
+  sourceVersion    Int
+  computedAt       DateTime
+  force            Boolean      @default(false) // pełna synchronizacja: wyślij nawet bez zmiany targetu
+  firstChangeAt    DateTime // najstarsza niewysłana zmiana (pomiar opóźnienia propagacji)
+  attempts         Int          @default(0)
+  nextAttemptAt    DateTime
+  lastError        String?
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+
+  @@index([organizationId, channel, channelAccountId, nextAttemptAt])
+}
+
+model ChannelPushLog {
+  organizationId   String       @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization     Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  id               String       @id @default(cuid())
+  offerId          String
+  channel          Channel
+  channelAccountId String
+  mode             ChannelMode // CIEN = „wysłałbym”
+  targetQty        Int
+  delayMs          Int // od najstarszej niewysłanej zmiany do wysyłki
+  createdAt        DateTime
+
+  @@index([channel, createdAt])
+}
+
+// import stanów, który kanał przetwarza po przyjęciu pliku (Mirakl STO01 → STO02/STO03). Host zapisuje
+// wiersz po przyjęciu pliku, worker czyta wynik co 5 min i alarmuje o odrzuconych wierszach. Bez treści wierszy:
+// liczby i do 20 kodów ofert kanału (to nie są dane klientów).
+enum StockImportState {
+  W_TOKU // kanał jeszcze liczy
+  GOTOWE // przetworzony bez odrzuceń
+  ODRZUCONE // przetworzony, część wierszy odrzucona (alert)
+  NIEUDANE // kanał odrzucił cały import (alert)
+  BEZ_WYNIKU // brak wyniku w limicie czasu (alert)
+  NIEODCZYTANY // kanał nie podaje wyniku temu kontu (401/403/404) albo konto przełączone na odczyt; nie wiemy, czy stany weszły
+}
+
+model ChannelStockImport {
+  organizationId     String           @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization       Organization     @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  id                 String           @id @default(cuid())
+  channel            Channel
+  channelAccountId   String
+  externalRef        String // np. STO01:<import_id>
+  reference          String // referencja paczki stanów hosta
+  wierszy            Int // wierszy wysłanych w pliku
+  state              StockImportState @default(W_TOKU)
+  przyjete           Int?
+  odrzucone          Int?
+  kodyOdrzuconych    Json             @default("[]")
+  proby              Int              @default(0)
+  nextCheckAt        DateTime
+  checkedAt          DateTime?
+  doneAt             DateTime?
+  lastError          String? // technika (kod HTTP, ścieżka): do logów, nie na ekran
+  uwaga              String? // zdanie dla człowieka na ekranie konta
+  odczytWstrzymanyDo DateTime? // po 403/404 odczyty wyniku tego konta wstrzymane do tej chwili
+  createdAt          DateTime         @default(now())
+
+  @@unique([organizationId, channel, channelAccountId, externalRef])
+  @@index([state, nextCheckAt])
+  @@index([createdAt])
+}
+
+model ChannelOrderPoll {
+  organizationId   String       @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization     Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  id               String       @id @default(cuid())
+  channel          Channel
+  channelAccountId String
+  startedAt        DateTime
+  finishedAt       DateTime?
+  ok               Boolean      @default(false)
+  error            String?
+
+  @@index([channel, finishedAt])
+}
+
+model ChannelHealth {
+  organizationId   String       @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization     Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  channel          Channel
+  channelAccountId String
+  failingSince     DateTime?
+  lastOkAt         DateTime?
+  lastBatchAt      DateTime?
+  needsFullSync    Boolean      @default(false)
+  /// ostatni przebieg wysyłki stanów konta w PRACA (licznik „pominięte bez zmian” na ekranie konta).
+  lastPassAt       DateTime?
+  lastPassSent     Int          @default(0)
+  lastPassSkipped  Int          @default(0)
+  updatedAt        DateTime     @updatedAt
+
+  @@id([organizationId, channel, channelAccountId])
+}
+
+/// rejestr synchronizacji stanów (wzorzec sync_ledger z Open Integration Platform, własna implementacja).
+/// Jeden wiersz na ofertę konta kanału: skrót treści ostatniego UDANEGO zapisu stanu. Skrót równy treści nowego zapisu
+/// = oferta pominięta (kanał ma już tę wartość). Przed wysłaniem skrót jest kasowany, po wyniku OK wpisany na nowo,
+/// po każdym innym wyniku zostaje pusty (następny przebieg wysyła). Brak wiersza = zapis jak dawniej.
+model ChannelSyncState {
+  organizationId   String       @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization     Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  channel          Channel
+  channelAccountId String
+  offerExternalId  String
+  /// sha256 kanonicznej treści zapisu (null = brak potwierdzonego zapisu, następny przebieg wysyła)
+  contentHash      String?
+  /// ilość z ostatniego udanego zapisu (porównanie z odczytem ofert: rozjazd kasuje skrót)
+  qty              Int?
+  syncedAt         DateTime?
+  reference        String?
+  /// kolejne trwałe błędy zapisu tej oferty (OK zeruje)
+  failures         Int          @default(0)
+  lastError        String?
+  updatedAt        DateTime     @updatedAt
+
+  @@id([organizationId, channel, channelAccountId, offerExternalId])
+}
+
+/// kubełek żetonów limitu tempa integracji (lib/integracje/limity.ts). Jeden wiersz na konto integracji
+/// (`kanal:WOO/sklep1`, `przewoznik:dpd`) i zakres (`*` = całe konto albo nazwa zdolności, np. `shipment.create`).
+/// Wiersz techniczny: brak = pełny kubełek, skasowanie niczego nie psuje.
+model IntegrationRateBucket {
+  organizationId String       @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  integrationKey String
+  scope          String
+  tokens         Float
+  /// czy ostatnia próba dostała żeton (zwracane w tym samym zapytaniu)
+  granted        Boolean      @default(true)
+  updatedAt      DateTime
+
+  @@id([organizationId, integrationKey, scope])
+}
+
+/// zdrowie konta integracji i automatyczne wyłączenie po N kolejnych porażkach uwierzytelnienia albo
+/// konfiguracji (lib/integracje/zdrowie.ts). Wyłączenie to tylko `disabledAt`: konfiguracja konta (tryb, zapisWlaczony,
+/// sekrety) zostaje bez zmian, więc „Włącz ponownie” przywraca konto do poprzedniego stanu.
+model IntegrationHealth {
+  organizationId      String       @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization        Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  integrationKey      String
+  /// channel | carrier | invoicing
+  kind                String
+  name                String
+  consecutiveFailures Int          @default(0)
+  lastFailureAt       DateTime?
+  lastError           String?
+  lastOkAt            DateTime?
+  disabledAt          DateTime?
+  disabledReason      String?
+  /// „Włącz ponownie” zlecone (test połączenia w kolejce)
+  enableRequestedAt   DateTime?
+  /// nieudana próba włączenia: krok i komunikat
+  enableError         String?
+  enabledAt           DateTime?
+  updatedAt           DateTime     @updatedAt
+
+  @@id([organizationId, integrationKey])
+  @@index([organizationId, disabledAt])
+}
+
+// Jeden wiersz na firmę (sezon i okresy rezerwacji ustawiane w panelu).
+model ReservationPolicy {
+  organizationId                String       @id @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization                  Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  seasonMode                    Boolean      @default(false)
+  normalReminderBusinessDays    Int          @default(2)
+  normalReleaseBusinessDays     Int          @default(5)
+  seasonReminderBusinessDays    Int          @default(1)
+  seasonReleaseBusinessDays     Int          @default(3)
+  allOutOfStockWaitBusinessDays Int          @default(3)
+  // Nieudana płatność online (bramka odrzuciła płatność): rezerwacja tylko przez tyle godzin zegarowych od złożenia
+  // zamówienia; 0 = zwolnienie przy najbliższym przebiegu wygasania. Przelew tradycyjny: zwykłe terminy wyżej.
+  failedOnlinePaymentHoldHours  Int          @default(2)
+  // Ta sama nieudana płatność: po ilu dniach kalendarzowych od złożenia (rano, 9:00 czasu polskiego) przypomnienie
+  // z pytaniem o problem z płatnością i danymi do przelewu; zwykłe przypomnienie (dni robocze wyżej) jej nie dotyczy.
+  failedOnlinePaymentReminderDays Int        @default(1)
+  updatedAt                     DateTime     @updatedAt
+}
+
+model AuditLog {
+  organizationId String       @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  id             String       @id @default(cuid())
+  entity         String
+  entityId       String
+  actorId        String
+  before         Json?
+  after          Json?
+  createdAt      DateTime     @default(now())
+
+  @@index([entity, entityId])
+  @@index([organizationId, entity, createdAt]) // host zapisu czyta zdarzenia NUMER_NADANIA_GOTOWY z ostatnich dób
+}
+
+// Sytuacje do obsługi i błędy: panel, a później Telegram; dedupeKey = jedna wiadomość na sprawę.
+model Alert {
+  organizationId String       @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  id             String       @id @default(cuid())
+  kind           String
+  ref            String
+  message        String
+  dedupeKey      String?
+  // dane do porównań w kodzie (np. lista zamówień BL alertu zbiorczego); nie trafiają do wiadomości
+  data           Json?
+  createdAt      DateTime     @default(now())
+  closedAt       DateTime?
+
+  @@unique([organizationId, dedupeKey])
+  @@index([kind, closedAt])
+}
+
+// ═══: firmy, przewoźnicy, sekrety integracji ══════════════════════
+
+// Firma (tenant). Self-host: jedna; hosting: wiele. `id` trafia do ustawienia sesji `app.org_id`, więc tylko
+// [a-z0-9_-]. Tabela pod RLS tak jak dane: klient firmy widzi tylko swój wiersz.
+model Organization {
+  id        String   @id
+  slug      String   @unique
+  name      String
+  active    Boolean  @default(true)
+  settings  Json     @default("{}") // OrgSettings (lib/organizacje.ts): np. { baselinker: { inventoryId } }
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  products             Product[]
+  bundleComponents     BundleComponent[]
+  productImages        ProductImage[]
+  productImageData     ProductImageData[]
+  warehouses           Warehouse[]
+  stocks               Stock[]
+  stockMovements       StockMovement[]
+  channelOffers        ChannelOffer[]
+  channelConfigs       ChannelConfig[]
+  blProducts           BlProduct[]
+  wfirmaGoods          WfirmaGood[]
+  channelOfferImports  ChannelOfferImport[]
+  importRuns           ImportRun[]
+  importIssues         ImportIssue[]
+  jobs                 Job[]
+  bulkActions          OrderBulkAction[]
+  orders               Order[]
+  orderLines           OrderLine[]
+  reservations         Reservation[]
+  shortages            Shortage[]
+  pendingMovements     PendingMovement[]
+  invoiceAttempts      InvoiceAttempt[]
+  orderEvents          OrderEvent[]
+  inboundEvents        InboundEvent[]
+  outboxEvents         OutboxEvent[]
+  stockSyncJobs        StockSyncJob[]
+  channelPushLogs      ChannelPushLog[]
+  channelStockImports  ChannelStockImport[]
+  channelOrderPolls    ChannelOrderPoll[]
+  channelHealths       ChannelHealth[]
+  channelSyncStates    ChannelSyncState[]
+  reservationPolicy    ReservationPolicy?
+  auditLogs            AuditLog[]
+  alerts               Alert[]
+  carrierRules         CarrierRule[]
+  integrationSecrets   IntegrationSecret[]
+  aiUsages             AiUsage[]
+  memberships          Membership[]
+  sessions             Session[]
+  channelCursors       ChannelCursor[]
+  channelOrderSnaps    ChannelOrderSnapshot[]
+  blOrderSnaps         BlOrderSnapshot[]
+  carrierPickups       CarrierPickup[]
+  carrierPickupEvents  CarrierPickupEvent[]
+  carrierPickupShips   CarrierPickupShipping[]
+  productZoneRules     ProductZoneRule[]
+  packingZoneDefs      PackingZoneDef[]
+  orderStatusDefs      OrderStatusDef[]
+  orderStatusGroups    OrderStatusGroup[]
+  automationGroups     AutomationGroup[]
+  automationRules      AutomationRule[]
+  automationRuns       AutomationRun[]
+  automationCursor     AutomationCursor?
+  plannedActions       PlannedAction[]
+  orderCardPrints      OrderCardPrint[]
+  packDrills           PackDrill[]
+  packDrillFixes       PackDrillFix[]
+  shortageDecisions    ShortageDecision[]
+  preparedShipments    PreparedShipment[]
+  shipmentsCreated     Shipment[]
+  shipmentTrackEvents  ShipmentTrackEvent[]
+  returns              Return[]
+  returnLines          ReturnLine[]
+  returnPhotos         ReturnPhoto[]
+  wfirmaQueueState     WfirmaQueueState?
+  logo                 OrganizationLogo?
+  blInvoiceSnaps       BlInvoiceSnapshot[]
+  wfirmaWzSnaps        WfirmaWzSnapshot[]
+  shadowJobStates      ShadowJobState[]
+  wzAttempts           WzAttempt[]
+  invoiceDryRuns       InvoiceDryRun[]
+  shadowDailyChecks    ShadowDailyCheck[]
+  blJournalCursor      BlJournalCursor?
+  apiKeys              ApiKey[]
+  mcpCalls             McpCall[]
+  invitations          Invitation[]
+  printStations        PrintStation[]
+  printJobs            PrintJob[]
+  printJobFiles        PrintJobFile[]
+  notifySettings       NotificationSettings?
+  alertDeliveries      AlertDelivery[]
+  channelAccStatuses   ChannelAccountStatus[]
+  channelOfferReads    ChannelOfferRead[]
+  ksefInvoiceDrafts    KsefInvoiceDraft[]
+  invoiceNumberSeries  InvoiceNumberSeries[]
+  orderCustomers       OrderCustomer[]
+  customerDataSettings CustomerDataSettings?
+  orderNotes           OrderNote[]
+  orderPayments        OrderPayment[]
+  mailSettings         MailSettings?
+  mailTemplates        MailTemplate[]
+  mailDeliveries       MailDelivery[]
+  channelWrites        ChannelWrite[]
+  packBaskets          PackBasket[]
+  integrationRateBuckets IntegrationRateBucket[]
+  integrationHealths     IntegrationHealth[]
+}
+
+// Reguły „metoda dostawy z kanału → przewoźnik i moduł wysyłki” (spec 7.2), pierwsza pasująca wygrywa.
+// `channel` null = każdy kanał; `pattern` = wyrażenie regularne bez rozróżniania wielkości liter, null = zawsze.
+model CarrierRule {
+  organizationId String         @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization   Organization   @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  id             String         @id @default(cuid())
+  priority       Int
+  channel        Channel?
+  pattern        String?
+  carrier        Carrier
+  shippingModule ShippingModule
+  // adapter modułu wysyłki jako tekst (np. „basecourier.v1”); null = brak modułu (BRAK)
+  adapterKey     String?
+  config         Json           @default("{}")
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  @@unique([organizationId, priority])
+}
+
+// Sekrety integracji firmy (klucze API), szyfrowane AES-256-GCM kluczem z env APP_ENCRYPTION_KEY
+// (lib/sekrety.ts). Wartość nigdy nie wychodzi w logach ani w odpowiedziach API; AAD = firma + konto + nazwa.
+// Sekret firmy (BL, wFirma): channel/channelAccountId puste. Sekret konta kanału (dwa sklepy Woo, dwa konta
+// Allegro): channel + channelAccountId → ChannelConfig. Unikalność firmowych w migracji (indeks częściowy).
+model IntegrationSecret {
+  organizationId   String         @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization     Organization   @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  id               String         @id @default(cuid())
+  channel          Channel?
+  channelAccountId String?
+  channelConfig    ChannelConfig? @relation(fields: [organizationId, channel, channelAccountId], references: [organizationId, channel, channelAccountId], onDelete: Restrict)
+  name             String // np. BASELINKER_TOKEN, WOO_CONSUMER_KEY
+  ciphertext       Bytes
+  iv               Bytes
+  authTag          Bytes
+  keyVersion       Int            @default(1) // wersja klucza głównego (APP_ENCRYPTION_KEYS); 1 = APP_ENCRYPTION_KEY
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+
+  @@unique([organizationId, channel, channelAccountId, name])
+}
+
+// Zużycie AI per firma (decyzja właściciela 25.10, „AI ready na każdym kroku”). Tylko miejsce na zapis — naliczanie
+// i rozliczenie z saldem to osobne zadanie; nikt tu nie pisze.
+model AiUsage {
+  organizationId String       @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  id             String       @id @default(cuid())
+  feature        String // funkcja systemu, np. „opis-produktu”
+  model          String
+  inputTokens    Int
+  outputTokens   Int
+  costGrosze     Int // koszt w groszach (PLN)
+  createdAt      DateTime     @default(now())
+
+  @@index([organizationId, createdAt])
+}
+
+// ═══: użytkownicy panelu, przynależność do firm, sesje ═════════════
+
+enum MemberRole {
+  WLASCICIEL // wszystkie uprawnienia
+  BIURO
+  MAGAZYN
+}
+
+// Konto osoby — wspólne dla instalacji (w hostingu jedna osoba może należeć do kilku firm). Bez organizationId:
+// tabela pod RLS z polityką „nikt” (rola aplikacji jej nie czyta), obsługuje ją wyłącznie lib/auth/sesje.ts.
+model User {
+  id                 String          @id @default(cuid())
+  email              String          @unique // małymi literami
+  name               String
+  passwordHash       String // argon2id
+  active             Boolean         @default(true)
+  failedLogins       Int             @default(0)
+  lockedUntil        DateTime?
+  lastLoginAt        DateTime?
+  createdAt          DateTime        @default(now())
+  updatedAt          DateTime        @updatedAt
+  memberships        Membership[]
+  sessions           Session[]
+  // hasło startowe (nadane przez inną osobę albo CLI) do zmiany przy pierwszym logowaniu
+  mustChangePassword Boolean         @default(false)
+  invitationsSent    Invitation[]
+  // gęstość panelu wybrana przez osobę (`gesto` | `wygodnie`, lib/panel/gestosc.ts); null = domyślnie gęsto
+  gestosc            String?
+  // ukryte kolumny tabel panelu per osoba ({ "<id tabeli>": ["klucz", …] }, lib/panel/kolumny.ts)
+  kolumnyTabel       Json?
+  // alerty nad listą zamówień schowane „Ignoruj” ({ "<id firmy>": { "<rodzaj>": "<podpis>" } }, lib/panel/alerty-listy.ts)
+  ukryteAlerty       Json?
+  passwordResets     PasswordReset[]
+}
+
+// Przynależność osoby do firmy z rolą i dodatkowymi uprawnieniami (lib/auth/uprawnienia.ts). Pod RLS jak dane.
+model Membership {
+  organizationId String       @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  userId         String
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role           MemberRole
+  permissions    String[]     @default([])
+  /// uprawnienia odebrane osobie z zestawu roli (lib/auth/uprawnienia.ts: rola ∪ permissions − deniedPermissions)
+  deniedPermissions String[]  @default([])
+  active         Boolean      @default(true)
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  lastSeenAt     DateTime? // ostatnia aktywność w TEJ firmie (dotykana z sesją, lib/auth/sesje.ts)
+
+  @@id([organizationId, userId])
+  @@index([userId])
+}
+
+// Sesja panelu: id = SHA-256 tokenu z ciasteczka (sam token nie jest zapisywany). `organizationId` = firma wybrana
+// w przełączniku. RLS z polityką „nikt”, jak User.
+model Session {
+  id             String        @id
+  userId         String
+  user           User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organizationId String?
+  organization   Organization? @relation(fields: [organizationId], references: [id], onDelete: SetNull)
+  createdAt      DateTime      @default(now())
+  lastSeenAt     DateTime      @default(now())
+  expiresAt      DateTime
+  userAgent      String?
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+// ═══: cień zamówień (odczyt kanałów przez adaptery, porównanie z BL) ═══════════
+
+// Kursor dziennika zamówień konta kanału (nieprzezroczysty dla rdzenia, format zna adapter) i stan odczytów.
+model ChannelCursor {
+  organizationId     String       @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization       Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  channel            Channel
+  channelAccountId   String
+  adapterKey         String
+  cursor             String?
+  retryIds           Json         @default("[]") // [{ id, attempts }] — zamówienia do ponownego pobrania (błąd przejściowy)
+  coverageFrom       DateTime? // od kiedy odczyt pokrywa kanał (początek pierwszego okna)
+  firstPollAt        DateTime?
+  lastPollStartedAt  DateTime?
+  lastPollFinishedAt DateTime?
+  lastOkAt           DateTime?
+  failingSince       DateTime?
+  lastError          String?
+  stats              Json? // liczby ostatniego odczytu
+  updatedAt          DateTime     @updatedAt
+
+  @@id([organizationId, channel, channelAccountId])
+}
+
+// Kopia zamówienia kanału widzianego w cieniu (bez danych osobowych): co i kiedy przyszło, czy weszło do rdzenia,
+// powiązanie z BL. Podstawa metryki opóźnienia i raportu rozjazdów.
+model ChannelOrderSnapshot {
+  organizationId   String       @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization     Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  id               String       @id @default(cuid())
+  channel          Channel
+  channelAccountId String
+  externalId       String
+  channelNumber    String? // numer zamówienia w kanale/BL, gdy inny niż id (Woo: numeracja wtyczki)
+  revision         String
+  channelStatus    String
+  lifecycle        String // DRAFT | OPEN | CANCELLED | FULFILLED (lib/adaptery/kontrakt.ts)
+  paymentState     PaymentState
+  totalGross       Decimal      @db.Decimal(12, 2)
+  currency         String
+  deliveryMethod   String?
+  lineCount        Int
+  warnings         String[]
+  createdAtChannel DateTime
+  firstSeenAt      DateTime
+  lastSeenAt       DateTime
+  revisionSeenAt   DateTime? // kiedy zobaczyliśmy bieżącą rewizję (metryka „zmiana w kanale → u nas”)
+  ingestedRevision String?
+  ingestOutcome    String? // NOWE | ZMIANA | DUPLIKAT | PRZESTARZALE
+  skipReason       String? // szkic | zrealizowane-przed-pierwszym-odczytem | cofniete-po-wysylce
+  orderId          String?
+  lastError        String?
+  errorCount       Int          @default(0)
+  blOrderId        Int?
+  blStatusId       Int?
+  blCheckedAt      DateTime?
+
+  @@unique([organizationId, channel, channelAccountId, externalId])
+  @@index([organizationId, createdAtChannel])
+}
+
+// Kopia nagłówka zamówienia BL (getOrders, tylko odczyt) do porównania; bez danych klienta.
+model BlOrderSnapshot {
+  organizationId    String       @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization      Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  blOrderId         Int
+  orderSource       String
+  orderSourceId     String
+  channel           Channel
+  channelAccountId  String
+  externalRef       String? // shop_order_id (sklep) albo external_order_id (marketplace)
+  statusId          Int
+  statusName        String?
+  deliveryMethod    String?
+  paymentDone       Decimal?     @db.Decimal(12, 2)
+  totalGross        Decimal?     @db.Decimal(12, 2) // Σ pozycji brutto + wysyłka (sprzedaż dnia)
+  confirmed         Boolean? // zamówienie potwierdzone w BL (niepotwierdzone nie liczą się do sprzedaży)
+  dateAdd           DateTime
+  dateConfirmed     DateTime?
+  fetchedAt         DateTime
+  statusChangedAt   DateTime? // chwila zmiany statusu z dziennika BL (getJournalList, log_type 18)
+  statusChangedToId Int? // status z tego zdarzenia; chwili ufamy tylko, gdy = statusId (inaczej kopia z getOrders nowsza)
+
+  @@id([organizationId, blOrderId])
+  @@index([organizationId, channel, channelAccountId, externalRef])
+}
+
+// ═══: stanowisko pakowania „na sucho” (ćwiczenie cienia) ══════════════════════════════════════════
+// Ćwiczenie zapisuje WYŁĄCZNIE siebie: bez zmiany Order.status, rezerwacji, stanu, braków, faktur i przesyłek.
+// Bez danych osobowych: osoba to id konta (User.id), zamówienie to id, pozycje to produkt i ilość.
+
+enum PackDrillOutcome {
+  SPAKOWANE
+  NIE_SPAKOWANO
+}
+
+enum PackDrillFixState {
+  OPEN
+  CLOSED
+  // „Jednak jest” / „Cofnij” na stanowisku: wiersz zostaje w historii, nie liczy się jako brak
+  WITHDRAWN
+}
+
+// Rejestr wydruków kart zamówień (lib/wydruki/karta-zamowienia.ts). Ponowny wydruk (N+1) unieważnia kod N:
+// stanowisko przyjmuje tylko najnowszy `printNo` zamówienia. `orderCode` = kod karty bez numeru wydruku
+// (np. „SD48213”, dosyłka „SD48213-2”) — po nim skan karty znajduje zamówienie.
+model OrderCardPrint {
+  organizationId String       @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  id             String       @id @default(cuid())
+  orderId        String
+  orderCode      String
+  printNo        Int
+  printedAt      DateTime     @default(now())
+  printedBy      String // User.id
+  dryRun         Boolean // karta z plakietką NA SUCHO (konto kanału ze statusMode = CIEN)
+  lines          Json // migawka pozycji [{ l: orderLineId, p: productId, q: ilość }] — „karta nieaktualna” po edycji w kanale
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, orderId, printNo])
+  @@index([organizationId, orderCode])
+}
+
+// Jedno podejście do spakowania zamówienia na stanowisku („na sucho”). `outcome` null = okno otwarte, niezakończone.
+model PackDrill {
+  organizationId String            @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization   Organization      @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  id             String            @id @default(cuid())
+  orderId        String
+  printId        String? // karta, z której pakowano (null = zamówienie otwarte z sesji bez skanu)
+  actorId        String // User.id
+  startedAt      DateTime
+  finishedAt     DateTime?
+  outcome        PackDrillOutcome?
+  parcelSize     String? // INPOST_A | INPOST_B | INPOST_C | ALLEGRO_A | ALLEGRO_B | ALLEGRO_C | DPD | OSOBISTY
+  lines          Json? // [{ l: orderLineId, p: productId, q: do zebrania, zebrane, brak }] przy zakończeniu
+
+  order Order          @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  fixes PackDrillFix[]
+
+  @@index([organizationId, startedAt])
+  @@index([orderId])
+}
+
+// Decyzja obsługi o pozycji z brakiem, jedna na pozycję (podwójne kliknięcie nic nie zmienia). dryRun = konto w cieniu:
+// wyłącznie zapis decyzji, rdzeń nietknięty; PRACA: decyzję wykonał rdzeń (lib/stanowisko/decyzje.ts).
+model ShortageDecision {
+  organizationId       String         @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization         Organization   @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  id                   String         @id @default(cuid())
+  orderId              String
+  orderLineId          String
+  action               ShortageAction
+  replacementProductId String?
+  dryRun               Boolean
+  actorId              String // User.id
+  createdAt            DateTime       @default(now())
+  updatedAt            DateTime       @updatedAt
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, orderLineId])
+  @@index([orderId])
+}
+
+// Lista „Do poprawy w wFirmie — z ćwiczenia”: „na półce nie było” w ćwiczeniu to realny brak na półce
+// (decyzja właściciela, odpowiedź 20). Rezerwacji i stanu nie zmienia.
+model PackDrillFix {
+  organizationId String            @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization   Organization      @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  id             String            @id @default(cuid())
+  drillId        String
+  orderId        String
+  orderLineId    String
+  productId      String
+  qtyBase        Int
+  actorId        String // User.id
+  createdAt      DateTime          @default(now())
+  state          PackDrillFixState @default(OPEN)
+  closedAt       DateTime?
+  closedBy       String?
+  // „Jednak jest” na stanowisku (WITHDRAWN): kto i kiedy cofnął; closedAt/closedBy zostają po biurze
+  withdrawnAt    DateTime?
+  withdrawnBy    String?
+
+  drill   PackDrill @relation(fields: [drillId], references: [id], onDelete: Cascade)
+  product Product   @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  @@index([organizationId, state, createdAt])
+  @@index([drillId])
+}
+
+// ═══: kolejka pakowania — odbiory kurierów i strefy magazynu ═══════
+
+// Strefa magazynu, z której zbiera się towar (definiuje ją firma w Ustawienia → Strefy
+// magazynu). `key` = stały klucz (dawny enum: HERBATY_KAWY, BOMBY_AKCESORIA z dawnego enuma), `name` widoczna nazwa,
+// `color` jeden z kolorów panelu (lib/pakowanie/strefy.ts), `sortOrder` kolejność filtrów pakowania.
+// Brak strefy = produkt bez reguły i bez ręcznego ustawienia; firma bez stref nie ma filtrów stref.
+// Celowo bez FK z Product.packingZone / ProductZoneRule.zone do tej tabeli: spójność kluczy
+// pilnuje kod (setProductZone, zapiszStrefy, validatePreset).
+model PackingZoneDef {
+  organizationId String       @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  key            String
+  name           String
+  color          String       @default("szary")
+  sortOrder      Int          @default(0)
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  @@id([organizationId, key])
+}
+
+// logo firmy w bazie, żeby panel, wydruki i worker maili (osobne wolumeny na Coolify)
+// widziały te same bajty. Wiersz = bieżące logo; opis (wymiary, chwila wgrania) w `Organization.settings.logoFirmy`,
+// `plik` wiąże oba. Poprzednie wersje idą na dysk do `firma/old/` (nigdy kasowanie).
+model OrganizationLogo {
+  organizationId String       @id @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  plik           String // `logo-<id>` z settings.logoFirmy.plik
+  ekran          Bytes // PNG ≤ 600×240 (panel, maile)
+  druk           Bytes // JPEG ≤ 60 KB (wydruki pdfkit)
+  /// „panel” (wgrane w panelu) albo „dysk” (przeniesione z katalogu ZDJECIA_DIR przy pierwszym odczycie)
+  zrodlo         String       @default("panel")
+  createdAt      DateTime     @default(now())
+}
+
+// statusy firmy — warstwa nazw nad enumem OrderStatus. Rdzeń liczy i przechodzi po enumie, ludzie
+// widzą nazwy firmy („Do realizacji DPD”). `baseStatus` = status rdzenia, którego to jest nazwa; `carriers` = dla
+// których przewoźników (pusta lista = dla każdego). Zamówienie dostaje pierwszy aktywny pasujący status w kolejności
+// `sortOrder` (najpierw z przewoźnikiem, potem bez), chyba że ma status przypisany wprost (Order.companyStatus).
+// `color` z palety panelu (lib/panel/statusy.ts, `KOLORY_STATUSOW`; dane w lib/panel/statusy-firmy-dane.ts), `customerName` = nazwa dla klienta (np. w mailu), `active`
+// false = ukryty (nie przypisuje się nowym zamówieniom, zostaje przy zamówieniach, które go mają). Bez FK z Order,
+// spójność kluczy pilnuje kod (zapiszStatusyFirmy: statusu z zamówieniami nie da się usunąć, tylko ukryć).
+model OrderStatusDef {
+  organizationId String       @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  key            String
+  name           String
+  customerName   String?
+  color          String       @default("szary")
+  groupKey       String?
+  sortOrder      Int          @default(0)
+  baseStatus     OrderStatus
+  carriers       Carrier[]    @default([])
+  active         Boolean      @default(true)
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  @@id([organizationId, key])
+}
+
+// grupa statusów firmy w panelu listy zamówień (np. „Do realizacji”, „Zakończone”); `collapsed` = grupa
+// zwinięta w panelu na start. Status bez grupy stoi na górze panelu (jak „Nowe zamówienia” w BL).
+model OrderStatusGroup {
+  organizationId String       @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  key            String
+  name           String
+  sortOrder      Int          @default(0)
+  collapsed      Boolean      @default(false)
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  @@id([organizationId, key])
+}
+
+// Harmonogram odbioru przewoźnika (jeden odbiór dziennie). Godziny w minutach od północy w Europe/Warsaw.
+// W święta z lib/rdzen/kalendarz.ts odbioru nie ma. `example` = wartość przykładowa z seedu, do potwierdzenia.
+model CarrierPickup {
+  organizationId     String       @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization       Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  carrier            Carrier
+  weekdays           Int[] // dni tygodnia ISO: 1 = poniedziałek … 7 = niedziela
+  pickupMinute       Int // godzina odbioru
+  promiseUntilMinute Int // „wyślemy dziś do”: do tej godziny sklep może obiecywać wysyłkę tego dnia
+  active             Boolean      @default(true)
+  example            Boolean      @default(false)
+  updatedAt          DateTime     @updatedAt
+
+  @@id([organizationId, carrier])
+}
+
+// „Przyjechał <przewoźnik>”: kurier odebrał paczki z odbioru dnia `pickupDay`. Dopisywane, nie zmieniane.
+model CarrierPickupEvent {
+  organizationId String       @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  id             String       @id @default(cuid())
+  carrier        Carrier
+  pickupDay      String // RRRR-MM-DD (Warszawa): dzień odbioru, który zamyka kliknięcie
+  arrivedAt      DateTime
+  actorId        String
+  actorName      String
+  createdAt      DateTime     @default(now())
+
+  @@unique([organizationId, carrier, pickupDay]) // jedno „Przyjechał” na odbiór (podwójne kliknięcie nic nie zmienia)
+  @@index([organizationId, carrier, arrivedAt])
+}
+
+// „Przyjechał <przewoźnik>” = „Wysłane”. Raport jednej operacji w tle dla kliknięcia (jedno na
+// odbiór dnia): ile zamówień przeniesiono do „Wysłane”, ile pominięto i dlaczego (numer zamówienia + powód, bez danych
+// klientów). Osobna tabela, bo CarrierPickupEvent jest tylko do dopisywania (rola aplikacji bez UPDATE). Rola aplikacji
+// bez DELETE (raport zostaje w historii; REVOKE w 20261109114610).
+model CarrierPickupShipping {
+  organizationId String       @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  eventId        String // CarrierPickupEvent.id
+  carrier        Carrier
+  state          String // CZEKA | W_TOKU | ZROBIONE | WYLACZONE | BLAD
+  moved          Int          @default(0)
+  skipped        Int          @default(0)
+  // zamówienia ze sklepów w trybie podglądu (poza kandydatami i poza `skipped`)
+  skippedPreview Int          @default(0)
+  // [{ nr, powod }] pominiętych (najwyżej 200 pozycji)
+  details        Json         @default("[]")
+  doneAt         DateTime?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  @@id([organizationId, eventId])
+}
+
+// Reguła „nazwa albo SKU produktu → strefa”, pierwsza pasująca (rosnąco po priorytecie) wygrywa; ręczne
+// `Product.packingZone` ma pierwszeństwo. `pattern` = wyrażenie regularne bez rozróżniania wielkości liter.
+model ProductZoneRule {
+  organizationId String       @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  id             String       @id @default(cuid())
+  priority       Int
+  pattern        String
+  zone           String // klucz PackingZoneDef.key
+  example        Boolean      @default(false)
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  @@unique([organizationId, priority])
+}
+
+// ═══: zwroty i korekty (spec 3.5, 3.6, 4.5, 7.4), kolejka wywołań wFirmy (3.4, 8.1) ═══════════════
+
+enum ReturnKind {
+  ZWROT // klient odsyła towar
+  KOREKTA // korekta bez przesyłki: anulowanie po fakturze (towar na półce), brakująca pozycja na fakturze (4.5)
+  REKLAMACJA // reklamacja: ten sam przepływ co ZWROT (paczka wraca), inny powód i mail z planu akcji
+}
+
+enum ReturnStatus {
+  ZGLOSZONY // zgłoszony (kanał albo obsługa), paczka w drodze
+  PRZYJETY // w magazynie, każda pozycja oznaczona („na stan”, „uszkodzone”, „brak”)
+  KOREKTA // korekta faktury w kolejce wFirmy albo w drodze (correctionState)
+  ZAKONCZONY // korekta wystawiona; stan pokaże odczyt wFirmy (bez ruchu dodatniego, 2.2 pkt 3)
+  ODRZUCONY // zwrot odrzucony albo wycofany przed korektą
+}
+
+enum ReturnDisposition {
+  NA_STAN // sprawny, wraca do sprzedaży (korekta + PZ; brak PZ = lista „korekta bez PZ”)
+  USZKODZONE // korekta z PZ, ale do sprzedaży się nie nadaje: ruch DAMAGED_RETURN (lista „uszkodzone do RW”)
+  BRAK // pozycja na fakturze, której nie było w paczce (4.5): korekta + ruch STOCK_MISSING
+}
+
+model Return {
+  organizationId  String        @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization    Organization  @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  id              String        @id @default(cuid())
+  orderId         String
+  kind            ReturnKind    @default(ZWROT)
+  status          ReturnStatus  @default(ZGLOSZONY)
+  invoiceDocId    String? // korygowana faktura (wFirma); jeden zwrot = jedna faktura (paczka). Null = stan Kompletora (zwrot bez korekty w programie do faktur, ruch OWN_RETURN)
+  note            String?
+  // Korekta przez kolejkę wFirmy: id_external `zwrot/<id>/<próba>`, rozstrzyganie timeoutu jak przy fakturze (3.4)
+  correctionTry   Int           @default(0)
+  correctionState InvoiceState?
+  correctionDocId String?
+  findTries       Int           @default(0)
+  nextFindAt      DateTime?
+  lastError       String?
+  receivedAt      DateTime?
+  closedAt        DateTime?
+  moneyRefundedAt DateTime? // zwrot pieniędzy klientowi (uprawnienie zwroty.pieniadze); rdzeń tylko zapisuje fakt
+  // powód (słownik lib/zwroty/powody.ts), źródło zgłoszenia i numer zwrotu w kanale
+  reason          String?
+  source          String        @default("PANEL") // PANEL | ALLEGRO (zwrot klienta z API Allegro, bez danych kupującego)
+  externalId      String? // numer zwrotu w kanale (Allegro customer-returns); unikalny w firmie i źródle
+  createdBy       String? // kto założył (id użytkownika albo system:<źródło>)
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  order Order        @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  lines ReturnLine[]
+  photo ReturnPhoto?
+
+  @@unique([organizationId, source, externalId])
+  @@index([organizationId, status])
+  @@index([orderId])
+}
+
+// zdjęcie zwrotu (opcjonalne): bajty po osłonie uploadu i ponownym zapisie przez sharp (bez metadanych).
+model ReturnPhoto {
+  organizationId String       @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  returnId       String       @id
+  content        Bytes
+  mime           String
+  createdAt      DateTime     @default(now())
+
+  ret Return @relation(fields: [returnId], references: [id], onDelete: Cascade)
+}
+
+model ReturnLine {
+  organizationId String             @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization   Organization       @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  id             String             @id @default(cuid())
+  returnId       String
+  orderLineId    String
+  productId      String // STOCKED (składnik przy zestawie)
+  qty            Int // jednostka bazowa
+  disposition    ReturnDisposition?
+  pzQty          Int? // ile przyjęła korekta na stan wFirmy (null = brak danych); < qty przy NA_STAN = „korekta bez PZ”
+  pzConfirmedAt  DateTime? // biuro: „PZ wystawione” (zdejmuje z listy „korekta bez PZ”)
+
+  ret Return @relation(fields: [returnId], references: [id], onDelete: Cascade)
+
+  @@index([returnId])
+  @@index([orderLineId])
+  @@index([organizationId, disposition, pzConfirmedAt]) // lista „korekta bez PZ”
+}
+
+// Stan kolejki wywołań wFirmy firmy (jeden klucz API = jedna kolejka): wstrzymanie po limicie, termin pełnego
+// odczytu (wstrzymywany przez faktury najwyżej 30 min), test filtra find, raport innych magazynów.
+model WfirmaQueueState {
+  organizationId        String       @id @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization          Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  pausedUntil           DateTime?
+  pauseReason           String?
+  fullReadDueSince      DateTime? // pełny odczyt czeka od tej chwili (null = nie zlecony)
+  fullReadPage          Int          @default(0) // następna strona pełnego odczytu (1…)
+  fullReadSentAt        DateTime? // requestSentAt pierwszej strony bieżącego przebiegu
+  lastFullReadAt        DateTime?
+  findCheckOkAt         DateTime? // test kontrolny find (filtr id_external działa)
+  findCheckFailedAt     DateTime?
+  // weryfikacja: osobny test kontrolny find dla korekt (inny endpoint wFirmy niż faktury)
+  findCheckCorrOkAt     DateTime?
+  findCheckCorrFailedAt DateTime?
+  otherWhReportAt       DateTime? // ostatni dzienny raport stanów na pozostałych magazynach (8.1)
+  runLockId             String? // dzierżawa przebiegu kolejki
+  runLockUntil          DateTime?
+  lastNightSyncAt       DateTime? // nocna pełna synchronizacja kanałów firmy
+  updatedAt             DateTime     @updatedAt
+}
+
+// faktura z BL (getInvoices, tylko odczyt) do rozchodu w cieniu (spec 9.1). Same numery i daty — dane
+// nabywcy z faktury nie są zapisywane. `appliedAt` = faktura rozliczona w rdzeniu (applyBlInvoice) albo odłożona
+// na stałe (`outcome`).
+model BlInvoiceSnapshot {
+  organizationId String       @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  blInvoiceId    Int
+  blOrderId      Int
+  number         String // numer faktury w BL
+  externalNumber String? // numer dokumentu w systemie księgowym (wFirma), gdy BL go podaje
+  kind           String? // typ z BL (normal | correcting)
+  dateAdd        DateTime
+  fetchedAt      DateTime
+  orderId        String? // nasze zamówienie (po Order.blOrderId)
+  appliedAt      DateTime?
+  outcome        String? // ZASTOSOWANA | BEZ_WZ | NIC_DO_ROZLICZENIA | KOREKTA | POZA_CIENIEM
+  // treść do porównania z naszą fakturą, z tej samej odpowiedzi getInvoices (null = kopia sprzed zmiany).
+  // `lines`: SKU, ilość, cena, stawka, znacznik wysyłki; bez nazw pozycji i bez danych nabywcy.
+  totalGross     Decimal?     @db.Decimal(12, 2)
+  totalNet       Decimal?     @db.Decimal(12, 2)
+  paymentName    String?
+  lines          Json?
+  attempts       Int          @default(0)
+  lastError      String?
+
+  @@id([organizationId, blInvoiceId])
+  @@index([organizationId, blOrderId])
+  @@index([organizationId, appliedAt])
+}
+
+// dokumenty WZ z wFirmy (tylko odczyt) i ich powiązanie z zamówieniem. WZ zdejmuje stan w wFirmie; gdy
+// rdzeń nie rozliczył faktury (faktura sprzed cienia, zamówienie bez pary z BL), rozliczenie idzie po WZ, a raport
+// rozjazdów widzi spadek stanu jako ruch z dokumentem. Bez danych nabywcy: numery, daty, towary wFirmy i ilości.
+model WfirmaWzSnapshot {
+  organizationId    String       @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization      Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  wfirmaDocId       String
+  number            String // np. „WZ 1/11/2026/9”
+  docDate           String // data dokumentu w wFirmie (RRRR-MM-DD)
+  createdInWfirma   DateTime // chwila założenia dokumentu (czas Warszawy z wFirmy przeliczony na UTC)
+  wfirmaWarehouseId String?
+  invoiceId         String? // faktura wFirmy, do której jest WZ (null = WZ bez faktury)
+  invoiceNumber     String? // jej pełny numer (po nim kopia faktury BL)
+  // pozycje: [{ wfirmaGoodId, count }] w jednostce wFirmy
+  lines             Json
+  orderId           String? // nasze zamówienie, gdy powiązane
+  linkedBy          String? // FAKTURA | OPIS | POZYCJE
+  outcome           String? // ROZLICZONA | JUZ_ROZLICZONA | CZEKA_NA_FAKTURE_BL | NIC_DO_ROZLICZENIA | BEZ_ZAMOWIENIA | NIEJEDNOZNACZNE | POZA_KATALOGIEM
+  candidates        Int? // ile zamówień pasowało po pozycjach (NIEJEDNOZNACZNE)
+  fetchedAt         DateTime
+  settledAt         DateTime?
+  attempts          Int          @default(0)
+  lastError         String?
+  // opis WZ i surowa chwila założenia z wFirmy — ponowna próba z kopii (poza oknem nakładki)
+  // wiąże po numerze zamówienia BL w opisie tak samo jak odczyt z wFirmy
+  description       String?
+  createdRaw        String?
+
+  @@id([organizationId, wfirmaDocId])
+  @@index([organizationId, createdInWfirma])
+  @@index([organizationId, invoiceNumber])
+}
+
+// próba WZ w programie przy wysyłce bez faktury, zapisana PRZED wywołaniem programu
+// (jak `InvoiceAttempt` w stanie SENDING). `ref` = `wz/<orderId>/<paczka>` (klucz idempotencji). Stan: SENDING (wysłane,
+// bez odpowiedzi zapisanej w bazie), OK (program oddał dokument; `docId`/`number` zapisane, zanim ruchy zostały
+// zamknięte), ERROR (odmowa programu), UNKNOWN (nie wiadomo, czy powstał), LIMIT (limit wywołań: na pewno nie powstał).
+// SENDING/UNKNOWN blokuje ponowne wystawienie: kolejne przebiegi tylko szukają dokumentu. Bez danych nabywcy.
+model WzAttempt {
+  organizationId String       @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  ref            String
+  orderId        String
+  state          String
+  docId          String?
+  number         String?
+  attempts       Int          @default(1)
+  lastError      String?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  @@id([organizationId, ref])
+  @@index([organizationId, orderId])
+}
+
+// ostatni udany przebieg zadania cienia (np. `cien-bl-faktury`: odczyt faktur
+// BL kompletny). `lastOkAt` = chwila STARTU udanego przebiegu: wszystko, co powstało w BL przed nią, jest już w kopii.
+model ShadowJobState {
+  organizationId String       @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  job            String
+  lastOkAt       DateTime
+  updatedAt      DateTime     @updatedAt
+
+  @@id([organizationId, job])
+}
+
+// wynik dziennego sprawdzenia cienia (dzień w Europe/Warsaw): porównanie sprzedaży dnia z BL
+// (`sprzedaz-dnia`) i dzienny raport rozjazdów (`raport-rozjazdow`). `final` = dzień zamknięty (sprawdzony po
+// północy); tylko takie liczą się do kryterium 7 dni cienia bez rozjazdów. Same liczby i numery zamówień.
+model ShadowDailyCheck {
+  organizationId String       @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  kind           String
+  day            String // YYYY-MM-DD
+  final          Boolean
+  ok             Boolean
+  checkedAt      DateTime
+  stats          Json
+
+  @@id([organizationId, kind, day])
+}
+
+// ═══: automaty BaseLinkera jako reguły w kodzie — plan akcji („wysłałbym”) ═══════════════════
+
+enum ActionMode {
+  SUCHO // cień: akcja tylko zaplanowana, nic nie wychodzi (BL robi to sam)
+  PRACA // konto w pracy: akcję wykona wysyłka (osobne zadanie: transport + GO właściciela)
+}
+
+enum ActionState {
+  PLANNED
+  SKIPPED // reguła zadziałała, ale akcji nie będzie (powód w `reason`)
+  DONE // wykonana (ustawia przyszła wysyłka; silnik planu tego stanu nie nadaje)
+}
+
+enum ActionTarget {
+  ZAMOWIENIE
+  PRODUKT
+}
+
+// Plan akcji z reguł lib/akcje/ (zamiennik automatycznych akcji BL). Jeden wiersz = jedna akcja reguły dla celu
+// przy danej okazji; unikalność (firma, reguła, cel, okazja) daje idempotencję — drugi przebieg nic nie dokłada.
+// Bez adresów, imion, telefonów i treści wiadomości klientów: `vars` to wyłącznie numery, kwoty, daty i SKU,
+// a treść maila renderuje się na żądanie (podgląd w panelu). `targetId` = id zamówienia albo produktu, bez FK:
+// plan zostaje jako historia także po zmianach celu.
+model PlannedAction {
+  organizationId String       @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  id             String       @id @default(cuid())
+  rule           String // klucz reguły, np. „mail.faktura” (lib/akcje/reguly.ts)
+  targetType     ActionTarget
+  targetId       String
+  occasion       String // klucz okazji, np. „FV:<docId>”, „PRZYPOMNIENIE”, „ponizej:2”
+  mode           ActionMode
+  state          ActionState  @default(PLANNED)
+  reason         String?
+  vars           Json         @default("{}") // zmienne do renderu (bez danych osobowych)
+  dueAt          DateTime // kiedy akcja by poszła (chwila spełnienia warunku albo przebiegu)
+  resolvedAt     DateTime? // warunek ustał (np. stan wrócił powyżej progu) — histereza reguł poziomowych
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  @@unique([organizationId, rule, targetId, occasion])
+  @@index([organizationId, dueAt])
+}
+
+// zaproszenie osoby do firmy w hostingu — dostęp dopiero po zgodzie tej osoby (lib/auth/zaproszenia.ts).
+// W bazie wyłącznie SHA-256 tokenu z linku. Czyta je osoba bez sesji firmy, więc jak User i Session: RLS z polityką
+// „nikt”, obsługa tylko klientem systemowym, zawsze z firmą w zapytaniu. Jedno otwarte (nieprzyjęte, niecofnięte)
+// zaproszenie na firmę i adres: indeks częściowy w migracji 20261103140000_zaproszenia_a069.
+model Invitation {
+  id             String       @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  email          String // małymi literami
+  role           MemberRole
+  permissions    String[]     @default([])
+  /// odebrane z zestawu roli; osoba dostaje je przy przyjęciu zaproszenia razem z `permissions`
+  deniedPermissions String[]  @default([])
+  invitedById    String
+  invitedBy      User         @relation(fields: [invitedById], references: [id], onDelete: Cascade)
+  tokenHash      String       @unique
+  expiresAt      DateTime
+  acceptedAt     DateTime?
+  acceptedById   String?
+  revokedAt      DateTime?
+  /// link wysłany przez dostawcę do zaproszonej osoby; false = dostał go zapraszający (konto z linku → mustChangePassword)
+  delivered      Boolean      @default(false)
+  createdAt      DateTime     @default(now())
+
+  @@index([organizationId, email])
+  @@index([expiresAt])
+}
+
+// wynik porównania faktury, którą wystawiłby system, z fakturą BL. W cieniu nic nie jest wystawiane.
+// Jeden wiersz na fakturę BL: ponowny przebieg nadpisuje wynik. Same liczby, kody i SKU: bez NIP-ów, nazw i adresów
+// kontrahentów. `orderNumber` = numer zamówienia w kanale. Kwoty w groszach.
+model InvoiceDryRun {
+  organizationId String       @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  blInvoiceId    Int
+  orderId        String
+  orderNumber    String
+  day            String // YYYY-MM-DD w Europe/Warsaw, data faktury BL
+  result         String // ZGODNA | ROZNICA | BEZ_DANYCH
+  scope          String // PELNY | SUMY | BRAK
+  categories     String[] // BRAK_POWIAZANIA | ZAOKRAGLENIE | WYSYLKA | VAT | INNE
+  diffs          Json         @default("[]")
+  oursGrossGr    Int
+  oursNetGr      Int
+  checkedAt      DateTime
+
+  @@id([organizationId, blInvoiceId])
+  @@index([organizationId, day])
+}
+
+// ═══: podgląd przesyłki w trybie „przygotuj, nie wysyłaj” ══════════
+
+// Policzona przesyłka: parametry u przewoźnika i problemy, bez danych odbiorcy (Order też ich nie ma). Nic nie zostało
+// nadane. Jeden wiersz na zamówienie i paczkę: ponowne przygotowanie nadpisuje wiersz (`createdAt` = chwila przeliczenia).
+model PreparedShipment {
+  organizationId String       @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  id             String       @id @default(cuid())
+  orderId        String
+  packageNo      Int
+  adapterKey     String
+  carrier        Carrier
+  courierCode    String?
+  parcelSize     String? // gabaryt jak PackDrill.parcelSize
+  sideXCm        Int?
+  sideYCm        Int?
+  sideZCm        Int?
+  weightKg       Decimal?     @db.Decimal(8, 3)
+  codAmount      Decimal?     @db.Decimal(12, 2) // null = bez pobrania albo kwota nieznana (wtedy problem)
+  problems       Json         @default("[]") // ShipmentProblem[]: kody i stałe teksty, bez danych klientów
+  createdAt      DateTime     @default(now())
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, orderId, packageNo])
+  @@index([orderId])
+}
+
+// ═══: przesyłki naprawdę (utworzenie u przewoźnika, numer nadania, etykieta) ═══════════════════
+// Stan utworzonej przesyłki. Wiersz powstaje (TWORZENIE) PRZED wywołaniem przewoźnika, pod blokadą zamówienia: drugie
+// kliknięcie widzi wiersz i nie woła przewoźnika drugi raz. NIEJEDNOZNACZNA = nie wiadomo, czy przesyłka powstała
+// (timeout, 5xx po wysłaniu, odszukanie po referencji nie rozstrzygnęło): bez automatycznego ponowienia, tylko
+// „Sprawdź u przewoźnika”. BLAD = przewoźnik odmówił (nic nie powstało), wolno spróbować ponownie tą samą referencją.
+enum ShipmentState {
+  TWORZENIE
+  UTWORZONA
+  NIEJEDNOZNACZNA
+  BLAD
+  ANULOWANA
+}
+
+// Przesyłka utworzona u przewoźnika. Podgląd `PreparedShipment` zostaje osobno: „Przygotuj” go nadpisuje,
+// a tego wiersza nie dotyka. Jedna aktywna przesyłka na paczkę zamówienia (indeks częściowy w migracji). Etykieta ma
+// adres odbiorcy, więc jej bajty są zaszyfrowane pierścieniem danych klientów (CUSTOMER_DATA_KEYS, lib/klienci/etykieta.ts)
+// i znikają razem z danymi klienta (retencja, RODO). Komunikaty (`lastError`) bez danych klientów.
+model Shipment {
+  organizationId  String        @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization    Organization  @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  id              String        @id @default(cuid())
+  orderId         String
+  packageNo       Int
+  // Klucz idempotencji u przewoźnika (deriveReference z firmy, zamówienia, paczki i numeru próby).
+  reference       String
+  attempt         Int           @default(1)
+  state           ShipmentState @default(TWORZENIE)
+  adapterKey      String
+  carrier         Carrier
+  parcelSize      String?
+  weightKg        Decimal?      @db.Decimal(8, 3)
+  codAmount       Decimal?      @db.Decimal(12, 2)
+  // Id przesyłki u przewoźnika (ShipX: id; DPD: numer listu).
+  externalRef     String?
+  // Numer nadania (do śledzenia, kanału i maila); ShipX nadaje go po chwili. Nie jest daną osobową.
+  trackingNumber  String?
+  labelFormat     String? // PDF | ZPL
+  labelCiphertext Bytes?
+  labelIv         Bytes?
+  labelAuthTag    Bytes?
+  labelKeyVersion Int?
+  labelFetchedAt  DateTime?
+  labelError      String?
+  lastError       String?
+  failureKind     String? // PRZEJSCIOWY | TRWALY | NIEJEDNOZNACZNY z ostatniej próby
+  requestedBy     String?
+  // śledzenie przesyłki (zdolność shipment.track): ostatni status u przewoźnika i chwila odczytu
+  carrierStatus   String?
+  trackedAt       DateTime?
+  // Śledzenie zakończone (anulowana u przewoźnika, nieznany stan przez kilka dni, przesyłka nie istnieje): przesyłka
+  // wypada z próbkowania; zostaje ręczne „Przyjechał kurier”. trackingUnknownSince = pierwszy z nieprzerwanej serii
+  // odczytów bez znanego stanu (null = ostatni odczyt dał znany stan).
+  trackingStoppedAt    DateTime?
+  trackingUnknownSince DateTime?
+  // Oś statusów przesyłki (lib/wysylka/stany-przesylki.ts), zapisywana przy włączonym „Śledź paczki aż do
+  // doręczenia”: ostatni stan drogi paczki i od kiedy (czas zdarzenia u przewoźnika albo chwila odczytu), pierwsze
+  // przekazanie przewoźnikowi, doręczenie oraz termin następnego odczytu (null = stan końcowy albo bez osi).
+  // trackFailures = nieudane odczyty z rzędu (zerowane udanym odczytem): odstęp po błędzie rośnie, po 20 koniec.
+  // Indeks terminu odczytu jest częściowy (WHERE trackingStoppedAt IS NULL), tylko w migracji
+  // 20261114289000_sledzenie_os_statusow, jak Shipment_aktywna_paczka.
+  trackState      ShipmentTrackState?
+  trackStateSince DateTime?
+  handedOverAt    DateTime?
+  deliveredAt     DateTime?
+  nextTrackAt     DateTime?
+  trackFailures   Int                 @default(0)
+  // Reguły firmy na osi (lib/wysylka/reguly-drogi.ts): trackRulesPending = jest wiersz historii, dla którego reguły
+  // jeszcze nie zadziałały (ustawiane razem z wierszem, zdejmowane razem ze skutkami reguł w jednej transakcji);
+  // trackRulesAt = `observedAt` ostatniego obsłużonego wiersza. Indeks oczekujących częściowy, tylko w migracji
+  // 20261114289100_reguly_osi_przesylek. trackRulesFailures = nieudane próby reguł z rzędu (zerowane udaną próbą
+  // i nowym wierszem); po REGULY_DROGI_PROB próbach znacznik schodzi do następnej zmiany stanu paczki.
+  trackRulesPending  Boolean   @default(false)
+  trackRulesAt       DateTime?
+  trackRulesFailures Int       @default(0)
+  // Dodatkowa przesyłka do tego samego zamówienia (lib/wysylka/dodatkowa.ts): extraNo 0 = główna, 1..n = dodatkowe
+  // (dosyłka, paczka zastępcza, druga paczka) z rodzajem, powodem, regułą przewoźnika i kosztem netto wpisanym ręcznie.
+  // Indeksy częściowe (główna: jedna aktywna na paczkę; dodatkowa: jeden wiersz na numer) i warunek pól tylko
+  // w migracji 20261114289200_przesylka_dodatkowa.
+  extraNo      Int      @default(0)
+  extraKind    String?
+  extraReason  String?
+  extraRuleId  String?
+  extraCostNet Decimal? @db.Decimal(12, 2)
+  // konto przewoźnika (`config.sekretyKonta` reguły, np. EMPIK); null = konto główne modułu
+  accountSuffix   String?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  order       Order                @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  trackEvents ShipmentTrackEvent[]
+
+  @@unique([organizationId, reference])
+  @@index([orderId, packageNo])
+  @@index([organizationId, trackingNumber])
+  @@index([organizationId, createdAt])
+  @@index([organizationId, adapterKey, accountSuffix])
+}
+
+// Stan drogi paczki na osi wspólnej dla przewoźników (lib/wysylka/stany-przesylki.ts). Inny niż ShipmentState
+// (stan tworzenia etykiety).
+enum ShipmentTrackState {
+  UTWORZONA
+  PRZEKAZANA
+  W_DRODZE
+  W_DORECZENIU
+  W_PUNKCIE
+  DORECZONA
+  NIEUDANE_DORECZENIE
+  ZWROT
+  PROBLEM
+  ANULOWANA
+  NIEZNANY
+}
+
+// Historia śledzenia przesyłki: jeden wiersz na każdą zmianę stanu na osi albo kodu u przewoźnika. Bez danych
+// klientów: `carrierCode` = sam kod zdarzenia, z którego wyliczono stan (pusty, gdy przewoźnik go nie podał),
+// `carrierStatus` = ostatnie zdarzenie przewoźnika jak w `Shipment.carrierStatus` (u DPD z opisem). Opis stanu po polsku
+// liczy się przy wyświetlaniu (OPIS_STANU_DROGI), nie jest zapisywany. `occurredAt` = czas zdarzenia u przewoźnika,
+// a gdy go nie podał, chwila odczytu. Unikalność z kodem = ponowiony zapis bez dubli, a dwa kody w tej samej chwili
+// i stanie to dwa wiersze (import pełnej listy zdarzeń: createMany + skipDuplicates).
+model ShipmentTrackEvent {
+  organizationId String             @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization   Organization       @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  id             String             @id @default(cuid())
+  shipmentId     String
+  state          ShipmentTrackState
+  carrierCode    String             @default("")
+  carrierStatus  String?
+  occurredAt     DateTime
+  observedAt     DateTime           @default(now())
+
+  shipment Shipment @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, shipmentId, occurredAt, state, carrierCode])
+  @@index([shipmentId, occurredAt])
+}
+
+// ═══: dziennik zdarzeń BL (getJournalList) ════════════════════════════════════════════════════════
+// Kursor dziennika BL per firma: ostatni przetworzony wpis (`lastLogId`) i chwila ostatniego udanego odczytu.
+// Zdarzenia zmiany statusu odświeżają `BlOrderSnapshot` poza oknem porównania (lib/cien/dziennik-bl.ts).
+// Bez danych klientów: same liczby i daty.
+model BlJournalCursor {
+  organizationId String       @id @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  lastLogId      BigInt       @default(0)
+  lastReadAt     DateTime? // ostatni udany odczyt dziennika (> 72 h temu = zdarzenia utracone, BL trzyma 3 dni)
+  lastEventAt    DateTime? // ostatni przebieg, w którym dziennik dał zdarzenie (sygnał wyłączonej metody)
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+}
+
+// ═══: klucze API dla systemów zewnętrznych ═════════════════════════
+
+// Klucz API firmy (hurt-demo, EasyTools, BotKlienta): w bazie wyłącznie SHA-256 klucza (`tokenHash`, jak Session) i
+// `prefix` do rozpoznania na ekranie. Pełny klucz widać jeden raz, po utworzeniu. `scopes` z lib/api/zakresy.ts.
+// Odwołanie = `revokedAt`, wiersz zostaje (historia). `tokenHash` unikalny w całej bazie: klucz wskazuje firmę.
+model ApiKey {
+  organizationId String       @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  id             String       @id @default(cuid())
+  name           String
+  prefix         String
+  tokenHash      String       @unique
+  scopes         String[]
+  // klucz obsługi klienta: konta sprzedaży, które widzi ({ wszystkie: true } albo { konta: [{ kanal, konto }] });
+  // null = brak kont (klucz obsługi nie widzi niczego); klucze ogólne tego pola nie używają (lib/api/konta-klucza.ts)
+  accounts       Json?
+  createdBy      String
+  createdAt      DateTime     @default(now())
+  lastUsedAt     DateTime?
+  revokedAt      DateTime?
+  mcpCalls       McpCall[]
+
+  @@index([organizationId, createdAt])
+}
+
+// ─── Serwer MCP dla agentów AI: dziennik wywołań narzędzi ───────────────────────────────────────────
+// Jeden wiersz na wywołanie narzędzia (lib/mcp/dziennik.ts). BEZ treści argumentów i wyników (mogą nieść numery
+// zamówień i nazwy): tylko nazwa narzędzia, wynik, czas, liczba pozycji i NAZWY użytych parametrów. Retencja 90 dni
+// (zadanie workera mcp-sprzatanie). `source` = skąd kontekst: klucz API (/api/mcp) albo sesja panelu (asystent).
+
+enum McpCallSource {
+  KLUCZ
+  PANEL
+}
+
+enum McpCallResult {
+  OK
+  ODMOWA
+  BLAD
+  LIMIT
+}
+
+model McpCall {
+  organizationId String        @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization   Organization  @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  id             String        @id @default(cuid())
+  source         McpCallSource
+  apiKeyId       String?
+  apiKey         ApiKey?       @relation(fields: [apiKeyId], references: [id], onDelete: Restrict)
+  userId         String?
+  tool           String
+  result         McpCallResult
+  durationMs     Int
+  items          Int?
+  params         String[]
+  createdAt      DateTime      @default(now())
+
+  @@index([organizationId, createdAt])
+  @@index([apiKeyId, createdAt])
+}
+
+// ─── Serwer druku: stanowiska z agentem druku (agent-druku/) i kolejka zleceń ─────────────────────────
+// Agent na komputerze w magazynie pyta GET /api/druk/zlecenia tokenem stanowiska i odsyła wynik. Kontrakt:
+// agent-druku/src/kontrakt.ts i agent-druku/README.md, sekcja 4; opis serwera: docs/druk.md.
+
+enum PrintJobType {
+  karta
+  lista
+  spis
+  etykieta
+}
+
+enum PrintJobSource {
+  PANEL // klik w panelu (karty, lista, etykieta próbna)
+  TEST // „Wydruk testowy” z Ustawienia → Druk
+  ZAPAS // nowe zlecenie na roli zapasowej po awarii drukarki termicznej (fallbackOfId = oryginał)
+}
+
+enum PrintJobStatus {
+  PRZYGOTOWANIE // zarezerwowane (klucz idempotencji), plik jeszcze się rysuje — agent go nie dostaje
+  OCZEKUJE // plik zapisany, agent może drukować
+  OK // agent: zadanie przyjęte przez kolejkę Windows
+  BLAD // agent albo serwer (błąd rysowania): nie wydrukowano albo nie wiadomo; komunikat w resultMessage
+  WYGASLO // nikt nie wydrukował w 8 godzin — agent już go nie dostanie
+}
+
+enum PrintFileFormat {
+  pdf
+  zpl
+}
+
+// Stanowisko druku = jeden komputer z agentem. Token stanowiska tylko jako SHA-256 (pełny pokazany raz w panelu).
+model PrintStation {
+  organizationId String       @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  id             String       @id @default(cuid())
+  code           String // `stanowisko` w agent-druku.json: litery bez polskich znaków, cyfry, - i _
+  name           String
+  tokenHash      String?      @unique // SHA-256 tokenu kmd_…; null = brak aktywnego tokenu
+  tokenCreatedAt DateTime?
+  routing        Json         @default("{}") // typ zlecenia → rola drukarki, np. { "karta": "A4", "etykieta": "TERMICZNA_1" }
+  printers       Json         @default("[]") // ostatni RaportStanu.drukarki (rola, nazwa Windows, stan, komunikat, kolejka)
+  agentVersion   String?
+  lastReportAt   DateTime? // czas serwera przy ostatnim POST /api/druk/stan
+  disabledAt     DateTime?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  jobs PrintJob[]
+
+  @@unique([organizationId, code])
+}
+
+// Zlecenie druku. Wiersz zostaje jako historia; bajty pliku (PrintJobFile) czyści worker 7 dni po zakończeniu.
+model PrintJob {
+  organizationId String          @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization   Organization    @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  id             String          @id @default(cuid()) // = ZlecenieDruku.id u agenta ([A-Za-z0-9_-]{1,100})
+  stationId      String
+  type           PrintJobType
+  source         PrintJobSource
+  role           String // rola drukarki (A4, A4_2, TERMICZNA_1…) — tekst, bo role są otwarte (wzór w lib/druk/role.ts)
+  format         PrintFileFormat // plik, który dostaje agent (etykieta na A4 = pdf)
+  copies         Int             @default(1)
+  status         PrintJobStatus  @default(PRZYGOTOWANIE)
+  idempotencyKey String? // klucz kliknięcia z przeglądarki: podwójny klik = to samo zlecenie
+  fallbackOfId   String?         @unique // zlecenie zapasowe: najwyżej jedno na oryginał
+  summary        String? // krótki opis dla panelu (np. „Karty: 1001/2, 1002/1”), bez danych klientów
+  resultMessage  String?
+  resultPrinter  String?
+  reportedAt     DateTime?
+  requestedBy    String? // User.id
+  orderIds       String[]        @default([])
+  expiresAt      DateTime
+  createdAt      DateTime        @default(now())
+
+  station    PrintStation   @relation(fields: [stationId], references: [id], onDelete: Restrict)
+  fallbackOf PrintJob?      @relation("PrintJobFallback", fields: [fallbackOfId], references: [id], onDelete: SetNull)
+  fallback   PrintJob?      @relation("PrintJobFallback")
+  files      PrintJobFile[]
+
+  @@unique([organizationId, idempotencyKey])
+  @@index([stationId, status, createdAt])
+  @@index([organizationId, createdAt])
+}
+
+// Bajty pliku zlecenia: osobno, bo etykieta ma dwie wersje (ZPL i PDF), a lista zleceń nie może czytać bajtów.
+model PrintJobFile {
+  organizationId String          @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization   Organization    @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  id             String          @id @default(cuid())
+  jobId          String
+  format         PrintFileFormat
+  data           Bytes
+  createdAt      DateTime        @default(now())
+
+  job PrintJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@unique([jobId, format])
+}
+
+// ═══: KSeF dla firm bez wFirmy, „przygotuj, nie wysyłaj” ═══════════
+
+// Szkic faktury FA(3) zamówienia i paczki (lib/ksef/szkice.ts). Nic nie zostało wysłane do KSeF. `xml` bez danych
+// nabywcy: nabywca to stała zastępcza z `BrakID` = 1; prawdziwy trafia do XML dopiero przy wysyłce (osobne zadanie).
+// `numer` null = szkic (P_2 = SZKIC-<id>); ponowne przygotowanie nadpisuje wiersz tylko, dopóki numer jest pusty.
+// Statusy tekstem z listą w kodzie: ZLOZONA | BLAD_WALIDACJI | POZA_KSEF | ODLOZONA; też WYSYLANA,
+// WYSLANA (KSeF przetwarza), PRZYJETA (numer KSeF i UPO), ODRZUCONA (KSeF odrzucił), BLAD_WYSYLKI (nie doszła).
+model KsefInvoiceDraft {
+  organizationId String       @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  id             String       @id
+  orderId        String
+  packageNo      Int
+  status         String
+  numer          String?
+  seriaKod       String?
+  wersjaSchemy   String
+  xml            String?
+  xmlSha256      String?
+  bruttoGr       Int
+  nettoGr        Int
+  problems       Json         @default("[]") // ProblemFa3[]: kody, ścieżki pól i stałe teksty, bez danych klientów
+  walidacja      Json         @default("{}") // WynikWalidacji: POPRAWNY | BLEDY | XSD_NIEDOSTEPNY
+  // wysyłka do KSeF i korekty. `rodzaj` VAT (faktura) albo KOR (korekta przy zwrocie: `returnId`, faktura
+  // korygowana `korygowanaId`). Faktura ma `returnId` = "" (klucz unikalny bez NULL). Numer z serii przydziela się raz,
+  // przy pierwszej wysyłce, razem z `dataWystawienia`; ponowienie wysyła ten sam numer (KSeF odrzuca dubel kodem 440).
+  // XML z nabywcą nie jest zapisywany: składa się od nowa z bazy przy każdej próbie (dane klienta tylko zaszyfrowane).
+  rodzaj         String       @default("VAT")
+  returnId       String       @default("")
+  korygowanaId   String?
+  dataWystawienia String?
+  srodowisko     String? // TEST | DEMO | PROD: gdzie poszła ostatnia próba
+  sesjaRef       String? // numer referencyjny sesji interaktywnej KSeF
+  fakturaRef     String? // numer referencyjny faktury w sesji (status i UPO)
+  ksefNumer      String? // numer KSeF nadany przez MF
+  upo            String? // UPO (XML) z KSeF
+  proby          Int          @default(0)
+  wysylkaOd      DateTime? // początek bieżącej próby (sprzątacz porzuconych)
+  przyjetaAt     DateTime?
+  lastError      String? // komunikat KSeF albo powód odmowy, bez danych nabywcy
+  // (utwardzenie przed pierwszą produkcyjną fakturą). `wytworzonaAt` = DataWytworzeniaFa zamrożona razem
+  // z numerem, więc XML przy ponowieniu jest bajt w bajt ten sam (ten sam hash), dopóki dane się nie zmienią.
+  // `hasheWyslane` = SHA-256 (base64) XML-i, które mogą być w KSeF (dopisywane PRZED wysłaniem, zdejmowane po pewnym
+  // odrzuceniu); `invoiceHash` = hash dokumentu przyjętego do przetwarzania (202) albo dopasowanego oryginału.
+  // `przyczyna` = kod błędu (lib/ksef/przyczyny.ts) zamiast dopasowania tekstu `lastError`; automat ponawia tylko
+  // przyczyny „nasze” (sieć, limit czasu, 429/5xx przed 202, logowanie, porzucona próba), do `ponowieniaAuto` prób
+  // z odstępem `nastepnaProbaOd`. `probyOdczytu` = nieudane odczyty stanu po wysłaniu (osobno od `proby`).
+  // `probyUzupelnienia` = nieudane dociągnięcia numeru KSeF/UPO przyjętej faktury.
+  wytworzonaAt      DateTime?
+  invoiceHash       String?
+  hasheWyslane      String[]  @default([])
+  przyczyna         String?
+  probyOdczytu      Int       @default(0)
+  ponowieniaAuto    Int       @default(0)
+  nastepnaProbaOd   DateTime?
+  probyUzupelnienia Int       @default(0)
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  @@unique([organizationId, orderId, packageNo, returnId])
+  @@unique([organizationId, numer])
+  @@index([orderId])
+  @@index([organizationId, rodzaj, createdAt])
+  // zapytania automatu (ponowienia `BLAD_WYSYLKI` i dociąganie `PRZYJETA` po `nastepnaProbaOd`)
+  @@index([organizationId, status, nastepnaProbaOd])
+}
+
+// Seria numeracji faktur firmy bez wFirmy (lib/ksef/numeracja.ts). Wiersz na okres (`periodKey`: „2026”, „2026-11”
+// albo „-” przy NIGDY); `lastNo` rośnie atomowo w transakcji zatwierdzenia do wysyłki, nigdy przy szkicu.
+model InvoiceNumberSeries {
+  organizationId String       @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  code           String
+  pattern        String // np. FV/{NR}/{MM}/{RRRR}
+  resetPeriod    String // ROK | MIESIAC | NIGDY
+  periodKey      String
+  lastNo         Int
+  updatedAt      DateTime     @updatedAt
+
+  @@id([organizationId, code, periodKey])
+}
+
+// ═══: alerty na Zulip ══════════════════════════════════════════════
+
+// Ustawienia powiadomień firmy (Ustawienia → Powiadomienia). Domyślnie wyłączone; wysyłka wymaga też env instancji
+// POWIADOMIENIA_WYSYLKA=1. Klucz bota to sekret firmy ZULIP_API_KEY (IntegrationSecret), nigdy tutaj.
+// `enabledAt` = chwila ostatniego włączenia: starsze alerty nie wychodzą. `lastError` = powód automatycznego wyłączenia
+// (401/403) albo błąd konfiguracji, bez klucza i bez treści alertów.
+model NotificationSettings {
+  organizationId String       @id @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  enabled        Boolean      @default(false)
+  enabledAt      DateTime?
+  zulipSite      String?
+  zulipBotEmail  String?
+  routes         Json         @default("{}") // grupa alertu → { stream, topic } (lib/powiadomienia/grupy.ts)
+  lastError      String?
+  lastErrorAt    DateTime?
+  updatedById    String?
+  updatedAt      DateTime     @updatedAt
+}
+
+// Dostarczenie jednego alertu: najwyżej jedna wiadomość na alert (unikalność w firmie). Stany: SENDING (zapisany przed
+// wywołaniem), SENT, FAILED (z `nextAttemptAt` = czeka na ponowienie, bez = koniec), UNCERTAIN (timeout po wysłaniu
+// albo przerwany worker — bez ponowienia). `lastError` bez treści alertu i bez klucza.
+model AlertDelivery {
+  organizationId String       @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  id             String       @id @default(cuid())
+  alertId        String
+  kind           String
+  group          String
+  state          String
+  attempts       Int          @default(0)
+  nextAttemptAt  DateTime?
+  lastAttemptAt  DateTime?
+  sentAt         DateTime?
+  lastError      String?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  @@unique([organizationId, alertId])
+  @@index([organizationId, state, nextAttemptAt])
+  @@index([organizationId, lastAttemptAt])
+}
+
+// ═══: kanały i oferty bez BaseLinkera ══════════════════════════════
+
+// Stan konta kanału widziany z panelu: wynik ostatniego testu połączenia (bez treści odpowiedzi kanału i bez sekretów)
+// i ostatnie pobranie ofert. Osobno od ChannelConfig.config (ustawienia adaptera) i ChannelHealth (zdrowie zapisu
+// stanów), żeby kliknięcie w panelu nie zmieniało ustawień ani zdrowia. `createdInPanel` = konto założone w panelu.
+model ChannelAccountStatus {
+  organizationId    String       @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization      Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  channel           Channel
+  channelAccountId  String
+  createdInPanel    Boolean      @default(false)
+  testRequestedAt   DateTime?
+  testCheckedAt     DateTime?
+  testOk            Boolean?
+  testMessage       String?
+  // nazwy kluczy meta_data z ostatnich zamówień (test połączenia Woo), bez wartości: { sample, keys: [{ key, orders }], at }
+  testMetaKeys      Json?
+  offersRequestedAt DateTime?
+  offersRunId       String? // ImportRun ostatniego pobrania ofert (kind „kanal-oferty”)
+  updatedAt         DateTime     @updatedAt
+
+  @@id([organizationId, channel, channelAccountId])
+}
+
+// Oferta kanału z ostatniego odczytu (`listOffers`), także ta bez powiązania: lista „Do przypisania”. Bez danych
+// klientów. Ilość tylko informacyjnie: system nie jest lustrem kanału (stan startowy bierze się raz, przy zakładaniu).
+model ChannelOfferRead {
+  organizationId   String       @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization     Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  id               String       @id @default(cuid())
+  channel          Channel
+  channelAccountId String
+  externalId       String
+  sku              String?
+  ean              String?
+  name             String?
+  qty              Int?
+  // cena brutto i VAT z oferty (gdy kanał je podaje) i adresy zdjęć — do produktu zakładanego z oferty
+  priceGross       Decimal?     @db.Decimal(12, 2)
+  vatRate          String?
+  imageUrls        String[]     @default([])
+  active           Boolean      @default(true)
+  // POWIAZANA | BEZ_SKU | WIELOZNACZNE | BEZ_PRODUKTU | BLAD (lib/kanaly/oferty.ts)
+  state            String
+  note             String?
+  runId            String
+  seenAt           DateTime
+
+  @@unique([organizationId, channel, channelAccountId, externalId])
+  @@index([organizationId, channel, channelAccountId, state])
+}
+
+// ═══: dane klienta w zamówieniu (zapis szyfrowany, wgląd wg uprawnień, retencja) ═══════════
+
+enum CustomerDataSource {
+  KANAL // odczyt z kanału (zadanie KLIENT_ZAPIS albo „Odśwież z kanału”)
+  RECZNE // wpisane przez człowieka (zamówienie ręczne); automat go nie nadpisuje
+  PRZEPROWADZKA // przeniesione z BaseLinkera (przeprowadzka)
+}
+
+// Klient zamówienia (lib/klienci/*). Jeden zaszyfrowany JSON całego rekordu (nabywca, dostawa, punkt odbioru, faktura,
+// telefon, e-mail, uwagi klienta) AES-256-GCM kluczem z env CUSTOMER_DATA_KEYS (osobny pierścień, nie klucz sekretów
+// integracji); AAD = „<firma>:klient:<Order.id>”. Żadnej kolumny z jawną wartością danych osobowych: wyszukiwanie po
+// skrótach HMAC (CUSTOMER_LOOKUP_KEY). Odszyfrowanie wyłącznie w lib/klienci/* (strażnik tests/klienci-straznik.test.ts).
+model OrderCustomer {
+  organizationId String             @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization   Organization       @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  id             String             @id @default(cuid())
+  orderId        String             @unique
+  order          Order              @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  keyVersion     Int // wersja klucza z CUSTOMER_DATA_KEYS
+  ciphertext     Bytes
+  iv             Bytes
+  authTag        Bytes
+  emailHash      String? // HMAC-SHA256 znormalizowanego e-maila (lib/klienci/skroty.ts)
+  phoneHash      String?
+  nipHash        String?
+  source         CustomerDataSource
+  fetchedAt      DateTime // chwila odczytu z kanału albo wpisu człowieka
+  revision       Int                @default(1) // licznik odświeżeń
+  retainUntil    DateTime? // termin retencji (lib/klienci/retencja.ts); null = nieustalony
+  purgedAt       DateTime? // dane usunięte (retencja albo RODO art. 17): szyfrogram pustego rekordu, skróty puste
+  // kraj dostawy (kod ISO, dwie litery) jawnie, do filtra „Kraj” na liście zamówień. Sam kod kraju nie
+  // wskazuje osoby; reszta adresu zostaje w szyfrogramie. Usunięcie danych (retencja, RODO) czyści go razem ze skrótami.
+  country        String?
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+
+  @@index([organizationId, emailHash])
+  @@index([organizationId, phoneHash])
+  @@index([organizationId, nipHash])
+  @@index([organizationId, retainUntil])
+  @@index([organizationId, country])
+}
+
+// Ustawienia danych klientów firmy (wzorem NotificationSettings): jeden wiersz na firmę, brak = domyślne.
+// Wartości retencji domyślnie 5 lat / 36 miesięcy — do potwierdzenia przez księgową.
+model CustomerDataSettings {
+  organizationId             String       @id @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization               Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  zapisWCieniu               Boolean      @default(false) // daneKlientaWCieniu: zapis także dla kont w trybie cienia
+  retencjaZFakturaLat        Int          @default(5)
+  retencjaBezFakturyMiesiecy Int          @default(36)
+  trybRetencji               String       @default("RAPORT") // RAPORT | USUWAJ
+  ostatniPrzebiegAt          DateTime?
+  ostatniPoTerminie          Int?
+  ostatnioUsunieto           Int?
+  updatedById                String?
+  updatedAt                  DateTime     @updatedAt
+}
+
+// ═══: karta zamówienia docelowa ═══════════════════════════════════
+
+// Notatka wewnętrzna biura i magazynu (≤ 2000 znaków). Treść nie idzie do AI, alertów ani logów; na wydruk karty tylko
+// z `showOnCard`. Poprawia ją wyłącznie autor przez 15 minut (lib/karta/notatki.ts); nikt jej nie kasuje.
+model OrderNote {
+  organizationId String       @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  id             String       @id @default(cuid())
+  orderId        String
+  body           String
+  actorId        String // user:<id>
+  showOnCard     Boolean      @default(false)
+  createdAt      DateTime     @default(now())
+  editedAt       DateTime?
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId, createdAt])
+}
+
+enum OrderPaymentKind {
+  WPLATA // wpłata zapisana w Kompletorze (np. przelew po „Oznacz jako opłacone”)
+  DOPLATA // dopłata klienta po zmianie pozycji
+  ZWROT // zwrot różnicy klientowi (pozycja do eksportu przelewów, lib/zwroty/eksport-przelewow.ts)
+}
+
+// Wpłaty, dopłaty i zwroty różnicy zapisane z karty (tylko zapis w Kompletorze: bez banku i bez linków płatności).
+// Kwota zawsze dodatnia, znak wynika z rodzaju. `exportedAt` = zwrot wyszedł w pliku przelewów (eksport to osobne zadanie).
+model OrderPayment {
+  organizationId String           @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization   Organization     @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  id             String           @id @default(cuid())
+  orderId        String
+  kind           OrderPaymentKind
+  amount         Decimal          @db.Decimal(12, 2)
+  method         String? // słowo z listy (przelew, gotówka, karta, inna), bez danych klienta
+  paidAt         DateTime
+  actorId        String
+  exportedAt     DateTime?
+  createdAt      DateTime         @default(now())
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId, paidAt])
+  @@index([organizationId, kind, exportedAt])
+}
+
+// ═══: poczta do klientów i biura ══════════════════════════════════
+
+// Ustawienia → Poczta: transport SMTP firmy (Amazon SES przez jego punkt SMTP). Hasło to sekret firmy SMTP_PASSWORD
+// (IntegrationSecret), tu nigdy. Wysyłka wymaga włącznika firmy i POCZTA_WYSYLKA=1 na instancji; bez nich plan akcji
+// czeka (PlannedAction PLANNED), nic nie ginie. `senders` = nadawca i wygląd per konto kanału („<KANAŁ>:<konto>”,
+// lib/poczta/ustawienia.ts), bez danych klientów.
+model MailSettings {
+  organizationId  String       @id @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization    Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  enabled         Boolean      @default(false)
+  enabledAt       DateTime?
+  host            String?
+  port            Int?
+  security        String       @default("STARTTLS") // TLS | STARTTLS | BRAK (tylko serwer lokalny)
+  username        String?
+  fromEmail       String?
+  fromName        String?
+  officeEmail     String? // adresat maili do biura (błąd faktury, niski stan)
+  senders         Json         @default("{}")
+  lastError       String?
+  lastErrorAt     DateTime?
+  // serwer odrzucił login/hasło: wysyłka i linki resetu hasła stoją do zmiany danych SMTP albo ponownego włączenia
+  loginRejectedAt DateTime?
+  // czytnik odbić (raporty o niedoręczeniu) ze skrzynki nadawcy przez IMAP; hasło = sekret IMAP_PASSWORD
+  bounceEnabled   Boolean      @default(false)
+  imapHost        String?
+  imapPort        Int?
+  imapSecurity    String       @default("TLS") // TLS | STARTTLS | BRAK (tylko serwer lokalny)
+  imapUsername    String?
+  imapFolder      String       @default("INBOX")
+  bounceAddress   String? // nadawca koperty (Return-Path); puste = adres nadawcy maila
+  bounceState     Json         @default("{}") // { uidValidity, lastUid, failUid, failCount }
+  bounceCount     Int          @default(0)
+  bounceLastRunAt DateTime?
+  bounceLastError String?
+  bounceLastErrorAt DateTime?
+  // serwer IMAP odrzucił login: czytnik stoi do zmiany danych skrzynki (wysyłka maili działa dalej)
+  bounceLoginRejectedAt DateTime?
+  // wersja ustawień skrzynki: rośnie przy zmianie skrzynki albo włączeniu; czytnik zapisuje wynik tylko przy tej samej wersji
+  bounceRev       Int          @default(0)
+  updatedById     String?
+  updatedAt       DateTime     @updatedAt
+}
+
+// Treść szablonu maila zmieniona w panelu (Ustawienia → Poczta → Szablony). Brak wiersza = treść domyślna z kodu
+// (lib/maile/szablony.ts). Kształt jak NadpisanieSzablonu; sprawdzany przy zapisie i przy wysyłce.
+model MailTemplate {
+  organizationId String       @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  kind           String // RodzajMaila
+  subject        String?
+  preheader      String?
+  heading        String?
+  blocks         Json?
+  updatedById    String?
+  updatedAt      DateTime     @updatedAt
+
+  @@id([organizationId, kind])
+}
+
+// Wysyłka jednego maila: najwyżej jedna na zdarzenie (unikalny `dedupeKey`: „plan:<PlannedAction.id>”, „test:<id>”,
+// „reset:<PasswordReset.id>”). Stany jak AlertDelivery: SENDING zapisany PRZED wywołaniem serwera, SENT, FAILED
+// (z `nextAttemptAt` = ponowienie, bez = koniec), UNCERTAIN (zerwane po wysłaniu treści, bez ponowienia), CZEKA
+// (brak danych do maila, np. PDF dokumentu; bez próby), POMINIETY. `recipient` zamaskowany, bez pełnego adresu.
+model MailDelivery {
+  organizationId  String       @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization    Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  id              String       @id @default(cuid())
+  dedupeKey       String
+  kind            String
+  plannedActionId String?
+  state           String
+  recipient       String?
+  attempts        Int          @default(0)
+  nextAttemptAt   DateTime?
+  lastAttemptAt   DateTime?
+  sentAt          DateTime?
+  messageId       String?
+  lastError       String?
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+
+  @@unique([organizationId, dedupeKey])
+  @@index([organizationId, state, nextAttemptAt])
+  @@index([organizationId, lastAttemptAt])
+  @@index([organizationId, plannedActionId])
+}
+
+// Reset hasła mailem: jednorazowy link ważny 60 min. W bazie tylko SHA-256 tokenu (`tokenHash`); sam token żyje
+// zaszyfrowany (`sealed*`, klucz główny sekretów, AAD = firma nadawcy + id) tylko do wysyłki przez worker, potem
+// jest czyszczony. Jak User i Invitation: RLS „nikt”, obsługa wyłącznie klientem systemowym.
+model PasswordReset {
+  id             String    @id @default(cuid())
+  userId         String
+  user           User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organizationId String // firma, której pocztą idzie link
+  tokenHash      String    @unique
+  sealedToken    Bytes?
+  sealedIv       Bytes?
+  sealedTag      Bytes?
+  keyVersion     Int?
+  expiresAt      DateTime
+  usedAt         DateTime?
+  createdAt      DateTime  @default(now())
+
+  @@index([userId, createdAt])
+  @@index([expiresAt])
+}
+
+// ═══: zapis na kanały (host zapisu, paczka) ═══════════════════════════════════════════════════
+// Jeden wiersz = jeden zapis do kanału sprzedaży dla zamówienia: status (klucz mapy statusów konta, np. „WYSLANE”,
+// „ANULOWANE_NIEOPLACONE”) albo numer nadania (klucz = numer). Unikalność (zamówienie, rodzaj, klucz) sprawia, że
+// przejście „Wysłane” trafia do kanału raz, także przy podwójnym przebiegu workera. Konto w cieniu dostaje wiersz
+// `mode = CIEN`, `state = CIEN` („wysłałbym”), bez wywołania kanału. Bez danych klientów.
+enum ChannelWriteKind {
+  STATUS
+  NADANIE
+}
+
+enum ChannelWriteState {
+  OCZEKUJE
+  WYSYLANIE // zajęty przez przebieg workera (lockedAt); porzucony = NIEJEDNOZNACZNY
+  WYSLANE
+  CIEN // konto w cieniu: „wysłałbym”
+  NIEJEDNOZNACZNY // nie wiadomo, czy kanał zapisał: alert, bez ponowienia (ponawia człowiek: „Wypchnij teraz”)
+  BLAD // trwały błąd albo wyczerpane ponowienia: alert
+}
+
+model ChannelWrite {
+  organizationId   String            @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization     Organization      @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  id               String            @id @default(cuid())
+  orderId          String
+  channel          Channel
+  channelAccountId String
+  kind             ChannelWriteKind
+  key              String // STATUS: klucz mapy statusów; NADANIE: numer nadania
+  channelStatus    String? // STATUS: status kanału z mapy w chwili zaplanowania
+  carrier          String? // NADANIE: przewoźnik
+  trackingUrl      String? // NADANIE: adres śledzenia, gdy znany
+  mode             ChannelMode
+  state            ChannelWriteState @default(OCZEKUJE)
+  reference        String // klucz idempotencji zapisu (deriveReference)
+  attempts         Int               @default(0)
+  nextAttemptAt    DateTime
+  lockedAt         DateTime?
+  lastError        String?
+  result           String? // wynik kanału (np. „bez-zmian:completed”), bez danych klientów
+  createdAt        DateTime
+  doneAt           DateTime?
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, orderId, kind, key])
+  @@index([organizationId, state, nextAttemptAt])
+  @@index([organizationId, channel, channelAccountId, createdAt])
+}
+
+// akcja masowa z listy zamówień (zmiana statusu, przesyłki, druk etykiet) na 50 i więcej zamówieniach idzie
+// w tle (zadanie kolejki `zamowienia-masowo`). Wiersz niesie postęp i wynik per zamówienie (numer, ok/błąd, komunikat
+// bez danych klienta), żeby panel pokazał raport po fakcie. Mniejsze akcje wykonują się od razu i nie zostawiają wiersza.
+model OrderBulkAction {
+  organizationId String       @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  id             String       @id @default(cuid())
+  kind           String // STATUS | PRZESYLKI | ETYKIETY; PRZESYLKI_DRUK | PRZESYLKI_ANULUJ (orderIds = id przesyłek)
+  params         Json         @default("{}") // np. { status, powod } albo { gabaryt, stanowisko }
+  orderIds       String[]
+  state          String       @default("CZEKA") // CZEKA | TRWA | GOTOWE | BLAD
+  done           Int          @default(0)
+  ok             Int          @default(0)
+  failed         Int          @default(0)
+  results        Json         @default("[]") // { id, nr, ok, komunikat }[]
+  createdBy      String
+  lastError      String?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  finishedAt     DateTime?
+
+  @@index([organizationId, createdBy, createdAt])
+}
+
+// koszyki do zbierania (1 zamówienie = 1 koszyk, jak koszyki A–J w asystencie zbierania BL). Firma definiuje
+// nazwy (A, B, … albo własne); kod do skanera to „KOSZ-<nazwa>” (lib/koszyki/kod.ts). `orderId` = zamówienie w koszyku
+// teraz (unikalne: zamówienie jest najwyżej w jednym koszyku); po „Spakowane” koszyk zwalnia się sam.
+model PackBasket {
+  organizationId String       @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  id             String       @id @default(cuid())
+  name           String
+  orderId        String?      @unique
+  assignedAt     DateTime?
+  assignedById   String?
+  createdAt      DateTime     @default(now())
+
+  order Order? @relation(fields: [orderId], references: [id], onDelete: SetNull)
+
+  @@unique([organizationId, name])
+}
+
+// automatyczne akcje firmy (jak „Automatyczne akcje” w BaseLinkerze): zdarzenie → warunki → kroki akcji,
+// w grupach z kolejnością. Warunki i kroki to dane (JSON) sprawdzane jednym modułem (lib/automaty/schemat.ts), żadnego
+// kodu w regułach. Rdzeń zostaje stały: krok „ustaw status” idzie tylko dozwolonym przejściem (lib/automaty/wykonanie.ts).
+model AutomationGroup {
+  organizationId String           @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization   Organization     @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  id             String           @id @default(cuid())
+  name           String
+  sortOrder      Int              @default(0)
+  collapsed      Boolean          @default(false)
+  /// klucz grupy z presetu firmy; null = grupa założona w panelu
+  presetKey      String?
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+  rules          AutomationRule[]
+
+  @@unique([organizationId, presetKey])
+  @@index([organizationId, sortOrder])
+}
+
+// Reguła: `event` = zdarzenie (lib/automaty/schemat.ts ZDARZENIA), `conditions` = lista warunków, `actions` =
+// uporządkowana lista kroków. Przycisk = reguła ze zdarzeniem PRZYCISK (`buttonLabel`, `buttonPlaces`). `hidden` =
+// usunięta reguła z historią wykonań (wyłączona i ukryta, historia na karcie zamówienia zostaje).
+model AutomationRule {
+  organizationId String           @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization   Organization     @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  id             String           @id @default(cuid())
+  groupId        String?
+  group          AutomationGroup? @relation(fields: [groupId], references: [id], onDelete: SetNull)
+  name           String
+  sortOrder      Int              @default(0)
+  enabled        Boolean          @default(false)
+  event          String
+  conditions     Json             @default("[]")
+  actions        Json             @default("[]")
+  buttonLabel    String?
+  buttonPlaces   String[]         @default([])
+  hidden         Boolean          @default(false)
+  /// klucz reguły z presetu firmy: preset zakłada tylko brakujące klucze, nigdy nie nadpisuje reguły
+  /// zmienionej albo usuniętej w panelu; null = reguła założona w panelu
+  presetKey      String?
+  /// opis dla zespołu, np. dlaczego reguła jest wyłączona; widoczny na liście reguł
+  description    String?
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+  runs           AutomationRun[]
+
+  @@unique([organizationId, presetKey])
+  @@index([organizationId, event, enabled])
+}
+
+// Wykonanie reguły na zamówieniu: jedno na (reguła, zamówienie, okazja) — idempotencja. `chain` = długość łańcucha
+// „ustawiono status → ustaw status” (bezpiecznik pętli), `steps` = wynik kroków (bez danych klienta).
+model AutomationRun {
+  organizationId String         @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization   Organization   @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  id             String         @id @default(cuid())
+  ruleId         String
+  rule           AutomationRule @relation(fields: [ruleId], references: [id], onDelete: Restrict)
+  orderId        String
+  order          Order          @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  occasion       String
+  event          String
+  chain          Int            @default(0)
+  result         String
+  steps          Json           @default("[]")
+  createdAt      DateTime       @default(now())
+
+  @@unique([organizationId, ruleId, orderId, occasion])
+  @@index([organizationId, orderId, createdAt])
+  @@index([organizationId, createdAt])
+}
+
+// Kursor przebiegu zdarzeń zamówień firmy (lib/automaty/silnik.ts `przetworzZdarzenia`): chwila ostatniego przetworzonego zdarzenia.
+model AutomationCursor {
+  organizationId String       @id @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  lastAt         DateTime
+  lastId         String       @default("")
+  updatedAt      DateTime     @updatedAt
+}

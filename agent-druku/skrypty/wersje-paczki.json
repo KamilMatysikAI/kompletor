@@ -1,0 +1,26 @@
+{
+  "opis": "Przypięte wersje programów dołączanych do paczki Kompletor-Druk (npm run paczka). Sumy SHA-256 z oficjalnych źródeł albo, gdy autor ich nie publikuje, potwierdzone niezależnie (zrodloSumy); wartość [NIEPEWNE] = paczkę w trybie pobierania zbudować się nie da. sumatra.sha256 = plik ZIP z url, sumatra.sha256Exe = SumatraPDF.exe w środku (sprawdzana też przy --runtime).",
+  "node": {
+    "wersja": "22.23.4",
+    "url": "https://nodejs.org/dist/v22.23.4/win-x64/node.exe",
+    "sha256": "dccc52de28d8df2ee22d2062424f8c563070d95d8ad70c54c4bf01d590dec14f",
+    "zrodloSumy": "https://nodejs.org/dist/v22.23.4/SHASUMS256.txt (linia win-x64/node.exe, sprawdzone 2026-11-02)",
+    "licencja": {
+      "url": "https://raw.githubusercontent.com/nodejs/node/v22.23.4/LICENSE",
+      "sha256": "c738ae413cf561f174e34f6961f8ca458aae2369a73640dda6234c629b98bcc4"
+    }
+  },
+  "sumatra": {
+    "wersja": "3.5.2",
+    "url": "https://www.sumatrapdfreader.org/dl/rel/3.5.2/SumatraPDF-3.5.2-64.zip",
+    "plikWZip": "SumatraPDF-3.5.2-64.exe",
+    "sha256": "66ccb395c9184dce6822dfbb9970c877383b3ead6d9417b5106a844aac512989",
+    "sha256Exe": "290e4aa7ed64c728138711c011e89aab7aa48dbc1ae430371dc2be4100b92bf0",
+    "zrodloSumy": "2026-11-10: autor nie publikuje sum (strona pobierania i wydania GitHub bez sum). Sprawdzone trzema niezależnymi drogami: (1) ZIP pobrany z adresu url ma sumę równą InstallerSha256 w manifeście winget microsoft/winget-pkgs manifests/s/SumatraPDF/SumatraPDF/3.5.2 (wpis x64 zip); (2) SumatraPDF-3.5.2-64.exe z ZIP ma sumę równą sumie SumatraPDF-64.exe w pakiecie Chocolatey sumatrapdf.portable 3.5.2; (3) podpis Authenticode .exe ważny: CN=Krzysztof Kowalczyk (autor), wystawca Sectigo RSA Code Signing CA, znacznik czasu Sectigo.",
+    "zrodla": "https://github.com/sumatrapdfreader/sumatrapdf/tree/3.5.2rel",
+    "licencja": {
+      "url": "https://raw.githubusercontent.com/sumatrapdfreader/sumatrapdf/3.5.2rel/COPYING",
+      "sha256": "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986"
+    }
+  }
+}

@@ -1,0 +1,28 @@
+Temat: Zwrot do zamówienia ZAM-2026-00123 dotarł do nas
+Do: (adres klienta)
+Odpowiedź do: sklep@example.com
+
+Żółwik
+Zwrot dotarł do nas
+
+Dzień dobry Jan,
+
+paczka ze zwrotem do zamówienia ZAM-2026-00123 ze sklepu Żółwik dotarła do nas.
+
+Zwrócone produkty:
+- 1 × Kubek ceramiczny 300 ml
+
+Teraz sprawdzimy zwrócone produkty i damy znać, co dalej.
+
+W razie pytań wystarczy odpowiedzieć na tę wiadomość.
+
+Pozdrawiamy
+Zespół sklepu Żółwik
+
+-- 
+Firma Testowa sp. z o.o.
+ul. Przykładowa 1, 00-000 Testowo
+NIP 000-000-00-00
+Kontakt: kontakt@example.com, +48 000 000 000
+Ta wiadomość dotyczy zamówienia w sklepie Żółwik. Na pytania odpowiadamy pod adresem sklep@example.com.
+https://sklep.example.com

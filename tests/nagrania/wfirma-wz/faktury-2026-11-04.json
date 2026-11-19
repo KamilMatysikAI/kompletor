@@ -1,0 +1,300 @@
+{
+ "invoices": {
+  "0": {
+   "invoice": {
+    "id": "900000126",
+    "fullnumber": "SD 103/4/11/26",
+    "date": "2026-11-04",
+    "type": "normal",
+    "created": "2026-11-04 03:49:44"
+   }
+  },
+  "1": {
+   "invoice": {
+    "id": "900000133",
+    "fullnumber": "SD 106/4/11/26",
+    "date": "2026-11-04",
+    "type": "normal",
+    "created": "2026-11-04 05:49:12"
+   }
+  },
+  "2": {
+   "invoice": {
+    "id": "900000140",
+    "fullnumber": "SD 109/4/11/26",
+    "date": "2026-11-04",
+    "type": "normal",
+    "created": "2026-11-04 07:08:25"
+   }
+  },
+  "3": {
+   "invoice": {
+    "id": "900000147",
+    "fullnumber": "SD 112/4/11/26",
+    "date": "2026-11-04",
+    "type": "normal",
+    "created": "2026-11-04 07:18:06"
+   }
+  },
+  "4": {
+   "invoice": {
+    "id": "900000154",
+    "fullnumber": "SD 115/4/11/26",
+    "date": "2026-11-04",
+    "type": "normal",
+    "created": "2026-11-04 08:28:28"
+   }
+  },
+  "5": {
+   "invoice": {
+    "id": "900000161",
+    "fullnumber": "SD 118/4/11/26",
+    "date": "2026-11-04",
+    "type": "normal",
+    "created": "2026-11-04 09:29:05"
+   }
+  },
+  "6": {
+   "invoice": {
+    "id": "900000168",
+    "fullnumber": "SD 121/4/11/26",
+    "date": "2026-11-04",
+    "type": "normal",
+    "created": "2026-11-04 09:58:57"
+   }
+  },
+  "7": {
+   "invoice": {
+    "id": "900000175",
+    "fullnumber": "SD 124/4/11/26",
+    "date": "2026-11-04",
+    "type": "normal",
+    "created": "2026-11-04 09:58:57"
+   }
+  },
+  "8": {
+   "invoice": {
+    "id": "900000182",
+    "fullnumber": "SD 127/4/11/26",
+    "date": "2026-11-04",
+    "type": "normal",
+    "created": "2026-11-04 11:08:47"
+   }
+  },
+  "9": {
+   "invoice": {
+    "id": "900000189",
+    "fullnumber": "SD 130/4/11/26",
+    "date": "2026-11-04",
+    "type": "normal",
+    "created": "2026-11-04 11:27:24"
+   }
+  },
+  "10": {
+   "invoice": {
+    "id": "900000196",
+    "fullnumber": "SD 133/4/11/26",
+    "date": "2026-11-04",
+    "type": "normal",
+    "created": "2026-11-04 11:45:09"
+   }
+  },
+  "11": {
+   "invoice": {
+    "id": "900000203",
+    "fullnumber": "SD 136/4/11/26",
+    "date": "2026-11-04",
+    "type": "normal",
+    "created": "2026-11-04 11:49:34"
+   }
+  },
+  "12": {
+   "invoice": {
+    "id": "900000210",
+    "fullnumber": "SD 139/4/11/26",
+    "date": "2026-11-04",
+    "type": "normal",
+    "created": "2026-11-04 12:07:03"
+   }
+  },
+  "13": {
+   "invoice": {
+    "id": "900000217",
+    "fullnumber": "SD 142/4/11/26",
+    "date": "2026-11-04",
+    "type": "normal",
+    "created": "2026-11-04 12:51:24"
+   }
+  },
+  "14": {
+   "invoice": {
+    "id": "900000224",
+    "fullnumber": "FK 32/11/26",
+    "date": "2026-11-04",
+    "type": "correction",
+    "created": "2026-11-04 12:56:11"
+   }
+  },
+  "15": {
+   "invoice": {
+    "id": "900000231",
+    "fullnumber": "SD 145/4/11/26",
+    "date": "2026-11-04",
+    "type": "normal",
+    "created": "2026-11-04 13:12:52"
+   }
+  },
+  "16": {
+   "invoice": {
+    "id": "900000238",
+    "fullnumber": "SD 148/4/11/26",
+    "date": "2026-11-04",
+    "type": "normal",
+    "created": "2026-11-04 13:19:08"
+   }
+  },
+  "17": {
+   "invoice": {
+    "id": "900000245",
+    "fullnumber": "SD 151/4/11/26",
+    "date": "2026-11-04",
+    "type": "normal",
+    "created": "2026-11-04 13:28:45"
+   }
+  },
+  "18": {
+   "invoice": {
+    "id": "900000252",
+    "fullnumber": "SD 154/4/11/26",
+    "date": "2026-11-04",
+    "type": "normal",
+    "created": "2026-11-04 13:29:31"
+   }
+  },
+  "19": {
+   "invoice": {
+    "id": "900000259",
+    "fullnumber": "B2B 103/4/11/26",
+    "date": "2026-11-04",
+    "type": "normal",
+    "created": "2026-11-04 15:41:17"
+   }
+  },
+  "20": {
+   "invoice": {
+    "id": "900000266",
+    "fullnumber": "PROF 19/11/26",
+    "date": "2026-11-04",
+    "type": "proforma",
+    "created": "2026-11-04 15:44:58"
+   }
+  },
+  "21": {
+   "invoice": {
+    "id": "900000273",
+    "fullnumber": "PROF 20/11/26",
+    "date": "2026-11-04",
+    "type": "proforma",
+    "created": "2026-11-04 15:55:56"
+   }
+  },
+  "22": {
+   "invoice": {
+    "id": "900000280",
+    "fullnumber": "SD 157/4/11/26",
+    "date": "2026-11-04",
+    "type": "normal",
+    "created": "2026-11-04 17:49:25"
+   }
+  },
+  "23": {
+   "invoice": {
+    "id": "900000287",
+    "fullnumber": "SD 160/4/11/26",
+    "date": "2026-11-04",
+    "type": "normal",
+    "created": "2026-11-04 18:08:27"
+   }
+  },
+  "24": {
+   "invoice": {
+    "id": "900000294",
+    "fullnumber": "SD 163/4/11/26",
+    "date": "2026-11-04",
+    "type": "normal",
+    "created": "2026-11-04 18:35:00"
+   }
+  },
+  "25": {
+   "invoice": {
+    "id": "900000301",
+    "fullnumber": "SD 166/4/11/26",
+    "date": "2026-11-04",
+    "type": "normal",
+    "created": "2026-11-04 19:58:38"
+   }
+  },
+  "26": {
+   "invoice": {
+    "id": "900000308",
+    "fullnumber": "SD 169/4/11/26",
+    "date": "2026-11-04",
+    "type": "normal",
+    "created": "2026-11-04 21:08:41"
+   }
+  },
+  "27": {
+   "invoice": {
+    "id": "900000315",
+    "fullnumber": "SD 172/4/11/26",
+    "date": "2026-11-04",
+    "type": "normal",
+    "created": "2026-11-04 21:28:51"
+   }
+  },
+  "28": {
+   "invoice": {
+    "id": "900000322",
+    "fullnumber": "SD 175/4/11/26",
+    "date": "2026-11-04",
+    "type": "normal",
+    "created": "2026-11-04 21:49:29"
+   }
+  },
+  "29": {
+   "invoice": {
+    "id": "900000329",
+    "fullnumber": "SD 178/4/11/26",
+    "date": "2026-11-04",
+    "type": "normal",
+    "created": "2026-11-04 21:58:32"
+   }
+  },
+  "30": {
+   "invoice": {
+    "id": "900000336",
+    "fullnumber": "FV 1/11/26",
+    "date": "2026-11-04",
+    "type": "normal",
+    "created": "2026-11-04 22:30:25"
+   }
+  },
+  "31": {
+   "invoice": {
+    "id": "900000343",
+    "fullnumber": "SD 181/4/11/26",
+    "date": "2026-11-04",
+    "type": "normal",
+    "created": "2026-11-04 22:45:11"
+   }
+  },
+  "parameters": {
+   "limit": "100",
+   "page": "1",
+   "total": "32"
+  }
+ },
+ "status": {
+  "code": "OK"
+ }
+}

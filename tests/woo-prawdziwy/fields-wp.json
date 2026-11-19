@@ -1,0 +1,94 @@
+{
+  "pelne": {
+    "id": 13,
+    "status": "completed",
+    "meta_data": [
+      {
+        "id": 71,
+        "key": "numer_paczki",
+        "value": "PACZKA-1"
+      },
+      {
+        "id": 72,
+        "key": "kurier",
+        "value": "test"
+      }
+    ],
+    "billing": {
+      "city": "Testowo"
+    }
+  },
+  "fields": {
+    "id,meta_data": {
+      "id": 13,
+      "meta_data": [
+        {
+          "id": 71,
+          "key": "numer_paczki",
+          "value": "PACZKA-1"
+        },
+        {
+          "id": 72,
+          "key": "kurier",
+          "value": "test"
+        }
+      ]
+    },
+    "id,meta_data.key": {
+      "id": 13
+    },
+    "meta_data.key,id": {
+      "id": 13
+    },
+    "id,meta_data,meta_data.key": {
+      "id": 13,
+      "meta_data": [
+        {
+          "id": 71,
+          "key": "numer_paczki",
+          "value": "PACZKA-1"
+        },
+        {
+          "id": 72,
+          "key": "kurier",
+          "value": "test"
+        }
+      ]
+    },
+    "meta_data.key,meta_data,id": {
+      "id": 13,
+      "meta_data": [
+        {
+          "id": 71,
+          "key": "numer_paczki",
+          "value": "PACZKA-1"
+        },
+        {
+          "id": 72,
+          "key": "kurier",
+          "value": "test"
+        }
+      ]
+    },
+    "meta_data,meta_data.key,id": {
+      "meta_data": [
+        {
+          "id": 71,
+          "key": "numer_paczki",
+          "value": "PACZKA-1"
+        },
+        {
+          "id": 72,
+          "key": "kurier",
+          "value": "test"
+        }
+      ]
+    },
+    "id,billing.city,meta_data.key": {
+      "id": 13,
+      "billing": {
+        "city": "Testowo"
+      }
+    }
+  }
+}

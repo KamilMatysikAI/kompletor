@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Feed testowy, dane zmyślone (sklep przykładowy, produkty fikcyjne). Format jak z wtyczki Product Feed PRO. -->
+<rss xmlns:g="http://base.google.com/ns/1.0" version="2.0">
+  <channel>
+    <title>Feed przykładowy</title>
+    <link>https://sklep.example.test</link>
+    <description>Feed testowy</description>
+    <item>
+      <g:id>501</g:id>
+      <g:title>Przyprawa Zielona Próbna 100 g</g:title>
+      <g:link>https://sklep.example.test/przyprawa-zielona-probna/</g:link>
+      <g:image_link>https://sklep.example.test/zdjecia/501.webp</g:image_link>
+      <g:additional_image_link>https://sklep.example.test/zdjecia/501-b.webp</g:additional_image_link>
+      <g:additional_image_link>https://sklep.example.test/zdjecia/501-c.webp</g:additional_image_link>
+      <g:mpn>T-0001</g:mpn>
+      <g:price>19.9 PLN</g:price>
+    </item>
+    <item>
+      <g:id>502</g:id>
+      <g:title><![CDATA[Kubek „Ząbek” & spodek]]></g:title>
+      <g:image_link>https://sklep.example.test/zdjecia/502.jpg</g:image_link>
+      <g:gtin>5901234123457</g:gtin>
+      <g:mpn>NIE-MA-TAKIEGO</g:mpn>
+    </item>
+    <item>
+      <g:id>611</g:id>
+      <g:item_group_id>610</g:item_group_id>
+      <g:title>Puszka Próbna 125 g Czerwona</g:title>
+      <g:image_link>https://sklep.example.test/zdjecia/611.jpg</g:image_link>
+      <g:mpn>WARIANT-INNY</g:mpn>
+    </item>
+    <item>
+      <g:id>T-0004</g:id>
+      <g:title>Produkt z ID jako SKU</g:title>
+      <g:image_link>https://sklep.example.test/zdjecia/T-0004.png</g:image_link>
+    </item>
+    <item>
+      <g:id>700</g:id>
+      <g:title>Pozycja bez dopasowania &amp; bez zdjęcia</g:title>
+      <g:image_link/>
+      <g:mpn>X-999</g:mpn>
+    </item>
+    <item>
+      <g:title>Pozycja bez g:id (pomijana)</g:title>
+      <g:image_link>https://sklep.example.test/zdjecia/brak-id.jpg</g:image_link>
+    </item>
+  </channel>
+</rss>

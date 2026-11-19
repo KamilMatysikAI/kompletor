@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Feed testowy Atom, dane zmyślone. -->
+<feed xmlns="http://www.w3.org/2005/Atom" xmlns:gm="http://base.google.com/ns/1.0">
+  <title>Feed Atom przykładowy</title>
+  <entry>
+    <id>tag:sklep.example.test,2026:1</id>
+    <title>Zestaw Próbny</title>
+    <gm:id>A-1</gm:id>
+    <gm:mpn>ATOM-SKU-1</gm:mpn>
+    <gm:image_link>https://sklep.example.test/atom/1.jpg</gm:image_link>
+    <gm:additional_image_link>https://sklep.example.test/atom/1b.jpg,https://sklep.example.test/atom/1c.jpg</gm:additional_image_link>
+  </entry>
+</feed>

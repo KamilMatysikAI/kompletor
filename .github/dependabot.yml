@@ -1,0 +1,40 @@
+# aktualizacje zależności. Wersje w package.json są przypięte dokładnie (bez ^ i ~, .npmrc save-exact),
+# więc nowa wersja wchodzi wyłącznie przez PR Dependabota, który przechodzi pełne CI (typecheck, testy, symulacja).
+# Grupy: drobne i poprawkowe aktualizacje w jednym PR tygodniowo; główne wersje (major) osobno, do przejrzenia ręcznie.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      timezone: Europe/Warsaw
+    open-pull-requests-limit: 5
+    versioning-strategy: increase
+    groups:
+      drobne:
+        update-types: [minor, patch]
+    labels: [zaleznosci]
+
+  - package-ecosystem: npm
+    directory: /agent-druku
+    schedule:
+      interval: weekly
+      day: monday
+      timezone: Europe/Warsaw
+    open-pull-requests-limit: 3
+    versioning-strategy: increase
+    groups:
+      drobne:
+        update-types: [minor, patch]
+    labels: [zaleznosci]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    labels: [zaleznosci]
+
+# Obrazy Dockera (node:22-alpine przez ARG NODE_IMAGE w Dockerfile, postgres:16-alpine w compose) są przypięte do
+# wersji głównej celowo: poprawki bezpieczeństwa przychodzą z każdym budowaniem obrazu, a zmiana wersji głównej
+# (Node 24, Postgres 17) to osobna decyzja z migracją danych, nie automatyczny PR. Dependabot nie czyta FROM ${ARG}.

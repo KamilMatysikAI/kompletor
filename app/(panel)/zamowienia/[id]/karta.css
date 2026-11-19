@@ -1,0 +1,200 @@
+/* Karta zamówienia: jedna strona bez powtórzeń. Tylko tokeny z app/ui/tokeny.css; klasy kz-* z
+   app/panel.css (nagłówek, menu „Więcej”, formularze w <details>) zostają, tu tylko to, co doszło przy przebudowie.
+   Osobny plik obok ekranu, żeby przebudowa karty nie kolidowała z innymi ekranami w panel.css. */
+
+.kz-banery { display: flex; flex-direction: column; gap: var(--odstep-2); }
+.kz-banery:empty { display: none; }
+.kz-banery .banner { margin: 0; }
+
+.kz-uklad { align-items: start; margin-bottom: var(--odstep-4); }
+.kz-uklad > .stack { min-width: 0; }
+
+.kz-numery { margin-top: 2px; }
+.kz-bez-marginesu { margin: 0; }
+.kz-odstep-gora { margin-top: var(--odstep-3); }
+.kz-odstep-dol { margin-bottom: var(--odstep-2); }
+.kz-stopka { margin-top: var(--odstep-3); }
+.kz-zawijaj { white-space: normal; }
+
+/* pozycje */
+.kz-poz-znaczniki { display: flex; flex-wrap: wrap; gap: var(--odstep-1); margin-top: 2px; }
+.kz-ilosc { display: inline-flex; flex-direction: column; align-items: flex-end; gap: var(--odstep-1); }
+.kz-ilosc input[type='number'] { width: 9ch; min-height: var(--wys-kontrolki); text-align: right; }
+.kz-usun { display: inline-flex; align-items: center; gap: var(--odstep-1); min-height: var(--wys-kontrolki-sm); color: var(--kolor-tekst-2); cursor: pointer; }
+.kz-usun input { width: 18px; height: 18px; }
+.kz-decyzja { display: flex; flex-direction: column; gap: var(--odstep-1); min-width: 16ch; }
+.kz-decyzja .input { min-height: var(--wys-kontrolki); }
+.kz-suma { margin-top: var(--odstep-3); }
+.kz-bez-produktu { margin-top: var(--odstep-4); padding-top: var(--odstep-3); border-top: 1px solid var(--kolor-linia); display: flex; flex-direction: column; gap: var(--odstep-3); }
+.kz-bez-produktu h3 { margin: 0; font-size: var(--tekst-md); }
+.kz-bez-produktu-poz { display: flex; flex-direction: column; gap: var(--odstep-1); }
+
+/* klient i adresy: trzy kafle w jednej sekcji (bez karty w karcie: kafel to tylko blok z linią) */
+.kz-kafel { min-width: 0; padding: var(--odstep-3); border: 1px solid var(--kolor-linia); border-radius: var(--promien); background: var(--kolor-tlo); }
+.kz-kafel h3 { margin: 0 0 var(--odstep-2); font-size: var(--tekst-md); }
+.kz-kafel .dl { overflow-wrap: anywhere; }
+.kz-punkt { margin-top: var(--odstep-2); padding-top: var(--odstep-2); border-top: 1px solid var(--kolor-linia); }
+.kz-uwagi { white-space: pre-line; }
+.kz-usun-dane { margin-top: var(--odstep-3); }
+.kz-usun-dane > summary { list-style: none; cursor: pointer; }
+.kz-usun-dane > summary::-webkit-details-marker { display: none; }
+.kz-usun-dane[open] > form { margin-top: var(--odstep-3); }
+.kz-fieldset { min-width: 0; margin: 0; padding: var(--odstep-3); border: 1px solid var(--kolor-linia); border-radius: var(--promien); display: flex; flex-direction: column; gap: var(--odstep-2); }
+.kz-fieldset legend { padding: 0 var(--odstep-1); font-weight: var(--waga-polmocna); }
+.kz-pola-obok { display: flex; flex-wrap: wrap; gap: var(--odstep-2); }
+.kz-pola-obok > * { flex: 1 1 8ch; min-width: 0; }
+/* formularze kupującego i danych do faktury zamówienia z kanału, w kartach „Wysyłka” i „Dane do faktury” */
+.kz-form-danych { display: flex; flex-direction: column; gap: var(--odstep-2); margin-top: var(--odstep-3); min-width: 0; }
+.kz-form-danych > p { margin: 0; }
+.kz-przelacznik { display: flex; align-items: center; gap: var(--odstep-2); font-weight: var(--waga-polmocna); min-height: 44px; }
+.kz-przelacznik input { width: 18px; height: 18px; margin: 0; }
+
+/* dostawa i przesyłki, dokument sprzedaży: podbloki sekcji */
+.kz-przesylka { margin-top: var(--odstep-4); padding-top: var(--odstep-3); border-top: 1px solid var(--kolor-linia); }
+.kz-przesylka h3 { margin: 0 0 var(--odstep-2); font-size: var(--tekst-md); }
+.kz-przesylka > details { margin-top: var(--odstep-3); }
+/* blok „Przesyłki”: droga paczki u przewoźnika (droga-paczki.tsx); kolejne przesyłki rozdziela cienka linia */
+.kz-droga + .kz-droga { margin-top: var(--odstep-3); padding-top: var(--odstep-3); border-top: 1px dashed var(--kolor-linia); }
+.kz-droga-tytul { margin: 0 0 var(--odstep-1); }
+.kz-droga-numer { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--odstep-1) var(--odstep-3); }
+.kz-droga-link { white-space: nowrap; }
+.kz-droga-historia { margin-top: var(--odstep-3); }
+.kz-droga-historia > summary { cursor: pointer; min-height: 44px; display: flex; align-items: center; gap: var(--odstep-2); font-size: 14px; list-style: none; }
+.kz-droga-historia > summary::-webkit-details-marker { display: none; }
+/* strzałka jak w zwijanych kartach (app/ui/komponenty.css, ui-karta-zwijana) */
+.kz-droga-historia > summary::before { content: '▸'; color: var(--kolor-tekst-2); transition: transform var(--czas-szybki); }
+.kz-droga-historia[open] > summary::before { transform: rotate(90deg); }
+.kz-droga-historia .timeline { margin-top: var(--odstep-1); }
+.kz-droga-historia .timeline li { overflow-wrap: anywhere; }
+
+.kz-bez-ramki { border: 0; padding: 0; }
+.kz-historia .seg { margin-bottom: var(--odstep-2); }
+
+@media (max-width: 760px) {
+  .kz-ilosc { align-items: flex-end; }
+  .kz-decyzja { min-width: 0; width: 100%; }
+  .kz-usun { min-height: var(--wys-celu); }
+  .kz-usun input { width: 22px; height: 22px; }
+}
+
+/* odstępy między nagłówkiem, banerami, pozycjami i kolumnami (karty nie stykają się) */
+.kz-banery { margin-bottom: var(--odstep-4); }
+.kz-banery:empty { margin-bottom: 0; }
+#pozycje { margin-bottom: var(--odstep-4); }
+#pozycje .card-head .actions { display: flex; align-items: center; gap: var(--odstep-3); }
+#pozycje .card-head form { margin: 0; }
+.kz-decyzja { min-width: 24ch; }
+@media (max-width: 760px) {
+  .kz-decyzja { min-width: 0; width: 100%; }
+  /* na telefonie bez pustej komórki „Decyzja o braku —” przy pozycjach bez braku */
+  .kz-pozycje td.kz-bez-decyzji { display: none; }
+  /* długa odznaka („brakuje: 1 szt. · Papryka wędzona słodka 30 g”) nie rozpycha karty ponad 390 px —
+     na telefonie tekst odznaki zawija się w obrębie komórki */
+  .kz-pozycje td { min-width: 0; }
+  .kz-poz-znaczniki { min-width: 0; max-width: 100%; }
+  /* odznaka zostaje pigułką jak w reszcie panelu, także zawinięta */
+  .kz-poz-znaczniki .ui-odznaka { white-space: normal; overflow-wrap: anywhere; }
+}
+/* cena i VAT w miejscu, okno „Zamień produkt” z wyszukiwarką (zamiast pola SKU) */
+.kz-cena { width: 10ch; min-height: var(--wys-kontrolki); text-align: right; }
+.kz-vat { width: auto; min-width: 9ch; min-height: var(--wys-kontrolki); }
+.kz-zamiennik-wybor { display: flex; flex-wrap: wrap; align-items: center; gap: var(--odstep-1) var(--odstep-2); }
+.kz-zamiennik-brak { color: var(--kolor-ostrzezenie); }
+.kz-szukaj { display: flex; align-items: flex-end; gap: var(--odstep-2); margin: var(--odstep-3) 0; }
+.kz-szukaj .field { flex: 1 1 auto; margin: 0; }
+.kz-wyniki { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.kz-wynik { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: var(--odstep-2) var(--odstep-3); padding: var(--odstep-2) 0; border-top: 1px solid var(--kolor-linia); }
+.kz-wynik-opis { display: flex; flex-direction: column; min-width: 0; overflow-wrap: anywhere; }
+.kz-wynik-akcja { justify-self: end; text-align: right; }
+@media (max-width: 760px) {
+  .kz-cena { width: 100%; max-width: 14ch; min-height: var(--wys-celu); }
+  .kz-vat { min-height: var(--wys-celu); }
+  .kz-szukaj { flex-direction: column; align-items: stretch; }
+  .kz-wynik { grid-template-columns: minmax(0, 1fr) auto; }
+  .kz-wynik-akcja { grid-column: 1 / -1; justify-self: stretch; text-align: left; }
+  .kz-wynik-akcja .btn { width: 100%; justify-content: center; }
+}
+
+/* wyszukiwarka punktów odbioru InPost w poprawce adresu */
+.wp-szukaj { display: flex; gap: 8px; align-items: stretch; }
+.wp-szukaj .input { flex: 1 1 auto; min-width: 0; }
+.wp-lista { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; max-height: 320px; overflow-y: auto; }
+.wp-lista li { display: flex; gap: 10px; align-items: center; justify-content: space-between; padding: 8px 10px; border: 1px solid var(--line, #e3e6ea); border-radius: 8px; }
+.wp-lista li > div { min-width: 0; overflow-wrap: anywhere; }
+.wp-lista li.wp-wybrany { border-color: var(--kolor-akcent-linia); }
+.wp-uwaga { color: var(--kolor-blad); font-weight: 600; }
+@media (max-width: 600px) {
+  .wp-lista li { flex-direction: column; align-items: stretch; }
+}
+/* przyciski automatycznych akcji pod nagłówkiem karty */
+.kz-przyciski-regul { display: flex; flex-wrap: wrap; gap: var(--odstep-2); }
+.kz-przyciski-regul form { margin: 0; }
+
+/* ---------- układ karty (pomysł układu z TwojOMS, MIT; style własne na tokenach) ----------
+   nagłówek → trzy równe karty danych → pozycje → przesyłka | płatność → dokument | zwroty i notatki → historia */
+.kz-dane { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--odstep-4); align-items: stretch; margin-bottom: var(--odstep-4); }
+.kz-dane > .card + .card { margin-top: 0; }
+/* formularz danych klienta (`?edytuj=klient`) zajmuje dwie kolumny, „Szczegóły zamówienia” trzecią */
+.kz-dane-formularz { grid-column: span 2; }
+.kz-dane .dl { overflow-wrap: anywhere; }
+.kz-dwie { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--odstep-4); align-items: start; margin-bottom: var(--odstep-4); }
+.kz-dwie > .card + .card { margin-top: 0; }
+.kz-kolumna { display: flex; flex-direction: column; gap: var(--odstep-4); min-width: 0; }
+.kz-kolumna > .card + .card { margin-top: 0; }
+.kz-kolumna:empty { display: none; }
+.kz-stopka-sekcji { display: flex; flex-direction: column; gap: var(--odstep-2); margin-top: var(--odstep-3); padding-top: var(--odstep-3); border-top: 1px solid var(--kolor-linia); }
+.kz-stopka-sekcji .kz-poz-akcje:empty { display: none; }
+.kz-przesylka-blok > :first-child { margin-top: 0; }
+/* kolejne akapity opisu pod tabelą pozycji nie zlewają się w jeden */
+.kz-opis { margin: var(--odstep-2) 0 0; }
+
+/* podsumowanie pozycji: netto | VAT | brutto do prawej; brutto to jedyna duża liczba karty */
+.kz-suma { display: flex; flex-direction: column; align-items: flex-end; gap: var(--odstep-1); margin-top: var(--odstep-3); padding-top: var(--odstep-3); border-top: 1px solid var(--kolor-linia); text-align: right; }
+.kz-suma-kwoty { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: flex-end; gap: var(--odstep-2) var(--odstep-6); margin: 0; }
+.kz-suma-kwoty > div { display: flex; flex-direction: column; gap: 2px; }
+.kz-suma-kwoty dt { font-size: var(--tekst-xs); color: var(--kolor-tekst-2); }
+.kz-suma-kwoty dd { margin: 0; font-size: var(--tekst-md); font-weight: var(--waga-polmocna); font-variant-numeric: tabular-nums; }
+.kz-suma-kwoty .kz-suma-brutto dd { font-size: var(--tekst-xl); font-weight: var(--waga-mocna); color: var(--kolor-tekst); }
+
+@media (max-width: 1100px) {
+  .kz-dane { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 760px) {
+  .kz-dane, .kz-dwie { grid-template-columns: minmax(0, 1fr); }
+  .kz-dane-formularz { grid-column: 1 / -1; }
+  .kz-suma { align-items: stretch; text-align: left; }
+  .kz-suma-kwoty { justify-content: space-between; gap: var(--odstep-2) var(--odstep-4); }
+}
+.kz-tabela-ramka { min-width: 0; }
+@media (min-width: 761px) { .kz-tabela-ramka { overflow-x: auto; } }
+#pozycje .kz-decyzja { min-width: 20ch; }
+
+/* historia: ten sam pasek nagłówka co sekcje (app/ui/sekcja.tsx), zwijana jak dotąd */
+details.kz-historia { padding: 0; }
+details.kz-historia > summary { min-height: 44px; margin: 0; padding: var(--odstep-2) var(--odstep-4); align-items: center; background: var(--kolor-powierzchnia-2); border-radius: calc(var(--promien) - 1px); }
+details.kz-historia[open] > summary { margin: 0; border-bottom: 1px solid var(--kolor-linia); border-radius: calc(var(--promien) - 1px) calc(var(--promien) - 1px) 0 0; }
+details.kz-historia > summary h2 { margin: 0; font: var(--waga-mocna) var(--tekst-xs)/1.4 var(--font-tresc); text-transform: uppercase; letter-spacing: 0.06em; color: var(--kolor-tekst-2); }
+details.kz-historia > :not(summary) { margin: var(--odstep-4); }
+details.kz-historia > :not(summary) + :not(summary) { margin-top: 0; }
+
+/* zwarte wiersze pozycji na komputerze (uwaga z 09.11: „raz są rozszerzone”). Produkt bierze resztę szerokości,
+   liczby i stan pozycji tyle, ile potrzebują (bez zawijania), więc każdy wiersz ma dwie linie: nazwa + szara linia
+   SKU · EAN · półka · oferta obok miniatury (40 px, na telefonie 32 px z reguły `td.with-img .pimg` w panel.css); ilość + stan półki, cena, VAT i odznaka na tej samej wysokości. */
+.kz-poz-opis { display: flex; flex-direction: column; min-width: 0; }
+.kz-poz-meta { display: flex; flex-wrap: wrap; column-gap: 0; row-gap: 2px; margin-top: 2px; font-size: var(--tekst-xs); color: var(--kolor-tekst-2); }
+/* kropka na końcu poprzedniego elementu (after), więc przy zawinięciu na 390 px nowa linia nie
+   zaczyna się od „·”; zostaje najwyżej na końcu wiersza, jak przecinek */
+.kz-poz-meta > *:not(:last-child)::after { content: '·'; margin: 0 6px; color: var(--kolor-tekst-2); }
+.kz-poz-meta .mono { font-size: var(--tekst-xs); }
+@media (min-width: 761px) {
+  .kz-pozycje td { vertical-align: middle; }
+  .kz-pozycje .kz-pline { align-items: center; }
+  .kz-pozycje th.right { text-align: right; }
+  .kz-pozycje th.kz-waska, .kz-pozycje td.kz-waska { width: 1%; white-space: nowrap; }
+  /* stan pozycji: odznaki jedna pod drugą (zestaw ma odznakę na składnik), kolumna tak szeroka jak najdłuższa odznaka */
+  .kz-pozycje td.kz-stan { white-space: normal; }
+  .kz-pozycje td.kz-stan .kz-poz-znaczniki { flex-direction: column; align-items: flex-start; margin-top: 0; }
+  .kz-pozycje td.kz-stan .ui-odznaka { white-space: nowrap; }
+  /* produkt bierze całą resztę szerokości (kolumny liczb mają 1% i nie zawijają, decyzja o braku ma własne min. 24ch) */
+  .kz-pozycje th.kz-produkt { width: 100%; min-width: 28ch; }
+}

@@ -1,0 +1,41 @@
+Temat: Czy był problem z płatnością za zamówienie ZAM-2026-00123?
+Do: (adres klienta)
+Odpowiedź do: sklep@example.com
+
+Żółwik
+Czy był problem z płatnością?
+
+Dzień dobry Jan,
+
+dziękujemy za zamówienie w sklepie Żółwik. Płatność online za to zamówienie nie doszła do skutku. Czy wystąpił jakiś problem z płatnością? Zamówienie nadal czeka na wpłatę.
+
+Numer zamówienia: ZAM-2026-00123
+Kwota do zapłaty: 1 234,50 zł
+
+Zamówione produkty:
+- 2 × Kubek ceramiczny 300 ml
+- 1 × Zestaw <Prezent> „Jesień” & dzbanek
+
+Zamiast płatności online można zapłacić zwykłym przelewem:
+
+Odbiorca: Firma Testowa sp. z o.o.
+Numer rachunku: 12 3456 7890 1234 5678 9012 3456
+Kwota: 1 234,50 zł
+Tytuł przelewu: Zamówienie ZAM-2026-00123
+
+Do czasu wpłaty towar z tego zamówienia nie jest już dla Państwa zarezerwowany. Po wpłacie zrealizujemy zamówienie z produktów, które będą wtedy dostępne.
+
+>> Jeśli płatność nie wpłynie do 30 października 2026, zamówienie zostanie anulowane.
+
+Jeśli płatność została już wysłana, prosimy zignorować tę wiadomość. W razie pytań albo problemu z płatnością wystarczy odpowiedzieć na ten e-mail.
+
+Pozdrawiamy
+Zespół sklepu Żółwik
+
+-- 
+Firma Testowa sp. z o.o.
+ul. Przykładowa 1, 00-000 Testowo
+NIP 000-000-00-00
+Kontakt: kontakt@example.com, +48 000 000 000
+Ta wiadomość dotyczy zamówienia w sklepie Żółwik. Na pytania odpowiadamy pod adresem sklep@example.com.
+https://sklep.example.com

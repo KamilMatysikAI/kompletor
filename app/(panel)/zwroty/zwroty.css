@@ -1,0 +1,19 @@
+/* Zwroty i reklamacje: formularz, karta zwrotu. Tokeny i komponenty z app/ui; tu tylko układ. */
+.zw-uklad { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: var(--sp-4, 16px); align-items: start; }
+.zw-glowna, .zw-bok { display: grid; gap: var(--sp-4, 16px); min-width: 0; }
+.zw-formularz, .zw-odbior, .zw-korekta, .zw-odrzuc, .zw-recznie, .zw-zdjecie-form { display: grid; gap: var(--sp-3, 12px); justify-items: start; }
+.zw-formularz > .field, .zw-formularz > .ui-pole, .zw-formularz textarea, .zw-recznie .field, .zw-odrzuc .field { width: 100%; max-width: 560px; }
+.zw-typ, .zw-dyspozycja { border: 0; padding: 0; margin: 0; display: flex; flex-wrap: wrap; gap: var(--sp-2, 8px) var(--sp-4, 16px); }
+.zw-typ legend { font-weight: 600; margin-bottom: var(--sp-1, 4px); }
+.zw-radio { display: inline-flex; align-items: center; gap: 6px; min-height: 44px; cursor: pointer; }
+.zw-pozycje { width: 100%; }
+.zw-ilosc { width: 6.5rem; text-align: right; }
+.zw-szukaj { display: flex; flex-wrap: wrap; gap: var(--sp-3, 12px); align-items: flex-end; }
+.zw-wyniki { list-style: none; padding: 0; margin: var(--sp-3, 12px) 0; display: grid; gap: var(--sp-2, 8px); }
+.zw-wyniki a { display: inline-flex; min-height: 44px; align-items: center; }
+.zw-zdjecie { display: block; max-width: 100%; height: auto; border-radius: var(--r-2, 8px); }
+.zw-akcje { display: flex; gap: var(--sp-3, 12px); }
+@media (max-width: 900px) {
+  .zw-uklad { grid-template-columns: minmax(0, 1fr); }
+  .zw-ilosc { width: 100%; }
+}

@@ -1,0 +1,76 @@
+{
+ "warehouse_documents": {
+  "0": {
+   "warehouse_document": {
+    "id": "900000070",
+    "fullnumber": "WZ 142/4/11/26",
+    "number": "142",
+    "date": "2026-11-04",
+    "type": "WZ",
+    "status": "pending",
+    "description": "",
+    "delivered": "Baselinker",
+    "created": "2026-11-04 12:51:24",
+    "modified": "2026-11-04 12:51:24",
+    "warehouse": {
+     "id": 900014
+    },
+    "invoice": {
+     "id": 900000217
+    },
+    "warehouse_document_contents": {
+     "0": {
+      "warehouse_document_content": {
+       "id": "900000630",
+       "count": "1.0000",
+       "unit_count": "1.0000",
+       "created": "2026-11-04 12:51:24",
+       "good": {
+        "id": 90000077
+       },
+       "warehouse_document": {
+        "id": 900000070
+       }
+      }
+     },
+     "1": {
+      "warehouse_document_content": {
+       "id": "900000637",
+       "count": "1.0000",
+       "unit_count": "1.0000",
+       "created": "2026-11-04 12:51:24",
+       "good": {
+        "id": 90000049
+       },
+       "warehouse_document": {
+        "id": 900000070
+       }
+      }
+     },
+     "2": {
+      "warehouse_document_content": {
+       "id": "900000644",
+       "count": "1.0000",
+       "unit_count": "1.0000",
+       "created": "2026-11-04 12:51:24",
+       "good": {
+        "id": 90000056
+       },
+       "warehouse_document": {
+        "id": 900000070
+       }
+      }
+     }
+    }
+   }
+  },
+  "parameters": {
+   "limit": "5",
+   "page": "1",
+   "total": "1"
+  }
+ },
+ "status": {
+  "code": "OK"
+ }
+}

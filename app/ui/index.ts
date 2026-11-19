@@ -1,0 +1,16 @@
+// biblioteka komponentów panelu. Importuj stąd (`import { Przycisk, Karta } from '@/app/ui'`), nie
+// z pojedynczych plików. Zasady i przykłady: docs/ui.md.
+export { Przycisk, PrzyciskLink, klasyPrzycisku, POZYCJA_MENU, type WariantPrzycisku, type RozmiarPrzycisku, type PrzyciskProps } from './przycisk'
+export { Odznaka, StatusFirmy, StatusZamowienia, stylKoloru, TrybKanalu, StanPlatnosci } from './odznaka'
+export { NaglowekStrony, Karta, Baner, PustyStan, ListaOpisowa, Ladowanie, Szkielet, Zakladki, type Zakladka } from './uklad'
+export { Pole, PoleTekstowe, PoleLiczbowe, PoleWielowierszowe, Wybor, WyborJednej, Przelacznik, Zaawansowane, atrybutyPola, type PoleWspolne } from './pole'
+export { PoleHasla } from './pole-hasla'
+export { ToastProvider, useToast, ToastPoAkcji, type RodzajToastu } from './toast'
+export { ToastZAdresuZapisu } from './toast-z-adresu'
+export { Modal, Potwierdzenie, PrzyciskPotwierdz } from './modal'
+export { PasekZapisu } from './pasek-zapisu'
+export { Tabela, Paginacja, type KolumnaTabeli, type WierszTabeli } from './tabela'
+export { ZaznaczoneUkryte, KlikalneWiersze, useZaznaczenie, ZaznaczanieTabeli, PoleZaznaczenia, ZaznaczWszystkie, PasekAkcjiMasowych } from './tabela-klient'
+export { PasekFiltrow } from './pasek-filtrow'
+export { MenuAkcji, GrupaMenu, RozwinWMenu } from './menu'
+export { Sekcja, NaglowekSekcji, type EdycjaSekcji } from './sekcja'

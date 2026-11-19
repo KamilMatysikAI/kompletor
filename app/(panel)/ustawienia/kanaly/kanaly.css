@@ -1,0 +1,103 @@
+/* Ustawienia → Kanały sprzedaży: kafle platform, siatka pól, kroki nowego konta, połączenie z Allegro.
+   Tylko tokeny z app/ui/tokeny.css (docs/ui.md). */
+
+.kn-kafle {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 200px), 1fr));
+  gap: var(--odstep-3);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.kn-kafel {
+  display: flex;
+  align-items: center;
+  gap: var(--odstep-3);
+  min-height: var(--wys-celu);
+  padding: var(--odstep-3) var(--odstep-4);
+  border: 1px solid var(--kolor-linia);
+  border-radius: var(--promien);
+  background: var(--kolor-powierzchnia);
+  color: var(--kolor-tekst);
+  text-decoration: none;
+  transition: border-color var(--czas-szybki), background var(--czas-szybki);
+}
+.kn-kafel:hover { border-color: var(--kolor-linia-mocna); background: var(--kolor-powierzchnia-hover); }
+.kn-kafel:focus-visible { outline: 2px solid var(--kolor-focus); outline-offset: 2px; }
+.kn-znak {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border-radius: var(--promien);
+  background: var(--kolor-akcent-tlo);
+  color: var(--kolor-akcent-tekst);
+  font-weight: var(--waga-mocna);
+  font-size: var(--tekst-sm);
+}
+.kn-kafel-tekst { display: grid; gap: 2px; min-width: 0; }
+.kn-kafel-tekst b { font-size: var(--tekst-md); }
+.kn-kafel-tekst span { color: var(--kolor-tekst-2); font-size: var(--tekst-sm); }
+
+.kn-pola {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 280px), 1fr));
+  gap: var(--odstep-3);
+  margin-bottom: var(--odstep-3);
+}
+.kn-akcje { display: flex; flex-wrap: wrap; gap: var(--odstep-2); align-items: center; margin-top: var(--odstep-3); }
+.kn-akcje form { margin: 0; }
+.kn-skad { margin: 0 0 var(--odstep-3); color: var(--kolor-tekst-2); font-size: var(--tekst-sm); }
+.kn-nazwa-pola { font-family: var(--font-mono); color: var(--kolor-tekst-3); overflow-wrap: anywhere; }
+
+/* Kroki nowego konta: Klucze → Sprawdź → Oferty → Przypisz → Włącz */
+.kn-kroki { display: flex; flex-wrap: wrap; gap: var(--odstep-2); list-style: none; margin: 0; padding: 0; counter-reset: krok; }
+.kn-krok {
+  counter-increment: krok;
+  display: flex;
+  align-items: center;
+  gap: var(--odstep-2);
+  padding: var(--odstep-1) var(--odstep-3);
+  border: 1px solid var(--kolor-linia);
+  border-radius: var(--promien-pelny);
+  font-size: var(--tekst-sm);
+  color: var(--kolor-tekst-2);
+}
+.kn-krok::before { content: counter(krok); font-weight: var(--waga-mocna); }
+.kn-krok a { color: inherit; }
+.kn-krok[data-stan='zrobione'] { border-color: var(--kolor-sukces-linia); background: var(--kolor-sukces-tlo); color: var(--kolor-sukces); }
+.kn-krok[data-stan='zrobione']::before { content: '✓'; }
+.kn-krok[data-stan='teraz'] { border-color: var(--kolor-akcent); color: var(--kolor-tekst); font-weight: var(--waga-polmocna); }
+
+/* Połączenie z Allegro: link i kod do przepisania */
+.kn-kod {
+  display: inline-block;
+  padding: var(--odstep-1) var(--odstep-3);
+  border: 1px dashed var(--kolor-linia-mocna);
+  border-radius: var(--promien-sm);
+  font-family: var(--font-mono);
+  font-size: var(--tekst-xl);
+  letter-spacing: 0.08em;
+}
+.kn-funkcje { display: grid; gap: var(--odstep-2); margin: 0 0 var(--odstep-3); padding: 0; border: 0; }
+.kn-funkcje legend { font-weight: var(--waga-polmocna); margin-bottom: var(--odstep-2); }
+.kn-funkcja { display: flex; gap: var(--odstep-2); align-items: flex-start; min-height: var(--wys-celu); }
+.kn-funkcja input { margin-top: 3px; width: 18px; height: 18px; flex: none; }
+.kn-funkcja span { display: grid; gap: 2px; }
+.kn-funkcja small { color: var(--kolor-tekst-2); }
+.kn-warunki { margin: var(--odstep-2) 0 0; padding-left: var(--odstep-5); display: grid; gap: var(--odstep-1); font-size: var(--tekst-sm); }
+.kn-warunki li[data-blokuje='tak'] { color: var(--kolor-blad); }
+.kn-szukaj { display: flex; flex-wrap: wrap; gap: var(--odstep-2); align-items: flex-end; margin-bottom: var(--odstep-3); }
+.kn-szukaj > :first-child { flex: 1 1 220px; }
+.kn-przypisz { display: flex; flex-wrap: wrap; gap: var(--odstep-2); align-items: flex-end; }
+.kn-przypisz > .ui-pole:first-of-type { flex: 1 1 140px; }
+.kn-przypisz .kn-sztuk { width: 110px; }
+.kn-zawijaj { overflow-wrap: anywhere; }
+/* przełącznik „Zapis do sklepu” w sekcji zapisu, jedno miejsce wyłącznika */
+.kn-przelacznik { margin: var(--odstep-3) 0; padding: var(--odstep-3) var(--odstep-4); border: 1px solid var(--kolor-linia); border-radius: var(--promien); display: grid; gap: var(--odstep-2); }
+.kn-przelacznik p { margin: 0; }
+/* „Pola zamówienia” — wiersz dt/dd w siatce .dl, lista wykrytych nazw pól w kolumnach */
+.kn-pole-meta { display: contents; }
+.kn-pole-meta .kn-akcje { margin-top: var(--odstep-2); }
+.kn-lista-pol { columns: 2 16rem; column-gap: var(--odstep-4); }

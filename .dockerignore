@@ -1,0 +1,33 @@
+node_modules
+.next
+dist
+.git
+.github
+.env
+.env.*
+!.env.example
+*.tsbuildinfo
+npm-debug.log*
+coverage
+raporty
+*.md
+# dane z .gitignore też poza kontekstem obrazu — lokalny `docker build` robi
+# `COPY . .`, więc bez tych wpisów zrzuty importu lądowałyby w warstwie pośredniej lokalnego cache.
+# Wzorce z **/ działają na każdym poziomie (sam `*.x` w .dockerignore łapie tylko katalog główny).
+**/zrzuty
+**/*.zrzut.json
+**/.local-db.json
+**/.secrets
+**/*.log
+tests
+**/*.test.ts
+**/docker-compose*
+# kopie bazy ze scripts/aktualizuj.sh (dane firmy) poza kontekstem obrazu
+kopie
+**/*.dump
+# prywatna nakładka firmy i presety/nadpisania inne niż przykład poza obrazem (montuje się je przy starcie)
+prywatne
+seed/presety/*
+!seed/presety/przyklad.json
+dane/nadpisania-ofert/*
+!dane/nadpisania-ofert/.gitkeep

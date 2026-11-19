@@ -1,0 +1,34 @@
+/* ekran Raporty. Kafle w siatce (1366 px: 5 w rzędzie, 390 px: 2), tabele z poziomym przewijaniem w karcie
+   zamiast przewijania całej strony, kolumny pomocnicze (.rap-opc) chowane na wąskim ekranie. */
+.rap-filtry { display: grid; gap: var(--s3); }
+.rap-pola { display: flex; flex-wrap: wrap; gap: var(--s3); align-items: flex-end; }
+.rap-pola .field { margin: 0; min-width: 150px; flex: 1 1 150px; max-width: 240px; }
+.rap-pola .btn { flex: 0 0 auto; }
+.rap-skroty { display: flex; flex-wrap: wrap; gap: 6px; }
+.rap-skroty .chip { text-decoration: none; color: var(--ink); padding: 4px 10px; }
+.rap-skroty .chip.sel { background: var(--kolor-ciemny); color: var(--kolor-tekst-odwrotny); }
+.rap-kafle { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: var(--s3); margin-top: var(--s4); }
+.rap-kafel { background: var(--kolor-powierzchnia); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; min-width: 0; }
+.rap-kafel-t { font-size: 13px; color: var(--ink-2); }
+.rap-kafel-v { font: 700 24px var(--font-naglowek); font-variant-numeric: tabular-nums; letter-spacing: -0.02em; margin: 4px 0 2px; overflow-wrap: anywhere; }
+.rap-zmiana { font-weight: 600; color: var(--ink); white-space: nowrap; }
+.rap-zmiana.up { color: var(--leaf-dark); }
+.rap-zmiana.down { color: var(--red-ink); }
+.rap-uwaga { margin: var(--s3) 0 0; }
+.rap-przewin { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.rap-przewin .tbl { min-width: 100%; }
+.rap-udzial { width: 22%; min-width: 80px; }
+.rap-pasek { display: block; height: 10px; background: var(--kolor-akcent); border-radius: 0 4px 4px 0; min-width: 2px; }
+.mchart .rap-traf { fill: transparent; }
+.mchart .rap-traf:hover + .bar { fill: var(--kolor-akcent-linia); }
+.mchart .bar.rap-niepelny { fill: var(--kolor-akcent-tlo); stroke: var(--kolor-akcent-linia); stroke-width: 1; }
+@media (max-width: 640px) {
+  .rap-kafle { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .rap-kafel { padding: 10px 12px; }
+  .rap-kafel-v { font-size: 17px; }
+  .rap-pola .field { max-width: none; flex: 1 1 140px; }
+  .rap-opc { display: none; }
+  .mchart.rap-wykres .ax { font-size: 19px; }
+}
+.rap-mobile { display: none; }
+@media (max-width: 640px) { .rap-mobile { display: block; } .rap-przewin .tbl th, .rap-przewin .tbl td { padding-left: 6px; padding-right: 6px; } }

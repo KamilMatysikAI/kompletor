@@ -1,0 +1,104 @@
+{
+ "warehouse_documents": {
+  "0": {
+   "warehouse_document": {
+    "id": "900000014",
+    "fullnumber": "WZ 127/26/10/26",
+    "number": "127",
+    "date": "2026-10-26",
+    "type": "WZ",
+    "status": "pending",
+    "description": "",
+    "delivered": "Baselinker",
+    "created": "2026-10-26 17:18:43",
+    "modified": "2026-10-26 17:18:44",
+    "warehouse": {
+     "id": 900014
+    },
+    "invoice": {
+     "id": 900000084
+    },
+    "warehouse_document_contents": {
+     "0": {
+      "warehouse_document_content": {
+       "id": "900000350",
+       "count": "1.0000",
+       "unit_count": "1.0000",
+       "created": "2026-10-26 17:18:44",
+       "good": {
+        "id": 90000028
+       },
+       "warehouse_document": {
+        "id": 900000014
+       }
+      }
+     },
+     "1": {
+      "warehouse_document_content": {
+       "id": "900000357",
+       "count": "1.0000",
+       "unit_count": "1.0000",
+       "created": "2026-10-26 17:18:44",
+       "good": {
+        "id": 90000007
+       },
+       "warehouse_document": {
+        "id": 900000014
+       }
+      }
+     },
+     "2": {
+      "warehouse_document_content": {
+       "id": "900000364",
+       "count": "1.0000",
+       "unit_count": "1.0000",
+       "created": "2026-10-26 17:18:44",
+       "good": {
+        "id": 90000021
+       },
+       "warehouse_document": {
+        "id": 900000014
+       }
+      }
+     },
+     "3": {
+      "warehouse_document_content": {
+       "id": "900000371",
+       "count": "1.0000",
+       "unit_count": "1.0000",
+       "created": "2026-10-26 17:18:44",
+       "good": {
+        "id": 90000014
+       },
+       "warehouse_document": {
+        "id": 900000014
+       }
+      }
+     },
+     "4": {
+      "warehouse_document_content": {
+       "id": "900000378",
+       "count": "1.0000",
+       "unit_count": "1.0000",
+       "created": "2026-10-26 17:18:44",
+       "good": {
+        "id": 90000035
+       },
+       "warehouse_document": {
+        "id": 900000014
+       }
+      }
+     }
+    }
+   }
+  },
+  "parameters": {
+   "limit": "5",
+   "page": "1",
+   "total": "1"
+  }
+ },
+ "status": {
+  "code": "OK"
+ }
+}

@@ -1,0 +1,14 @@
+{
+  "serwer": "https://kompletor.example.pl",
+  "token": "WKLEJ-TUTAJ-TOKEN-STANOWISKA-Z-PANELU",
+  "stanowisko": "magazyn-1",
+  "drukarki": {
+    "A4": "Brother HL-L2350DW series",
+    "TERMICZNA_1": "Termiczna 1",
+    "TERMICZNA_2": "Termiczna 2"
+  },
+  "odpytywanieSekundy": 5,
+  "stanSekundy": 60,
+  "maksKolejkaTermicznej": 5,
+  "log": { "maksMb": 5, "plikow": 5 }
+}

@@ -1,0 +1,48 @@
+{
+ "warehouse_documents": {
+  "0": {
+   "warehouse_document": {
+    "id": "900000077",
+    "fullnumber": "WZ 154/4/11/26",
+    "number": "154",
+    "date": "2026-11-04",
+    "type": "WZ",
+    "status": "pending",
+    "description": "",
+    "delivered": "Baselinker",
+    "created": "2026-11-04 13:29:32",
+    "modified": "2026-11-04 13:29:32",
+    "warehouse": {
+     "id": 900014
+    },
+    "invoice": {
+     "id": 900000252
+    },
+    "warehouse_document_contents": {
+     "0": {
+      "warehouse_document_content": {
+       "id": "900000651",
+       "count": "1.0000",
+       "unit_count": "1.0000",
+       "created": "2026-11-04 13:29:32",
+       "good": {
+        "id": 90000021
+       },
+       "warehouse_document": {
+        "id": 900000077
+       }
+      }
+     }
+    }
+   }
+  },
+  "parameters": {
+   "limit": "5",
+   "page": "1",
+   "total": "1"
+  }
+ },
+ "status": {
+  "code": "OK"
+ }
+}

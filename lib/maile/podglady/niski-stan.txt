@@ -1,0 +1,29 @@
+Temat: Niski stan: KUB-300 Kubek ceramiczny 300 ml
+Do: biuro@example.com
+Odpowiedź do: sklep@example.com
+
+[WIADOMOŚĆ WEWNĘTRZNA]
+
+Żółwik
+Kończy się towar
+
+Dzień dobry,
+
+stan produktu spadł poniżej progu ustawionego w Kompletorze. Warto zamówić towar.
+
+Produkt: Kubek ceramiczny 300 ml
+SKU: KUB-300
+Dostępne: 3 szt.
+Próg: 10 szt.
+
+Otwórz produkt w panelu: https://panel.example.com/produkty/KUB-300
+
+Wiadomość wysłana automatycznie przez Kompletor. Kolejna przyjdzie dopiero, gdy stan wróci powyżej progu i znów spadnie.
+
+-- 
+Firma Testowa sp. z o.o.
+ul. Przykładowa 1, 00-000 Testowo
+NIP 000-000-00-00
+Kontakt: kontakt@example.com, +48 000 000 000
+Wiadomość wewnętrzna systemu Kompletor (firma: Firma Testowa sp. z o.o.)
+https://sklep.example.com
