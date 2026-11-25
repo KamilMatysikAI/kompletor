@@ -4,6 +4,11 @@
 // `zapisWlaczony: true` i host wywoła zapis (tryb PRACA danego rodzaju, lib/kanaly/zapis-host.ts). Bez wyłącznika każda
 // metoda zapisu zwraca TRWALY i nie wysyła żadnego żądania.
 //
+// Allegro nie przyjmuje ilości 0 na aktywnej ofercie (INVALID_OFFER_QUANTITY). Przy ustawieniu konta
+// `stanZerowy` = ZAKONCZ (domyślne) stan 0 kończy ofertę (`PUT /sale/offer-publication-commands/{commandId}`, END), a stan
+// dodatni wznawia ofertę zakończoną przez Kompletor (ilość, potem ACTIVATE). Ten sam zakres co stany (`sale:offers:write`).
+// Źródło: developer.allegro.pl/swagger.yaml (changePublicationStatusUsingPUT) i poradnik „Jak zarządzać ofertami”.
+//
 // Stany: `PUT /sale/offer-quantity-change-commands/{commandId}` (stan bezwzględny FIXED). Jedna komenda = jedna wartość,
 // więc paczka dzieli się na komendy po ilości (do 1000 ofert w komendzie). `commandId` jest deterministyczny z referencji
 // hosta, ilości i numeru części: powtórka tej samej paczki nie zakłada drugiej komendy (Allegro odpowiada, że komenda
@@ -41,10 +46,12 @@ import {
   type TrackingInfo,
   type TrackingWriter,
   type WriteOutcome,
+  type ZmianaPublikacji,
   POLE_WYSTAWIANIA_OFERT,
   WYSTAWIANIE_WYLACZONE,
   wystawianieOfertWlaczone,
 } from './kontrakt'
+import { konczyPrzyZerze, POLE_LIMITU_ZAKONCZEN, POLE_STANU_ZEROWEGO } from './stan-zerowy'
 
 export const ALLEGRO_ZAPIS_KEY = 'allegro.zapis.v1'
 export const ZAPIS_WYLACZONY = 'zapis wyłączony na tym koncie Allegro'
@@ -111,6 +118,9 @@ export const ALLEGRO_ZAPIS_MANIFEST: AdapterManifest = {
     },
     // wystawianie ofert (osobny wyłącznik) i warunki konta wymagane przez Allegro przy nowej ofercie
     POLE_WYSTAWIANIA_OFERT,
+    // stan 0 = zakończenie oferty (Allegro nie przyjmuje ilości 0 na aktywnej ofercie), dobowy bezpiecznik
+    POLE_STANU_ZEROWEGO,
+    POLE_LIMITU_ZAKONCZEN,
     { key: 'cennikDostawId', type: 'string', required: false, description: 'cennik dostaw z konta Allegro (Moje Allegro → Sprzedaż → Cenniki dostawy), wymagany przy wystawianiu ofert', pattern: ID_WARUNKOW_RE },
     { key: 'zwrotyId', type: 'string', required: false, description: 'warunki zwrotów z konta Allegro (Warunki oferty → Zwroty)', pattern: ID_WARUNKOW_RE },
     { key: 'reklamacjeId', type: 'string', required: false, description: 'warunki reklamacji z konta Allegro (Warunki oferty → Reklamacje)', pattern: ID_WARUNKOW_RE },
@@ -127,6 +137,27 @@ const TRACKING_RE = /^[A-Za-z0-9-]{4,64}$/
 export const OFFERS_PER_COMMAND = 1000
 /** Odpytań wyniku komendy stanów po jej wysłaniu (domyślnie co 2 s, `ctx.http.pollDelayMs`). */
 export const STOCK_POLLS = 4
+const QUANTITY_PATH = '/sale/offer-quantity-change-commands'
+/** komendy publikacji ofert (END / ACTIVATE), ten sam zakres co stany (`allegro:api:sale:offers:write`). */
+const PUBLICATION_PATH = '/sale/offer-publication-commands'
+/** Numerów ofert w jednym odczycie statusu publikacji (`GET /sale/offers?offer.id=…`): adres zapytania musi zmieścić się w limicie 500 znaków klienta HTTP. */
+export const STATUS_IDS_PER_QUERY = 15
+/** Odstęp między naszym zakończeniem a `endedAt` z Allegro, po którym uznajemy, że ofertę zakończył później ktoś inny. */
+export const ZAKONCZENIE_TOLERANCJA_MS = 10 * 60_000
+export const LIMIT_ZAKONCZEN_WYCZERPANY = 'dobowy limit zakończeń ofert konta wyczerpany: oferta zostaje aktywna ze starą liczbą sztuk (ustawienie konta „limitZakonczenDoba”)'
+
+interface StanPublikacji {
+  status: string
+  endedAt: string | null
+}
+
+/** Oferta zakończona wyraźnie później niż nasze zakończenie (ktoś ją wznowił i zakończył sam) = nie wznawiamy. */
+export function zakonczonaPozniej(endedAt: string | null, naszeAt: string | undefined): boolean {
+  if (!endedAt || !naszeAt) return false
+  const a = Date.parse(endedAt)
+  const b = Date.parse(naszeAt)
+  return Number.isFinite(a) && Number.isFinite(b) && a > b + ZAKONCZENIE_TOLERANCJA_MS
+}
 const CARRIER_NAME: Record<string, string> = { PACZKOMATY: 'InPost', INPOST_KURIER: 'InPost', DPD: 'DPD', DPD_EMPIK: 'DPD', ALLEGRO: 'Allegro', OSOBISTY: 'Odbiór osobisty' }
 
 const obj = (v: unknown): Record<string, unknown> => (v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : {})
@@ -263,12 +294,94 @@ export class AllegroZapisAdapter extends AllegroAdapter implements StockWriter, 
 
   // ─── Stany ───────────────────────────────────────────────────────────────
 
+  /**
+   * Paczka stanów. Przy ustawieniu konta „przy stanie 0: zakończ ofertę” (domyślne) oferty ze stanem 0 i oferty
+   * zakończone wcześniej przez Kompletor najpierw dostają odczyt statusu publikacji (`GET /sale/offers?offer.id=…`):
+   *   - stan 0 na aktywnej ofercie → komenda publikacji END (Allegro nie przyjmuje ilości 0 na aktywnej ofercie);
+   *   - stan 0 na ofercie nieaktywnej → bez zapisu, OK;
+   *   - stan dodatni na ofercie zakończonej przez Kompletor → komenda ilości, potem ACTIVATE (Allegro: zakończoną ofertę
+   *     z zerowym stanem najpierw trzeba uzupełnić, dopiero potem aktywować);
+   *   - stan dodatni na ofercie zakończonej później przez kogoś innego → bez zapisu i bez wznowienia, OK z wpisem.
+   * Reszta ofert idzie komendą ilości jak dawniej. Odmowa Allegro przy END/ACTIVATE = TRWALY z treścią i `odstaw`.
+   */
   async pushStock(items: StockWriteItem[], reference: string): Promise<WriteOutcome> {
     if (!this.enabled) return this.off(reference)
     if (!items.length) return { kind: 'OK', reference }
     const bad = items.filter((it) => !OFFER_RE.test(it.offerExternalId) || !Number.isInteger(it.qty) || it.qty < 0)
     const good = items.filter((it) => !bad.includes(it))
     const failed: FailedWriteItem[] = bad.map((b) => ({ offerExternalId: b.offerExternalId, kind: 'TRWALY', message: 'zła pozycja stanu (numer oferty Allegro albo ilość)' }))
+    const publikacja: ZmianaPublikacji[] = []
+    let doIlosci: StockWriteItem[] = good
+    const doZakonczenia: StockWriteItem[] = []
+    const doWznowienia: StockWriteItem[] = []
+    const sprawdz = konczyPrzyZerze(this.ctx.config) ? good.filter((it) => it.qty === 0 || !!it.zakonczonaPrzezNasAt) : []
+    if (sprawdz.length) {
+      doIlosci = good.filter((it) => !sprawdz.includes(it))
+      let stany: Map<string, StanPublikacji> | null = null
+      try {
+        stany = await this.stanyPublikacji(sprawdz.map((it) => it.offerExternalId))
+      } catch (e) {
+        const o = e instanceof Error ? e.message : String(e)
+        const kind: FailureKind = e instanceof AdapterError && e.kind === 'TRWALY' ? 'TRWALY' : 'PRZEJSCIOWY'
+        for (const it of sprawdz) failed.push({ offerExternalId: it.offerExternalId, kind, message: `status oferty Allegro nieodczytany: ${o}`.slice(0, 300) })
+      }
+      if (stany)
+        for (const it of sprawdz) {
+          const s = stany.get(it.offerExternalId)
+          // oferty nie ma na liście konta: zapis ilości jak dawniej (Allegro odpowie w wyniku komendy)
+          if (!s) {
+            doIlosci.push(it)
+            continue
+          }
+          const aktywna = s.status === 'ACTIVE' || s.status === 'ACTIVATING'
+          if (it.qty === 0) {
+            if (!aktywna) publikacja.push({ offerExternalId: it.offerExternalId, zmiana: 'JUZ_ZAKONCZONA' })
+            else if (it.bezKonczenia) failed.push({ offerExternalId: it.offerExternalId, kind: 'TRWALY', message: LIMIT_ZAKONCZEN_WYCZERPANY, odstaw: true })
+            else doZakonczenia.push(it)
+            continue
+          }
+          if (s.status !== 'ENDED') {
+            // znacznik „zakończona przez nas”, a oferta znowu aktywna (albo szkic): wznowił ją ktoś inny, zwykły zapis ilości
+            publikacja.push({ offerExternalId: it.offerExternalId, zmiana: 'AKTYWNA' })
+            doIlosci.push(it)
+          } else if (zakonczonaPozniej(s.endedAt, it.zakonczonaPrzezNasAt)) publikacja.push({ offerExternalId: it.offerExternalId, zmiana: 'ZAKONCZONA_POZA' })
+          else doWznowienia.push(it)
+        }
+    }
+    const qtyFailed = await this.pushQuantities([...doIlosci, ...doWznowienia], reference)
+    failed.push(...qtyFailed)
+    const bezIlosci = new Set(qtyFailed.map((f) => f.offerExternalId))
+    const publikuj = async (action: 'END' | 'ACTIVATE', lista: StockWriteItem[]) => {
+      if (!lista.length) return
+      const r = await this.publicationCommand(action, lista.map((it) => it.offerExternalId), reference)
+      const zmiana = action === 'END' ? 'ZAKONCZONA' : 'WZNOWIONA'
+      for (const id of r.ok) publikacja.push({ offerExternalId: id, zmiana })
+      // END w toku: znacznik od razu (oferta, która za chwilę będzie zakończona, jest zakończona przez nas); wynik i tak przy ponowieniu
+      if (action === 'END') for (const f of r.failed) if (f.wToku) publikacja.push({ offerExternalId: f.offerExternalId, zmiana })
+      failed.push(...r.failed.map(({ wToku: _w, ...f }) => f))
+    }
+    await publikuj('END', doZakonczenia)
+    await publikuj(
+      'ACTIVATE',
+      doWznowienia.filter((it) => !bezIlosci.has(it.offerExternalId)),
+    )
+    const sentCmds = this.sent.get(reference) ?? []
+    const ref = sentCmds.length ? `QTY:${sentCmds.length}` : undefined
+    const pub = publikacja.length ? { publikacja } : {}
+    if (!failed.length) return { kind: 'OK', reference, ...(ref ? { externalRef: ref } : {}), ...pub }
+    const kind = failed.reduce<FailureKind>((k, f) => worse(k, f.kind), 'PRZEJSCIOWY')
+    return {
+      kind,
+      reference,
+      message: `${failed.length} z ${items.length} pozycji nieudanych: ${[...new Set(failed.map((f) => f.message))].slice(0, 3).join('; ')}`,
+      failedItems: failed,
+      ...pub,
+    }
+  }
+
+  /** Komendy ilości (FIXED) dla pozycji; zwraca nieudane. Zapamiętuje komendy referencji do odszukania. */
+  private async pushQuantities(good: StockWriteItem[], reference: string): Promise<FailedWriteItem[]> {
+    const failed: FailedWriteItem[] = []
     const cmds = stockCommands(good, reference)
     this.sent.set(
       reference,
@@ -333,25 +446,102 @@ export class AllegroZapisAdapter extends AllegroAdapter implements StockWriter, 
       left = next
     }
     for (const c of left) for (const id of c.offers) failed.push({ offerExternalId: id, kind: 'PRZEJSCIOWY', message: 'Allegro jeszcze przetwarza komendę stanów: wynik przy ponowieniu' })
-    const ref = cmds.length ? `QTY:${cmds.length}` : undefined
-    if (!failed.length) return { kind: 'OK', reference, ...(ref ? { externalRef: ref } : {}) }
-    const kind = failed.reduce<FailureKind>((k, f) => worse(k, f.kind), 'PRZEJSCIOWY')
-    return {
-      kind,
-      reference,
-      message: `${failed.length} z ${items.length} pozycji nieudanych: ${[...new Set(failed.map((f) => f.message))].slice(0, 3).join('; ')}`,
-      failedItems: failed,
-    }
+    return failed
   }
 
   /**
-   * Wynik komendy stanów: skończona (z ofertami z błędem), w toku albo nieznana Allegro (404). `expected` = liczba ofert
+   * status publikacji ofert z listy ofert konta (`GET /sale/offers?offer.id=…`, zakres odczytu ofert, który ma
+   * funkcja „Stany ofert”). Po 100 numerów w zapytaniu. Oferta spoza wyniku = brak w mapie. Błąd = wyjątek.
+   */
+  private async stanyPublikacji(ids: string[]): Promise<Map<string, StanPublikacji>> {
+    const out = new Map<string, StanPublikacji>()
+    const uniq = [...new Set(ids)].sort()
+    for (let i = 0; i < uniq.length; i += STATUS_IDS_PER_QUERY) {
+      const part = uniq.slice(i, i + STATUS_IDS_PER_QUERY)
+      const query: [string, string][] = [...part.map((id): [string, string] => ['offer.id', id]), ['limit', String(STATUS_IDS_PER_QUERY)]]
+      const body = this.expectBody(await this.call<{ offers?: unknown }>('/sale/offers', query), '/sale/offers')
+      if (!Array.isArray(body.offers)) throw new AdapterError('Allegro /sale/offers: brak listy offers', 'PRZEJSCIOWY')
+      for (const raw of body.offers as unknown[]) {
+        const o = obj(raw)
+        const id = str(o['id'])
+        const pub = obj(o['publication'])
+        const status = str(pub['status'])
+        if (id && status && part.includes(id)) out.set(id, { status, endedAt: str(pub['endedAt']) })
+      }
+    }
+    return out
+  }
+
+  /**
+   * komenda publikacji (`PUT /sale/offer-publication-commands/{commandId}`, END albo ACTIVATE) z wynikiem
+   * z `GET …/{commandId}` i `…/tasks`. `commandId` z referencji i akcji: powtórka nie zakłada drugiej komendy.
+   * Odmowa Allegro (zadanie FAIL, 4xx) = TRWALY z treścią i `odstaw` (bez pętli ponowień); 429/5xx, brak odpowiedzi,
+   * komenda w toku = PRZEJSCIOWY (`wToku` = Allegro przyjęło, wynik jeszcze nieznany).
+   */
+  private async publicationCommand(action: 'END' | 'ACTIVATE', offers: string[], reference: string): Promise<{ ok: string[]; failed: (FailedWriteItem & { wToku?: boolean })[] }> {
+    const co = action === 'END' ? 'zakończyło' : 'wznowiło'
+    const ok: string[] = []
+    const failed: (FailedWriteItem & { wToku?: boolean })[] = []
+    const sorted = [...new Set(offers)].sort()
+    const cmds: StockCommand[] = []
+    for (let i = 0; i * OFFERS_PER_COMMAND < sorted.length; i++)
+      cmds.push({ commandId: deriveReference([reference, 'allegro-publikacja', action, i]), qty: 0, offers: sorted.slice(i * OFFERS_PER_COMMAND, (i + 1) * OFFERS_PER_COMMAND) })
+    const pending: StockCommand[] = []
+    for (const c of cmds) {
+      const what = `Allegro nie ${co} oferty (komenda ${c.commandId.slice(0, 8)}, ${c.offers.length} ofert)`
+      let r: AllegroWriteResult
+      try {
+        r = await this.write('PUT', `${PUBLICATION_PATH}/${c.commandId}`, {
+          publication: { action },
+          offerCriteria: [{ type: 'CONTAINS_OFFERS', offers: c.offers.map((id) => ({ id })) }],
+        })
+      } catch (e) {
+        const o = asOutcome(e, reference, what)
+        if (o.kind !== 'OK') for (const id of c.offers) failed.push({ offerExternalId: id, kind: o.kind, message: o.message })
+        continue
+      }
+      if ((r.status >= 200 && r.status < 300) || r.status === 409) {
+        pending.push(c)
+        continue
+      }
+      const o = allegroWriteFailure(r, reference, what, FUNKCJA_STANY)
+      if (o.kind !== 'OK') for (const id of c.offers) failed.push({ offerExternalId: id, kind: o.kind, message: o.message, ...(o.kind === 'TRWALY' ? { odstaw: true } : {}) })
+    }
+    let left = pending
+    for (let i = 0; i < STOCK_POLLS && left.length; i++) {
+      await sleep(this.pollDelayMs)
+      const next: StockCommand[] = []
+      for (const c of left) {
+        let st: CommandState
+        try {
+          st = await this.commandState(c.commandId, c.offers.length, PUBLICATION_PATH)
+        } catch {
+          next.push(c)
+          continue
+        }
+        if (st.kind === 'PENDING') next.push(c)
+        else if (st.kind === 'MISSING') for (const id of c.offers) failed.push({ offerExternalId: id, kind: 'PRZEJSCIOWY', message: `Allegro nie zna komendy publikacji (${action}): do ponowienia` })
+        else
+          for (const id of c.offers) {
+            const m = st.failed.get(id)
+            if (m === undefined) ok.push(id)
+            else failed.push({ offerExternalId: id, kind: 'TRWALY', message: `Allegro nie ${co} oferty${m ? `: ${m}` : ''}`, odstaw: true })
+          }
+      }
+      left = next
+    }
+    for (const c of left) for (const id of c.offers) failed.push({ offerExternalId: id, kind: 'PRZEJSCIOWY', message: `Allegro jeszcze przetwarza komendę publikacji (${action}): wynik przy ponowieniu`, wToku: true })
+    return { ok, failed }
+  }
+
+  /**
+   * Wynik komendy (stanów albo publikacji): skończona (z ofertami z błędem), w toku albo nieznana Allegro (404). `expected` = liczba ofert
    * w komendzie: `taskCount.total` mniejsze (także 0 tuż po PUT, zanim Allegro policzy zadania) = w toku.
    */
-  private async commandState(commandId: string, expected: number): Promise<CommandState> {
-    const r = await this.write('GET', `/sale/offer-quantity-change-commands/${commandId}`, undefined)
+  private async commandState(commandId: string, expected: number, base: string = QUANTITY_PATH): Promise<CommandState> {
+    const r = await this.write('GET', `${base}/${commandId}`, undefined)
     if (r.status === 404) return { kind: 'MISSING' }
-    if (r.status < 200 || r.status >= 300 || !r.body) throw new AdapterError(`wynik komendy stanów Allegro: HTTP ${r.status}`, r.status === 429 || r.status >= 500 ? 'PRZEJSCIOWY' : 'TRWALY')
+    if (r.status < 200 || r.status >= 300 || !r.body) throw new AdapterError(`wynik komendy Allegro: HTTP ${r.status}`, r.status === 429 || r.status >= 500 ? 'PRZEJSCIOWY' : 'TRWALY')
     const tc = obj(r.body['taskCount'])
     const total = num(tc['total'])
     const success = num(tc['success']) ?? 0
@@ -360,15 +550,16 @@ export class AllegroZapisAdapter extends AllegroAdapter implements StockWriter, 
     const failed = new Map<string, string>()
     if (failedN > 0) {
       for (let offset = 0; offset < total; offset += 1000) {
-        const t = await this.write('GET', `/sale/offer-quantity-change-commands/${commandId}/tasks`, undefined, { limit: '1000', offset: String(offset) })
-        if (t.status < 200 || t.status >= 300 || !t.body) throw new AdapterError(`zadania komendy stanów Allegro: HTTP ${t.status}`, 'PRZEJSCIOWY')
+        const t = await this.write('GET', `${base}/${commandId}/tasks`, undefined, { limit: '1000', offset: String(offset) })
+        if (t.status < 200 || t.status >= 300 || !t.body) throw new AdapterError(`zadania komendy Allegro: HTTP ${t.status}`, 'PRZEJSCIOWY')
         const tasks = Array.isArray(t.body['tasks']) ? (t.body['tasks'] as unknown[]) : []
         for (const x of tasks) {
           const task = obj(x)
           const status = str(task['status'])
           const id = str(obj(task['offer'])['id'])
-          // komunikat Allegro o ofercie (bez danych klientów), skrócony
-          if (id && status && status !== 'SUCCESS' && status !== 'NEW') failed.set(id, (str(task['message']) ?? status).slice(0, 200))
+          // komunikat Allegro o ofercie (bez danych klientów), skrócony; kod błędu z `errors[]`, gdy jest
+          const kodBledu = str(obj(Array.isArray(task['errors']) ? task['errors'][0] : null)['code'])
+          if (id && status && status !== 'SUCCESS' && status !== 'NEW') failed.set(id, [str(task['message']) ?? kodBledu ?? status, kodBledu && str(task['message']) ? `(${kodBledu})` : ''].filter(Boolean).join(' ').slice(0, 200))
         }
         if (tasks.length < 1000) break
       }

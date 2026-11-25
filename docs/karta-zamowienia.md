@@ -57,7 +57,7 @@ Konto w trybie „Tylko podgląd” (zamówienie prowadzi dotychczasowy system, 
 klienta, podglądy i historię oraz baner „Konto sklepu w trybie »Tylko podgląd«…” ze wskazaniem, gdzie konto się
 włącza (Ustawienia → Sprzedaż i kanały → Kanały sprzedaży). Przyciski zmian są widoczne, ale nieaktywne, z jednym zdaniem powodu pod
 grupą: przyciski statusu w nagłówku i w menu „Więcej” (z „Zmień status…”), „Oznacz jako opłacone”,
-„Zapisz dopłatę” i „Zwrot różnicy” w sekcji „Płatność”, „Dodaj pozycję” i „Podziel zamówienie” pod pozycjami, „Zmień sposób wysyłki” i „Popraw adres albo punkt odbioru” w sekcji „Przesyłka”, „Edytuj kupującego” w karcie „Wysyłka” i „Edytuj” w karcie „Dane do faktury”. Dzięki
+„Zapisz dopłatę”, „Zwrot różnicy” i „Zmień na pobranie” (albo „Zmień na nieopłacone (przelew)”) w sekcji „Płatność”, „Dodaj pozycję” i „Podziel zamówienie” pod pozycjami, „Zmień sposób wysyłki” i „Popraw adres albo punkt odbioru” w sekcji „Przesyłka”, „Edytuj kupującego” w karcie „Wysyłka” i „Edytuj” w karcie „Dane do faktury”. Dzięki
 temu widać, co Kompletor potrafi, zanim konto przejdzie na pracę. Osoba bez uprawnienia widzi przy płatnościach powód
 o uprawnieniu. Notatki wewnętrzne i decyzje o brakach (zapisuje się sama decyzja) działają zawsze, bo nie zmieniają
 zamówienia.
@@ -438,14 +438,49 @@ Użytkownicy i uprawnienia).
 
 Jedyne miejsce rozliczenia płatności na karcie: stan (odznaka w nagłówku sekcji), „Zapłacono X z Y” jak w BL, różnica „Do dopłaty X zł” albo „Do
 zwrotu X zł” (na przykład po dodaniu albo usunięciu pozycji), termin zwolnienia towaru i przypomnienie o płatności przy
-nieopłaconych oraz wpisy płatności.
+nieopłaconych oraz wpisy płatności. Zamówienie za pobraniem pokazuje „Do zapłaty przy odbiorze X zł” (kwota zamówienia,
+którą pobierze kurier), a nie „Zapłacono”: pobranie nie jest wpłatą, dopóki kurier nie odda pieniędzy.
 
 - **Oznacz jako opłacone**: zamówienie nieopłacone (uprawnienie „Ręczne «Oznacz jako opłacone»”).
 - **Zapisz dopłatę**: kwota, data i metoda dopłaty klienta (to samo uprawnienie).
 - **Zwrot różnicy**: kwota, data i metoda zwrotu, z potwierdzeniem (uprawnienie „Zwroty pieniędzy”). Zwrot czeka na
   eksport przelewów; sam przelew robisz w banku.
 
+- **Zmień na pobranie**: zamówienie nieopłacone, które klient chce opłacić przy odbiorze (to samo uprawnienie co
+  „Oznacz jako opłacone”). Po potwierdzeniu zamówienie przechodzi do realizacji jak po wpłacie, przypomnienie
+  o płatności i termin anulowania znikają, a kurier pobierze bieżącą kwotę zamówienia (także po zmianie pozycji na
+  karcie). Faktura przy pobraniu ma formę płatności „za pobraniem”.
+- **Zmień na nieopłacone (przelew)**: zamówienie za pobraniem, które klient jednak opłaci przelewem. Zamówienie wraca do
+  „Nowe” i czeka na wpłatę; przypomnienie o płatności i termin anulowania liczą się od chwili zmiany.
+
+Obie zmiany są tylko w Kompletorze: w sklepie płatność zostaje taka, jaką wybrał klient, a kolejny odczyt ze sklepu
+zmiany z karty nie cofa (wpłata zapisana w sklepie dalej przechodzi do Kompletora). Historia zamówienia ma wpis
+„Płatność zmieniona na pobranie na karcie” albo „Pobranie zmienione na nieopłacone na karcie” z osobą, a dziennik
+zmian stan płatności przed i po. Przycisk jest zawsze widoczny; gdy zmiana nie pasuje do zamówienia, jest nieaktywny
+z powodem pod przyciskami:
+
+- zamówienie opłacone, częściowo opłacone (najpierw rozlicz wpłatę z klientem) albo anulowane;
+- zamówienie z Allegro albo Empiku i przesyłka „Wysyłam z Allegro” (płatność prowadzi kanał);
+- odbiór osobisty, zamówienie bez przewoźnika albo usługa bez pobrania (np. Orlen Paczka, Poczta Polska): najpierw
+  „Zmień sposób wysyłki” w sekcji „Przesyłka”;
+- zamówienie już zbierane albo dalej, podzielone na paczki, z utworzoną przesyłką (najpierw ją anuluj), z wystawionym
+  albo przygotowanym dokumentem sprzedaży, a przy zmianie na pobranie także z zapisanymi wpłatami;
+- przy cofaniu pobrania ustawionego na karcie: sklep dostał już z Kompletora status realizacji tego zamówienia (np.
+  WooCommerce „W trakcie realizacji” zapisuje w sklepie datę płatności), więc kolejny odczyt podałby je jako opłacone.
+  Płatność zmień wtedy w sklepie.
+
+Gdy sklep anuluje zamówienie i potem je przywraca, zmiana płatności z karty też zostaje.
+
 To tylko zapis w Kompletorze: karta nie łączy się z bankiem i nie wysyła linków do płatności.
+
+### Jak zmienić płatność na pobranie
+
+Klientka pisze, że zamiast przelewu zapłaci kurierowi:
+
+1. **Zamówienia** → kliknij zamówienie → sekcja **Płatność**.
+2. Kliknij **Zmień na pobranie**, przeczytaj potwierdzenie i kliknij **Tak, zmień na pobranie**.
+3. Sprawdź, że karta pokazuje „Do zapłaty przy odbiorze”, a „Szczegóły zamówienia” „Sposób płatności: Za pobraniem”
+   i „Pobranie: tak”. Przesyłkę tworzysz potem jak zwykle; kwotę pobrania liczy Kompletor.
 
 ### Jak zarejestrować wpłatę przelewem
 
@@ -543,6 +578,7 @@ klienta (ten jest w **Ustawienia → Zespół i dostęp → Dane klientów**).
 
 - Nie zmienia zamówienia w kanale: status, pozycje i kwota w sklepie, na Allegro i w Empiku zostają bez zmian.
 - Nie łączy się z bankiem i nie wysyła linków do płatności.
+- Nie zmienia płatności w sklepie: „Zmień na pobranie” i „Zmień na nieopłacone” zmieniają ją tylko w Kompletorze.
 - Nie wystawia faktury przyciskiem: fakturę w wFirmie wystawia kolejka (co 2 minuty, po włączeniu „Wystawiaj faktury
   z Kompletora” w Ustawienia → Dokumenty i faktury → Dokumenty sprzedaży). Sekcja „Dokument sprzedaży” pokazuje stan, numer, „PDF faktury” i „Ponów
   fakturę” po błędzie. Korekty i anulowanie faktury są w wFirmie. Do KSeF nic nie wysyła.

@@ -46,6 +46,8 @@ import { type AdapterStanow, type ChannelAccount, fullSyncChannel, type PushItem
 import { alert } from '../rdzen/stan'
 import { ostatnieImporty, type WierszImportu, zamknijOtwarteImporty, zapiszPrzyjetyImport } from './importy-stanow'
 import { automatyWysylki } from '../wysylka/automaty'
+import { dziennikStanuZerowego, kontoKonczyPrzyZerze, pozycjeDlaAdaptera, type WpisDziennika, zapiszPublikacje } from './stan-zerowy-host'
+import { limitZakonczen } from '../adaptery/stan-zerowy'
 import { linkSledzenia } from '../wysylka/link-sledzenia'
 import { KLUCZ_PELNY_ZAPIS, PELNY_ZAPIS_MAX_GODZ, PELNY_ZAPIS_MIN_GODZ, pelnyZapisCoGodz, planujZapis, uniewaznijKonto, zapiszWyniki } from './rejestr-synchronizacji'
 
@@ -98,9 +100,28 @@ export function parseMapaStatusow(raw: unknown): StatusMap {
   return out
 }
 
+/**
+ * wartość statusu kanału w pisowni słownika kanału (`channelStatuses`), porównanie bez wielkości liter:
+ * „shipped” → „SHIPPED” (Empik), „sent” → „SENT” (Allegro). Spoza słownika (np. własny status wtyczki Woo) bez zmian.
+ * Jedno miejsce dla zapisu mapy z panelu, odczytu mapy konta i wykonania zaplanowanego zapisu (stare wiersze kolejki).
+ */
+export function kanonicznyStatusKanalu(v: string, manifest: AdapterManifest | null | undefined): string {
+  const t = v.trim()
+  const lista = manifest?.channelBehavior?.channelStatuses
+  if (!lista) return t
+  const lower = t.toLowerCase()
+  return lista.find((s) => s.id.toLowerCase() === lower)?.id ?? t
+}
+
+/** wszystkie wartości mapy (enum albo statusy firmy) w pisowni słownika kanału. */
+export function kanonicznaMapa<T extends Record<string, string | undefined>>(mapa: T, manifest: AdapterManifest | null | undefined): T {
+  return Object.fromEntries(Object.entries(mapa).map(([k, v]) => [k, typeof v === 'string' ? kanonicznyStatusKanalu(v, manifest) : v])) as T
+}
+
 /** Mapa konta: własna (`config.statusy`, także pusta = nic nie wysyłamy) albo domyślna z manifestu (preset). */
 export function mapaStatusow(config: Record<string, unknown>, manifest: AdapterManifest | null | undefined): { mapa: StatusMap; wlasna: boolean } {
-  if (config['statusy'] !== undefined) return { mapa: parseMapaStatusow(config['statusy']), wlasna: true }
+  // mapa zapisana z panelu przed poprawką ma wartości małymi literami („shipped”): pisownia ze słownika kanału
+  if (config['statusy'] !== undefined) return { mapa: kanonicznaMapa(parseMapaStatusow(config['statusy']), manifest), wlasna: true }
   return { mapa: { ...(manifest?.channelBehavior?.defaultStatusMap ?? {}) }, wlasna: false }
 }
 
@@ -217,7 +238,10 @@ export async function adapterStanowKonta(db: PrismaClient, acc: ChannelAccount, 
       // referencja z treści paczki: ta sama paczka (ponowienie) = ta sama referencja, więc kanał nie zapisze jej dwa razy
       const parts = [...items].map((i) => `${i.externalId}=${i.targetQty}`).sort()
       const reference = deriveReference([organizationId, acc.channel, acc.channelAccountId, 'stany', ...parts])
-      const wi = items.map((i) => ({ offerExternalId: i.externalId, qty: i.targetQty }))
+      // znacznik „zakończona przez Kompletor” i dobowy bezpiecznik zakończeń (kanały z ustawieniem stanu 0)
+      const konczy = kontoKonczyPrzyZerze(settings.config, ctx.registry.get(settings.adapterKey)?.manifest.config)
+      const poz = await pozycjeDlaAdaptera(db, acc, items, { konczy, config: settings.config, now })
+      const wi = poz.wi
       let out: WriteOutcome
       try {
         out = await executeWrite(a, reference, () => a.pushStock(wi, reference))
@@ -236,6 +260,7 @@ export async function adapterStanowKonta(db: PrismaClient, acc: ChannelAccount, 
           console.error(`[kanaly-zapis] ${accLabel(acc)}: nie zapisano importu stanów do sprawdzenia: ${msg(e)}`)
         }
       }
+      if (konczy) await zapiszPublikacje(db, acc, items, out, poz, now)
       const results = wynikiPerOferta(items, out)
       await zapiszWyniki(db, acc, plan, results, { now, reference })
       return [...skipped, ...results]
@@ -257,7 +282,7 @@ export async function wyslijStanyKonta(db: PrismaClient, acc: ChannelAccount, ct
 }
 
 /** Wynik paczki → wynik per oferta: pozycje spoza `failedItems` przeszły; bez `failedItems` cała paczka ma wynik paczki. */
-export function wynikiPerOferta(items: PushItem[], out: WriteOutcome): { offerId: string; ok: boolean; error?: string; kind?: FailureKind; retryAfterMs?: number; odlozone?: boolean }[] {
+export function wynikiPerOferta(items: PushItem[], out: WriteOutcome): { offerId: string; ok: boolean; error?: string; kind?: FailureKind; retryAfterMs?: number; odlozone?: boolean; odstaw?: boolean }[] {
   if (out.kind === 'OK') return items.map((i) => ({ offerId: i.offerId, ok: true }))
   const failed = out.failedItems ? new Map(out.failedItems.map((f) => [f.offerExternalId, f])) : null
   // czas ponowienia i „odłożone” idą do hosta stanów (job czeka, próba się nie liczy)
@@ -265,7 +290,7 @@ export function wynikiPerOferta(items: PushItem[], out: WriteOutcome): { offerId
   return items.map((i) => {
     if (!failed) return { offerId: i.offerId, ok: false, kind: out.kind, error: out.message, ...extra }
     const f = failed.get(i.externalId)
-    return f ? { offerId: i.offerId, ok: false, kind: f.kind, error: f.message } : { offerId: i.offerId, ok: true }
+    return f ? { offerId: i.offerId, ok: false, kind: f.kind, error: f.message, ...(f.odstaw ? { odstaw: true } : {}) } : { offerId: i.offerId, ok: true }
   })
 }
 
@@ -289,7 +314,7 @@ async function kontaDoPlanu(db: PrismaClient, registry: AdapterRegistry): Promis
     const m = modes.get(accLabel(s))
     if (!m) continue
     const manifest = registry.get(s.adapterKey)?.manifest ?? null
-    out.set(accLabel(s), { settings: s, manifest, mapa: mapaStatusow(s.config, manifest).mapa, mapaFirmy: parseMapaStatusowFirmy(s.config['statusyFirmy']), statusMode: m.statusMode, trackingMode: m.trackingMode })
+    out.set(accLabel(s), { settings: s, manifest, mapa: mapaStatusow(s.config, manifest).mapa, mapaFirmy: kanonicznaMapa(parseMapaStatusowFirmy(s.config['statusyFirmy']), manifest), statusMode: m.statusMode, trackingMode: m.trackingMode })
   }
   return out
 }
@@ -665,6 +690,9 @@ export async function wykonajZapisy(db: PrismaClient, ctx: HostCtx): Promise<Run
   return stats
 }
 
+/** odstęp ponownej próby statusu, który czeka na numer nadania tego zamówienia (bez liczenia próby). */
+export const STATUS_PO_NUMERZE_MS = 60_000
+
 async function wykonajJeden(db: PrismaClient, a: ChannelAdapter, w: Claimed, defs: DefsFirmy): Promise<WriteOutcome | 'POMINIETE'> {
   const o = await db.order.findUnique({ where: { id: w.orderId }, select: { externalId: true, status: true, cancelReason: true, carrier: true, companyStatus: true } })
   if (!o) return { kind: 'TRWALY', reference: w.reference, message: 'zamówienia nie ma w bazie' }
@@ -677,8 +705,18 @@ async function wykonajJeden(db: PrismaClient, a: ChannelAdapter, w: Claimed, def
       if (!d || `${KLUCZ_FIRMY}${d.key}` !== w.key || !etapDoSklepu(d.baseStatus)) return 'POMINIETE'
     } else if (kluczZamowienia(o, a.manifest) !== w.key) return 'POMINIETE'
     if (!hasOrderStatusWriter(a) || !w.channelStatus) return { kind: 'TRWALY', reference: w.reference, message: 'adapter nie zapisuje statusów' }
+    // kanał chce numer nadania przed statusem (Empik: OR23 przed OR24) — status czeka, póki numer jest w drodze
+    if (a.manifest.channelBehavior?.trackingBeforeStatus) {
+      const numer = await db.channelWrite.findFirst({
+        where: { orderId: w.orderId, channel: w.channel, channelAccountId: w.channelAccountId, kind: 'NADANIE', state: { in: ['OCZEKUJE', 'WYSYLANIE'] } },
+        select: { id: true },
+      })
+      if (numer) return { kind: 'PRZEJSCIOWY', reference: w.reference, message: 'czeka na wysłanie numeru nadania (kanał przyjmuje status po numerze)', retryAfterMs: STATUS_PO_NUMERZE_MS, odlozone: true }
+    }
     const guard = w.key === 'ANULOWANE_NIEOPLACONE' ? { onlyIfUnpaid: true } : {}
-    return executeWrite(a, w.reference, () => a.setOrderStatus(o.externalId, w.channelStatus!, w.reference, guard))
+    // wiersz zaplanowany przed poprawką może mieć „shipped” zamiast „SHIPPED”
+    const channelStatus = kanonicznyStatusKanalu(w.channelStatus, a.manifest)
+    return executeWrite(a, w.reference, () => a.setOrderStatus(o.externalId, channelStatus, w.reference, guard))
   }
   if (!hasTrackingWriter(a)) return { kind: 'TRWALY', reference: w.reference, message: 'adapter nie zapisuje numerów nadania' }
   return executeWrite(a, w.reference, () => a.setTracking(o.externalId, { number: w.key, carrier: w.carrier ?? 'BRAK', url: w.trackingUrl }, w.reference))
@@ -742,9 +780,13 @@ export async function zapiszPelnyZapisStanow(db: PrismaClient, acc: ChannelAccou
 export async function zapiszMapeStatusow(db: PrismaClient, acc: ChannelAccount, form: Record<string, string>, ctx: { registry: AdapterRegistry; actorId: string }): Promise<StatusMap> {
   const row = await db.channelConfig.findFirst({ where: { channel: acc.channel, channelAccountId: acc.channelAccountId } })
   if (!row) throw new Error('Nie ma takiego konta')
+  // wartość ze słownika kanału zostaje w jego pisowni (Empik „SHIPPED”, Allegro „SENT”); reszta małymi
+  // literami jak dotąd (identyfikatory statusów sklepów, np. wtyczka statusów Woo)
+  const manifest = ctx.registry.get(row.adapterKey)?.manifest ?? null
+  const status = (raw: string | undefined) => kanonicznyStatusKanalu((raw ?? '').trim().toLowerCase(), manifest)
   const mapa: StatusMap = {}
   for (const k of STATUS_MAP_KEYS) {
-    const v = (form[`status_${k}`] ?? '').trim().toLowerCase() // identyfikatory statusów sklepów to małe litery
+    const v = status(form[`status_${k}`])
     if (!v) continue
     if (!CHANNEL_STATUS_RE.test(v)) throw new Error(`Zły status kanału dla „${ETYKIETY_KLUCZY[k]}”`)
     mapa[k] = v
@@ -756,7 +798,7 @@ export async function zapiszMapeStatusow(db: PrismaClient, acc: ChannelAccount, 
   for (const [pole, raw] of Object.entries(form)) {
     if (!pole.startsWith('statusfirmy_')) continue
     const k = pole.slice('statusfirmy_'.length)
-    const v = (raw ?? '').trim().toLowerCase()
+    const v = status(raw)
     const d = defs.get(k)
     if (!v || !d) continue
     if (!etapDoSklepu(d.baseStatus)) throw new Error(`Status firmy „${d.name}” ${POWOD_ETAPU_POZA_SKLEPEM}. Zostaw pole puste.`)
@@ -851,6 +893,8 @@ export interface EkranZapisu {
   importy: WierszImportu[] | null
   /** rejestr synchronizacji — ostatni przebieg wysyłki stanów i siatka pełnego zapisu. */
   bezZmian: { przebiegAt: Date | null; wyslane: number; pominiete: number; zapamietane: number; pelnyZapisCoGodz: number }
+  /** zakończenie oferty przy stanie 0 (null = adapter konta tego nie ma albo konto wysyła liczbę 0). */
+  stanZerowy: { limit: number; zakonczone24h: number; zakonczoneTeraz: number; wpisy: WpisDziennika[] } | null
   zapisy: { ostatnie: WierszZapisu[]; bledy: number; niejednoznaczne: number; oczekujace: number }
 }
 
@@ -897,7 +941,7 @@ export async function ekranZapisu(db: PrismaClient, registry: AdapterRegistry, a
     mapa,
     mapaWlasna: wlasna,
     statusyFirmy: sf.map((d) => ({ key: d.key, name: d.name, baseStatus: d.baseStatus, doSklepu: etapDoSklepu(d.baseStatus) })),
-    mapaFirmy: parseMapaStatusowFirmy(settings.config['statusyFirmy']),
+    mapaFirmy: kanonicznaMapa(parseMapaStatusowFirmy(settings.config['statusyFirmy']), manifest),
     statusyKanalu: manifest?.channelBehavior?.channelStatuses ?? null,
     stany: {
       ostatniZapis: last?.createdAt ?? null,
@@ -914,6 +958,7 @@ export async function ekranZapisu(db: PrismaClient, registry: AdapterRegistry, a
       zapamietane,
       pelnyZapisCoGodz: pelnyZapisCoGodz(settings.config),
     },
+    stanZerowy: kontoKonczyPrzyZerze(settings.config, manifest?.config) ? { limit: limitZakonczen(settings.config), ...(await dziennikStanuZerowego(db, acc, now)) } : null,
     zapisy: {
       ostatnie: writes.map((w) => ({
         id: w.id,

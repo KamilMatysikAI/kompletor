@@ -107,7 +107,7 @@ w `tools/list` stała. Firma **zawsze z klucza**: żadne narzędzie nie ma argum
 | `zamowienia_lista` | `status[]`, `platnosc[]`, `kanal`, `konto`, `zlozone_od`, `zlozone_do`, `zmienione_od` (≤ 14 dni), `limit` 1–50 (20), `kursor` | `{ zamowienia: Zamowienie[], nastepny }` | `listChangedOrders` (`GET /api/v1/zamowienia`) |
 | `zamowienie_szczegoly` | `numer` (sklep albo BL), `kanal`, `konto` | `{ zamowienia: Zamowienie[] }` (pusta = brak) | `ordersByNumber` (`GET /api/v1/zamowienia/<numer>`) |
 | `stany` | `sku[]` (≤ 50) albo `kanal` + `konto` + `strona` | `{ pozycje, nieznaneSku?, strona?, nastepnaStrona? }` | `readStock` (`GET /api/v1/stany`) |
-| `produkty_szukaj` | `fraza` (SKU, nazwa, EAN), `rodzaj[]`, `aktywne` (`tak`/`nie`/`wszystkie`), `limit` 1–50, `kursor` | `{ produkty: Produkt[], nastepny }` | `searchProducts` (`GET /api/v1/produkty`) |
+| `produkty_szukaj` | `fraza` (SKU, nazwa, EAN), `rodzaj[]`, `aktywne` (`tak`/`nie`/`wszystkie`), `kategoria` (id, ścieżka „A > B” z podkategoriami albo `brak`), `limit` 1–50, `kursor` | `{ produkty: Produkt[], nastepny }` | `searchProducts` (`GET /api/v1/produkty`) |
 | `produkt_szczegoly` | `sku` | `{ produkt: ProduktSzczegoly \| null }` | `productBySku` (`GET /api/v1/produkty/<sku>`) |
 | `statusy` | brak | `{ statusy[], platnosci[] }` (`symbol`, `nazwa`, `opis`) | `statusDictionary` (`GET /api/v1/statusy`) |
 | `raport_dnia` | brak | `{ dzien, stanNa, sprzedaz, praca, wyslaneDzis }` | `dayReport` = pulpit „Dziś” (`GET /api/v1/raporty/dzien`) |

@@ -690,10 +690,13 @@ export interface Propozycja {
   zrodlo: string
 }
 
-/** Propozycje powiązań konta (`needsApproval`: import albo „Pobierz oferty” w firmie z BL) do zatwierdzenia. */
+/**
+ * Propozycje powiązań konta (`needsApproval`: import albo „Pobierz oferty” w firmie z BL) do zatwierdzenia. Bez
+ * propozycji na produkt wyłączony: zatwierdzenie i tak by odmówiło; wracają po włączeniu produktu.
+ */
 export async function propozycjeKonta(db: PrismaClient, ref: KontoRef, limit = 500): Promise<Propozycja[]> {
   const rows = await db.channelOffer.findMany({
-    where: { channel: ref.channel, channelAccountId: ref.channelAccountId, needsApproval: true, active: false },
+    where: { channel: ref.channel, channelAccountId: ref.channelAccountId, needsApproval: true, active: false, product: { active: true } },
     include: { product: { select: { id: true, sku: true, title: true } } },
     orderBy: { externalId: 'asc' },
     take: limit,

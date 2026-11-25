@@ -164,6 +164,12 @@ function flagiPierwszejEdycji(o: Order & { lines: OrderLine[] }): Flags {
     for (const l of o.lines) if (!l.removed && !isLocalLine(l)) zdjecie[l.externalLineId] = [l.productId, l.qty]
     patch.pozycjeKanalu = zdjecie
   }
+  // ceny kanału sprzed pierwszej edycji (edycja z karty może zmienić cenę pozycji, a kanał o tym nie wie)
+  if (!f.cenyKanalu) {
+    const ceny: Record<string, string> = {}
+    for (const l of o.lines) if (!l.removed && !isLocalLine(l)) ceny[l.externalLineId] = zl(grosze(l.unitPriceGross))
+    patch.cenyKanalu = ceny
+  }
   if (f.kwotaZaplacona === undefined && isPaid(o.paymentState) && o.paymentState !== 'COD') patch.kwotaZaplacona = zl(grosze(o.totalGross))
   return patch
 }

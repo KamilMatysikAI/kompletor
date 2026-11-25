@@ -6,7 +6,9 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vites
 import type { MemberRole, PrismaClient } from '@prisma/client'
 import type { OrderRecipient } from '@/lib/adaptery/kontrakt'
 import { createUserWithHash, grantMembership } from '@/lib/auth/sesje'
+import { permissionsOf } from '@/lib/auth/uprawnienia'
 import { ODMOWA_CIEN } from '@/lib/karta/bramka'
+import { POWODY_ZMIANY_PLATNOSCI, zmienPlatnosc, type KierunekZmiany } from '@/lib/karta/pobranie'
 import { daneKlienta } from '@/lib/klienci/odczyt'
 import type { PoprawkaDostawy } from '@/lib/klienci/poprawka'
 import { rekordZOdbiorcy } from '@/lib/klienci/rekord'
@@ -17,7 +19,7 @@ import { changeLineQty, splitOrder } from '@/lib/rdzen/edycja'
 import { shipLater } from '@/lib/rdzen/brakuje'
 import { lockOrder } from '@/lib/rdzen/przejscia'
 import { advisoryLock, runTx } from '@/lib/rdzen/stan'
-import { bramkaNadania, utworzPrzesylke, type DepsNadania } from '@/lib/wysylka/nadanie'
+import { bramkaNadania, utworzPrzesylke, ZMIANA_PLATNOSCI, type DepsNadania } from '@/lib/wysylka/nadanie'
 import { stanZmianySposobu, zmienSposobWysylki } from '@/lib/wysylka/zmiana-sposobu'
 import { ORG_A, ORG_B, testDb, testSystemDb, truncateAll } from './db'
 import { DPD_DEMO, DPD_FID, DPD_LOGIN, DPD_PASSWORD, dpdAtrapa, NADAWCA_TESTOWY } from './dpd-atrapa'
@@ -495,5 +497,62 @@ describe('zmiana pozycji w trakcie tworzenia przesyłki (E3)', () => {
     await nadanie
     expect(await edycja).toMatch(/pobrani/)
     expect((await db.orderLine.findUniqueOrThrow({ where: { id: l!.id } })).qty).toBe(1)
+  })
+})
+
+// ─── Zmiana płatności na karcie (pobranie) i „Utwórz przesyłkę” pod tą samą blokadą przesyłki ───────────────────
+
+describe('zmiana płatności w trakcie tworzenia przesyłki', () => {
+  const WLASCICIEL = permissionsOf({ role: 'WLASCICIEL', permissions: [], deniedPermissions: [] })
+  const platnosc = (orderId: string, kierunek: KierunekZmiany, userId: string) => zmienPlatnosc(db, { orderId, kierunek, userId, uprawnienia: WLASCICIEL }, ENV)
+
+  it('pobranie cofnięte na nieopłacone po odczycie przed bramką: nadanie odmawia, nic nie poszło do przewoźnika', async () => {
+    await firma()
+    const uid = await osoba('biuro@example.test')
+    const id = await zamowienie({ paymentState: 'COD', paymentMethod: 'Za pobraniem' })
+    expect(await zmien(id, 'DPD:DPD_BEZPOSREDNIO', ADRES_DPD, uid)).toMatchObject({ wynik: 'ZAPISANO' })
+    let zmiana: unknown = null
+    const n = await utworzPrzesylke(
+      db,
+      { orderId: id, potwierdzoneOstrzezenia: POTWIERDZONE, userId: uid },
+      {
+        ...deps(),
+        // druga osoba cofa pobranie na karcie po odczycie parametrów przesyłki (kwota pobrania), przed rezerwacją wiersza
+        poOdczycieOdbiorcy: async () => {
+          zmiana = await platnosc(id, 'NA_NIEOPLACONE', uid)
+        },
+      },
+    )
+    expect(zmiana).toEqual({ blad: null, zmiana: true })
+    expect(n).toMatchObject({ wynik: 'ODMOWA', powod: ZMIANA_PLATNOSCI })
+    expect(atrapa.calls).toHaveLength(0)
+    expect(await db.shipment.count({ where: { orderId: id } })).toBe(0)
+    // ponowne kliknięcie: zamówienie czeka na płatność, przesyłki bez pobrania z odczytu sprzed zmiany nie ma
+    expect(await utworzPrzesylke(db, { orderId: id, potwierdzoneOstrzezenia: POTWIERDZONE, userId: uid }, deps())).toMatchObject({ wynik: 'ODMOWA', powod: expect.stringMatching(/czeka na płatność/) })
+    expect(atrapa.calls).toHaveLength(0)
+  })
+
+  it('przesyłka TWORZENIE wstawiona pod blokadą przesyłki w trakcie zmiany płatności: zmiana czeka na blokadę i odmawia', async () => {
+    await firma()
+    const uid = await osoba('biuro@example.test')
+    const id = await zamowienie({ paymentState: 'COD', paymentMethod: 'Za pobraniem' })
+    expect(await zmien(id, 'DPD:DPD_BEZPOSREDNIO', ADRES_DPD, uid)).toMatchObject({ wynik: 'ZAPISANO' })
+    let wziete!: () => void
+    let pusc!: () => void
+    const maBlokade = new Promise<void>((r) => (wziete = r))
+    const koniec = new Promise<void>((r) => (pusc = r))
+    const nadanie = runTx(db, async (tx) => {
+      await advisoryLock(tx, `przesylka:${id}`)
+      await tx.shipment.create({ data: { orderId: id, packageNo: 1, reference: 'ref-pb-wyscig', adapterKey: 'dpd.services.zapis.v1', carrier: 'DPD', state: 'TWORZENIE', codAmount: 30 } })
+      wziete()
+      await koniec
+    })
+    await maBlokade
+    const zmiana = platnosc(id, 'NA_NIEOPLACONE', uid)
+    await new Promise((r) => setTimeout(r, 400))
+    pusc()
+    await nadanie
+    expect(await zmiana).toEqual({ blad: POWODY_ZMIANY_PLATNOSCI.przesylka, zmiana: false })
+    expect((await db.order.findUniqueOrThrow({ where: { id } })).paymentState).toBe('COD')
   })
 })

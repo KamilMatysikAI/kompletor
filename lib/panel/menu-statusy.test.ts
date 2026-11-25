@@ -20,8 +20,11 @@ describe('pozycjeStatusow (menu „Zamówienia”)', () => {
 
   it('każda grupa dawnego panelu jest w menu z tym samym licznikiem, „Wszystkie” i „Wymaga działania” na górze', () => {
     expect(p.map((x) => x.widok!.widok)).toEqual(['wszystkie', 'wymaga', 'nowe', 'do_realizacji', 'zebrane', 'spakowane', 'do_wyslania', 'wyslane', 'problemowe', 'anulowane'])
-    for (const g of GRUPY_PANELU) expect(p.find((x) => x.widok!.widok === g.klucz)).toMatchObject({ etykieta: g.etykieta, licznik: l.grupy[g.klucz] })
-    expect(p[0]).toMatchObject({ licznik: 20, licznikTon: 'neutralny' })
+    for (const g of GRUPY_PANELU.filter((x) => x.klucz !== 'wszystkie')) expect(p.find((x) => x.widok!.widok === g.klucz)).toMatchObject({ etykieta: g.etykieta, licznik: l.grupy[g.klucz] })
+    // Przy „Wszystkie” bez licznika (licznik nic nie mówi i przeszkadza); pozostałe pozycje z licznikiem
+    expect(p[0]).toMatchObject({ etykieta: 'Wszystkie' })
+    expect(p[0]!.licznik).toBeUndefined()
+    expect(p[0]!.licznikTon).toBeUndefined()
     expect(p[1]).toMatchObject({ licznik: 5, licznikTon: 'ostrzezenie' })
   })
 

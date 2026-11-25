@@ -261,6 +261,16 @@ export function odczytajKodKarty(
 }
 
 /**
+ * Szerokości Code 128 w modułach, na przemian kreska/przerwa (bwip-js `raw`), bez strefy ciszy. Wspólne
+ * dla PDF i ZPL etykiety odbioru, żeby oba pliki miały ten sam kod co karta zamówienia.
+ */
+export function kreskiKodu128(tekst: string): number[] {
+  const [wynik] = bwipjs.raw({ bcid: 'code128', text: tekst }) as unknown as { sbs: number[] }[]
+  if (!wynik) throw new Error(`Nie udało się zakodować: ${tekst}`)
+  return wynik.sbs
+}
+
+/**
  * Code 128 jako prostokąty. bwip-js `raw` zwraca szerokości na przemian kreska/przerwa (w modułach).
  * Strefa ciszy 10 modułów po obu stronach mieści się w podanej szerokości.
  */
@@ -272,13 +282,12 @@ export function rysujKod128(
   szerokosc: number,
   wysokosc: number,
 ): void {
-  const [wynik] = bwipjs.raw({ bcid: 'code128', text: tekst }) as unknown as { sbs: number[] }[]
-  if (!wynik) throw new Error(`Nie udało się zakodować: ${tekst}`)
-  const moduly = wynik.sbs.reduce((a, b) => a + b, 0)
+  const sbs = kreskiKodu128(tekst)
+  const moduly = sbs.reduce((a, b) => a + b, 0)
   const modul = szerokosc / (moduly + 20)
   let kx = x + 10 * modul
   doc.save().fillColor('black')
-  wynik.sbs.forEach((w, i) => {
+  sbs.forEach((w, i) => {
     if (i % 2 === 0) doc.rect(kx, y, w * modul, wysokosc)
     kx += w * modul
   })

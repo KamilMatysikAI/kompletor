@@ -17,7 +17,6 @@ import {
   SHIPPING_LIST_LIMIT,
 } from '@/lib/pakowanie/dane'
 import { ingestOrder } from '@/lib/rdzen/zamowienia'
-import { shortExternalId } from '@/lib/panel/format'
 import { wczytajZamowienia } from '@/lib/stanowisko/zamowienia'
 import { listaWysylkowa } from '@/lib/wydruki/lista-wysylkowa'
 import { ACME_EXAMPLE_ZONE_RULES, ACME_PRESET } from '@/tests/preset-testowy'
@@ -126,15 +125,14 @@ describe('kolejka pakowania na bazie', () => {
     expect(ids(await packingQueue(a, { tab: 'na_sucho', zone: 'wszystkie' }, NOW))).toEqual([fresh, fresh2])
   })
 
-  it('numer na kolejce skrócony jak w Zamówieniach (UUID Allegro), pełny id zostaje w externalId', async () => {
+  it('numer na kolejce taki sam jak na liście Zamówień (UUID Allegro w całości)', async () => {
     const p = await prod(a, 'H1', 'Przyprawa czerwona')
     const id = await ord(a, [p], { carrier: 'ALLEGRO', channel: 'ALLEGRO' })
     const uuid = '9b21a0c4-44e0-4b1a-9d1e-0123456789ab'
     await a.order.update({ where: { id }, data: { externalId: uuid } })
     const row = (await packingQueue(a, { tab: 'na_sucho', zone: 'wszystkie' }, NOW)).groups.flatMap((g) => g.orders).find((o) => o.id === id)!
     expect(row.externalId).toBe(uuid)
-    expect(row.number.endsWith(shortExternalId(uuid))).toBe(true)
-    expect(row.number).not.toContain(uuid)
+    expect(row.number).toBe(`ALG ${uuid}`)
   })
 
   it('„Przyjechał” przesuwa grupę: spakowane przed kliknięciem pojechały, spakowane później czekają na jutro; drugie kliknięcie nic nie zmienia', async () => {

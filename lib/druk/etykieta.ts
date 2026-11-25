@@ -26,7 +26,11 @@ export interface EtykietaDoDruku {
 /** Źródło etykiety zamówienia: atrapa (podgląd) albo etykieta przewoźnika (lib/wysylka/etykieta-przewoznika.ts). */
 export interface ZrodloEtykiety {
   readonly nazwa: string
-  etykieta(db: PrismaClient, orderId: string, now: Date): Promise<EtykietaDoDruku>
+  /**
+   * `kto`: osoba zlecająca wydruk (`User.id`) albo reguła automatu (`automat:<id>`); etykieta odbioru
+   * osobistego bierze z niego zakres danych odbiorcy. Brak = bez danych klienta.
+   */
+  etykieta(db: PrismaClient, orderId: string, now: Date, kto?: { userId: string }): Promise<EtykietaDoDruku>
 }
 
 export interface DaneAtrapy {

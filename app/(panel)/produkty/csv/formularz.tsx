@@ -1,6 +1,7 @@
 'use client'
 // Produkty → Import i eksport CSV: formularz importu z raportem po wierszach.
 import { useActionState } from 'react'
+import { Przelacznik } from '@/app/ui'
 import { importujCsv, type StanImportu } from './akcje'
 
 const START: StanImportu = { blad: null, wynik: null }
@@ -15,6 +16,8 @@ export function ImportCsv() {
           <label htmlFor="csv-plik">Plik CSV (UTF-8, do 5 MB, najwyżej 5 000 produktów)</label>
           <input className="input" id="csv-plik" name="plik" type="file" accept=".csv,text/csv" required />
         </div>
+        {/* kolumna „Kategoria” ze ścieżką, której nie ma w drzewie firmy */}
+        <Przelacznik id="csv-tworz-kategorie" name="tworzKategorie" defaultChecked etykieta="Twórz brakujące kategorie" pomoc="Wyłączone: wiersz z nieznaną kategorią jest pominięty." />
         <button className="btn primary" type="submit" disabled={pending}>
           {pending ? 'Importuję…' : 'Importuj'}
         </button>

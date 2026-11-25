@@ -127,7 +127,8 @@ describe('szukajWPomocy', () => {
       expect(szukajWPomocy(fraza).some((x) => x.slug === 'lista-zamowien' && x.sekcja === 'Czytnik kodów i wklejony numer'), fraza).toBe(true)
     for (const fraza of ['skan karty na kolejce pakowania', 'czytnik kodów pakowanie'])
       expect(szukajWPomocy(fraza).some((x) => x.slug === 'pakowanie' && x.sekcja === 'Czytnik kodów na kolejce i liście zbierania'), fraza).toBe(true)
-  })
+    // ok. 20 wyszukiwań po wszystkich dokumentach z dysku: osobno ok. 2,5 s, w pełnym przebiegu pod obciążeniem ponad 5 s
+  }, 30_000)
 })
 
 describe('role Pomocy', () => {

@@ -106,6 +106,8 @@ export const NAWIGACJA: { sekcja: KluczSekcji; tytul?: string; wezly: WezelNawig
           { href: '/produkty/bez-stanu', etykieta: SLOWNIK.produktyBezStanu, uprawnienie: 'produkty.dodawanie' },
           { href: '/produkty/nowy', etykieta: 'Dodaj produkt', uprawnienie: 'produkty.dodawanie', bezMenu: true },
           { href: '/produkty/csv', etykieta: 'Import i eksport CSV', uprawnienie: 'produkty.dodawanie', bezMenu: true },
+          // przycisk „Kategorie” na liście produktów, bez pozycji w menu; podgląd jak lista (panel.podglad), zmiany produkty.dodawanie
+          { href: '/produkty/kategorie', etykieta: 'Kategorie', bezMenu: true },
           // przycisk na liście produktów, bez pozycji w menu
           { href: '/produkty/zdjecia-z-feedu', etykieta: 'Zdjęcia z feedu', uprawnienie: 'produkty.dodawanie', bezMenu: true },
           // raporty „Przygotuj oferty”, przycisk na liście produktów, bez pozycji w menu

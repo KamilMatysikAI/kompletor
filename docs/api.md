@@ -418,14 +418,16 @@ no-store`, nieznany parametr = 400 z polem `pole`, bez danych osobowych (odpowie
 ### `GET /api/v1/produkty`
 
 Katalog po SKU (rosnąco). Parametry: `fraza` (fragment SKU lub nazwy albo pełny EAN), `rodzaj` (`STOCKED`, `BUNDLE`,
-`DIGITAL`, po przecinku), `aktywne` (`1` domyślnie, `0`, `wszystkie`), `limit` 1–100 (domyślnie 50), `po` (kursor).
+`DIGITAL`, po przecinku), `aktywne` (`1` domyślnie, `0`, `wszystkie`), `kategoria` (id albo ścieżka kategorii, np.
+`Napoje > Soki`, razem z podkategoriami; `brak` = produkty bez kategorii; nieznana kategoria = pusta lista), `limit`
+1–100 (domyślnie 50), `po` (kursor). Pole `kategoria` w odpowiedzi: `{ "id", "sciezka" }` albo `null`.
 
 ```bash
 curl -s -H "Authorization: Bearer kmp_PRZYKLADOWY_KLUCZ" "https://kompletor.example.invalid/api/v1/produkty?fraza=herb&limit=2"
 ```
 
 ```json
-{ "produkty": [{ "sku": "TEST-PRZYPRAWA", "nazwa": "Przyprawa testowa", "rodzaj": "STOCKED", "jednostka": "SZT", "ean": null, "aktywny": true }], "nastepny": null }
+{ "produkty": [{ "sku": "TEST-PRZYPRAWA", "nazwa": "Przyprawa testowa", "rodzaj": "STOCKED", "jednostka": "SZT", "ean": null, "aktywny": true, "kategoria": { "id": "kat1", "sciezka": "Przyprawy > Testowe" } }], "nastepny": null }
 ```
 
 Kolejna strona: `?po=<nastepny>` z tymi samymi filtrami.
@@ -437,7 +439,7 @@ Produkt po dokładnym SKU (zakodowanym w adresie): pola listy + `cenaBrutto` (de
 `{ "bezStanu": true }`), `oferty` (także wyłączone, z polem `aktywna`), `skladniki` (zestaw), `wZestawach`. Brak = 404.
 
 ```json
-{ "produkt": { "sku": "TEST-ZESTAW", "nazwa": "Zestaw testowy", "rodzaj": "BUNDLE", "jednostka": "SZT", "ean": null, "aktywny": true, "cenaBrutto": null, "progNiskiegoStanu": null, "stan": { "fizycznie": null, "zarezerwowane": null, "dostepne": 3 }, "oferty": [], "skladniki": [{ "sku": "TEST-PRZYPRAWA", "nazwa": "Przyprawa testowa", "ilosc": 2 }], "wZestawach": [] } }
+{ "produkt": { "sku": "TEST-ZESTAW", "nazwa": "Zestaw testowy", "rodzaj": "BUNDLE", "jednostka": "SZT", "ean": null, "aktywny": true, "kategoria": null, "cenaBrutto": null, "progNiskiegoStanu": null, "stan": { "fizycznie": null, "zarezerwowane": null, "dostepne": 3 }, "oferty": [], "skladniki": [{ "sku": "TEST-PRZYPRAWA", "nazwa": "Przyprawa testowa", "ilosc": 2 }], "wZestawach": [] } }
 ```
 
 ### `GET /api/v1/statusy`
@@ -475,7 +477,13 @@ Liczby dzisiejszego dnia (Europe/Warsaw) jak pulpit „Dziś” w panelu, bez pa
 }
 ```
 
-`wyslaneDzis` = zamówienia z przejściem do „Wysłane” dzisiaj.
+`wyslaneDzis` = zamówienia z przejściem do „Wysłane” dzisiaj. `brutto` = zamówienia w PLN plus zamówienia
+w innej walucie (waluta z kanału) przeliczone po ostatnim kursie średnim NBP (tabela A, pobiera go worker raz na dobę;
+wartość informacyjna, nie księgowa), a `zamowien` liczy każdą walutę. `inneWaluty` to rozbicie, z którego da się
+odtworzyć liczby: `[{ "waluta": "CZK", "zamowien": 1, "brutto": 957, "kurs": 0.1712, "dataKursu": "2026-11-21",
+"bruttoPln": 163.84 }]` (`brutto` w walucie, `bruttoPln` wliczone do `brutto` w złotych; pusta lista bez takich
+zamówień), także przy każdym koncie. Waluta, dla której nie ma kursu (worker jeszcze go nie pobrał albo NBP jej nie
+notuje), ma `kurs`, `dataKursu`, `bruttoPln` = null i nie wchodzi do `brutto` (nigdy 1:1).
 
 ### `GET /api/v1/raporty/braki` i `/raporty/rezerwacje`
 
@@ -495,27 +503,50 @@ Sprzedaż w zakresie dat, ten sam kształt co ekran „Raporty” w panelu i nar
 (wszystkie opcjonalne): `od`, `do` (RRRR-MM-DD, czas polski, obie granice włącznie; domyślnie od 1. dnia bieżącego
 miesiąca do dziś; najwyżej 366 dni), `grupuj` (`dzien`, `tydzien` od poniedziałku, `miesiac`; domyślnie wg długości
 zakresu, najwyżej 120 okresów), `konto` (klucz konta kanału `KANAL:konto`, np. `WOO:sd`, z `konta[].konto`),
-`produktow` 1–1000 (domyślnie 50). Nieznany parametr albo zła wartość = 400 z polem `pole`.
+`produktow` 1–1000 (domyślnie 50), `porownaj` (z czym porównać: `poprzedni` domyślnie = tyle samo dni tuż
+przed zakresem, `rok` = te same daty rok wcześniej, `miesiac` = te same dni miesiąc wcześniej, tylko dla zakresu
+w jednym miesiącu, `tydzien` = 7 dni wcześniej, tylko dla zakresu w jednym tygodniu od poniedziałku, `wlasny` z
+`porownaj_od` i `porownaj_do` (RRRR-MM-DD, najwyżej 366 dni), `brak` = bez porównania). Nieznany parametr albo zła
+wartość = 400 z polem `pole`.
 
 ```json
 {
   "od": "2026-10-01", "do": "2026-10-31", "grupuj": "dzien", "konto": null, "stanNa": "2026-11-09T00:00:00.000Z",
   "razem": { "zamowien": 1500, "wartoscBrutto": 123456.78, "sredniaWartosc": 82.3, "produktyBrutto": 110000, "produktyNetto": 91000.5, "sztuk": 4200, "kg": 12.5, "zwrotyBrutto": 350, "koszt": 40000, "marza": 38000.5, "marzaProcent": 48.7, "bezCenyZakupuNetto": 13000, "nieznanaStawkaPozycji": 0, "anulowanych": 40, "anulowaneBrutto": 3200 },
-  "poprzedni": { "od": "2026-08-31", "do": "2026-09-30", "razem": { "zamowien": 1300 } },
+  "poprzedni": { "od": "2026-08-31", "do": "2026-09-30", "tryb": "poprzedni", "dni": 31, "razem": { "zamowien": 1300 }, "poczatekDanych": "2025-01-01", "kontaBezDanych": [], "bezDanych": false },
   "okresy": [{ "okres": "2026-10-01", "okresDo": "2026-10-01", "niepelny": false, "zamowien": 50, "wartoscBrutto": 4100 }],
   "konta": [{ "konto": "WOO:sd", "nazwa": "Sklep Demo", "zamowien": 900, "wartoscBrutto": 80000 }],
   "produkty": [{ "sku": "TEST-PRZYPRAWA", "nazwa": "Przyprawa testowa", "jednostka": "SZT", "ilosc": 320, "brutto": 6368, "netto": 5177.24, "zwrotyBrutto": 19.9, "zamowien": 300, "koszt": 1280, "marza": 3897.24, "marzaProcent": 75.3, "brakCenyZakupu": false }],
   "produktowRazem": 120, "wiecejProduktow": true,
-  "pozaKompletorem": { "zamowien": 0, "brutto": 0 }
+  "pozaKompletorem": { "zamowien": 0, "brutto": 0 },
+  "zArchiwum": { "zamowien": 0, "brutto": 0, "inneWaluty": [] },
+  "zKanalemOdtworzonym": { "zamowien": 0, "brutto": 0, "inneWaluty": [] }
 }
 ```
 
-(Przykład skrócony: każdy wiersz `okresy` i `konta` ma wszystkie pola `razem`.) Reguły: anulowane poza sprzedażą
+(Przykład skrócony: każdy wiersz `okresy` i `konta` ma wszystkie pola `razem`.) Porównanie: `poprzedni`
+to okres porównania wg `porownaj` (`null` przy `brak`), z trybem, liczbą dni i sumą `razem`; `poczatekDanych` = pierwszy
+dzień danych kont raportu (najwcześniejszy z: pierwszy pełny dzień odczytu konta przez Kompletora, początek zakresu
+importu archiwum konta; pierwsze zamówienie tylko bez tych granic), `kontaBezDanych` = konta, których
+dane zaczynają się po pierwszym dniu porównania (`{ konto, nazwa, daneOd }`), `bezDanych: true` = cały okres porównania
+przed danymi. Przy niepustym `kontaBezDanych` albo `bezDanych` porównanie jest niepełne: nie licz z niego wzrostu.
+Każdy wiersz `okresy` ma `porownanie` (pola `razem` + `od`, `do` okresu porównania i `daneNiepelne`; rok do roku po
+dniach i miesiącach paruje tę samą datę, inne tryby kolejno, wiersz bez pary = `null`), każdy wiersz `konta` ma
+`porownanie` (pola `razem` + `daneOd`, `daneNiepelne`), każdy produkt `porownanie` (`ilosc`, `brutto`, `netto`,
+`zamowien`, `marza`); bez porównania wszystkie są `null`. Reguły: anulowane poza sprzedażą
 (osobno `anulowanych`, `anulowaneBrutto`), zwroty odjęte w okresie złożenia zamówienia, netto ze stawki VAT pozycji,
 `produkty*` bez dostawy, `wartoscBrutto` z dostawą jak pulpit, `ilosc` w jednostce bazowej (sztuki albo gramy), marża
 tylko z ceną zakupu produktu: produkt bez niej ma `koszt`, `marza` = null i `brakCenyZakupu: true`, a `razem.marza`
 liczy się tylko ze sprzedaży z ceną zakupu (`bezCenyZakupuNetto` = reszta). `nieznanaStawkaPozycji`: pozycje ze stawką
-VAT, której raport nie rozpoznaje (netto ze stawki produktu, bez niej z 23 %). Pełny opis: `docs/raporty.md`. Same agregaty,
+VAT, której raport nie rozpoznaje (netto ze stawki produktu, bez niej z 23 %). Kwoty (wartość, średnia,
+produkty, zwroty, marża, anulowane) to zamówienia w PLN plus zamówienia w innej walucie przeliczone po ostatnim kursie
+średnim NBP (jeden kurs na walutę dla całego zakresu i porównania; koszt zakupu jest w złotych); `zamowien` i sztuki
+obejmują każdą walutę. Rozbicie z kursem i jego datą jest w `inneWaluty` (ten sam kształt co w `/raporty/dzien`; przy
+`razem`, każdym okresie i koncie oraz w `pozaKompletorem`); waluta bez kursu: `bruttoPln: null`, jej kwoty poza
+złotymi. `zArchiwum`: ile zamówień zakresu (bez anulowanych) i za ile pochodzi z archiwum zamówień sprzed
+przejścia sklepu na Kompletora; są już wliczone w `razem`, `okresy`, `konta` i `produkty` (każde zamówienie raz),
+kwota w złotych tą samą regułą walut (waluta wiersza archiwum, rozbicie w `inneWaluty`). `zKanalemOdtworzonym`: część
+`zArchiwum`, w której kanał odtworzono z faktur poprzedniego systemu. Pełny opis: `docs/raporty.md`. Same agregaty,
 bez danych klientów. Kod: `lib/api/raporty-sprzedaz.ts`, test `tests/raporty-sprzedaz.integration.test.ts`.
 
 ### `GET /api/v1/zamowienia`: nowe filtry
@@ -603,8 +634,24 @@ Jedno zamówienie po numerze, jeśli e-mail albo telefon zamówienia pasuje do p
 `kanal`, `konto`, `numer`, `numerWidoczny`, `numerBl`, `zlozono`, `zmieniono`, `status`, `statusNazwa`,
 `statusDlaKlienta` (nazwa dla klienta ze statusów firmy, `null`, gdy firma jej nie ustawiła), `historia[]` (`status`,
 `statusNazwa`, `kiedy`; same zmiany statusu, najwyżej 30 ostatnich), `platnosc`, `platnoscMetoda`, `sumaBrutto`,
-`przewoznik`, `sposobDostawy`, `numerNadania`, `pozycje[]` (`nazwa`, `ilosc`), `przesylki[]` (ten sam kształt co
-w `GET /api/v1/zamowienia`), `faktury[]` (`numer`, `wystawiono`, najwyżej 5).
+`przewoznik`, `sposobDostawy`, `numerNadania`, `pozycje[]` (`nazwa`, `ilosc`), `przesylki[]` (niżej), `faktury[]`
+(`numer`, `wystawiono`, najwyżej 5).
+
+`przesylki[]`: przesyłki utworzone u przewoźnika (anulowane pomijamy), od pierwszej paczki, najwyżej 10:
+
+| Pole | Opis |
+|------|------|
+| `przewoznik` | przewoźnik (jak `przewoznik` zamówienia) |
+| `numerNadania` | numer nadania tej paczki albo `null` |
+| `stan` | ostatni stan paczki u przewoźnika: `UTWORZONA` (etykieta, paczka czeka na kuriera) / `PRZEKAZANA` / `DORECZONA` / `NIEZNANY` albo `null` (Kompletor jeszcze jej nie sprawdzał) |
+| `stanNazwa` | stały tekst do stanu: „Etykieta utworzona, paczka czeka na kuriera” / „U przewoźnika, w drodze” / „Doręczona” / „Status nierozpoznany” albo `null`; opisu od przewoźnika (może zawierać dane odbiorcy) API nie oddaje |
+| `stanOd` | kiedy Kompletor zapisał ostatni odczyt tego stanu (ISO 8601 UTC) albo `null`; zmiana opisu u przewoźnika w tym samym stanie przesuwa ten czas |
+| `sprawdzono` | ostatnia próba odczytu u przewoźnika (ISO 8601 UTC) albo `null`; próba nieudana też ją przesuwa, więc sama data nie znaczy, że stan jest świeży |
+| `sledzona` | `true` (stan jest świeży) tylko wtedy, gdy paczka ma odczytany stan, była sprawdzana w ostatnich 4 godzinach, nie jest doręczona i stan nie przeczy statusowi zamówienia (zamówienie wysłane, a paczka „czeka na kuriera” = `false`); `false` = pewny jest numer, aktualny stan sprawdź u przewoźnika |
+| `linkSledzenia` | strona śledzenia u przewoźnika (InPost, DPD, Allegro) albo `null` |
+| `rodzaj` | `GLOWNA` |
+
+Lista stanów może się rozszerzyć (np. `W_DRODZE`, `W_PUNKCIE`, `ZWROT`); nieznany stan traktuj jak `NIEZNANY` i pokaż `stanNazwa`.
 
 Odpowiedź **nie zawiera** adresu, imienia i nazwiska, e-maila, telefonu, NIP-u, notatek ani flag zamówienia.
 

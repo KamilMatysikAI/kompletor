@@ -12,6 +12,7 @@ import { ApiInputError } from '@/lib/api/odpowiedzi'
 import { PRODUCT_KINDS, productBySku, productSearchQuery, searchProducts } from '@/lib/api/produkty'
 import { dayReport, reportQuery, reservationsReport, shortagesReport } from '@/lib/api/raporty'
 import { raportSprzedazy, zapytanieSprzedazy } from '@/lib/api/raporty-sprzedaz'
+import { TRYBY_POROWNANIA } from '@/lib/api/raporty-porownanie'
 import { readStock } from '@/lib/api/stany'
 import { statusDictionaryFirmy } from '@/lib/api/statusy'
 import { automatyFirmy } from '@/lib/api/automaty'
@@ -141,8 +142,8 @@ const STOCK_ITEM_OUT: JsonSchema = {
 }
 const PRODUCT_OUT: JsonSchema = {
   type: 'object',
-  properties: { sku: { type: 'string' }, nazwa: { type: 'string' }, rodzaj: { type: 'string', enum: PRODUCT_KINDS }, jednostka: { type: 'string', enum: ['SZT', 'KG'] }, ean: nullable({ type: 'string' }), aktywny: { type: 'boolean' } },
-  required: ['sku', 'nazwa', 'rodzaj', 'jednostka', 'ean', 'aktywny'],
+  properties: { sku: { type: 'string' }, nazwa: { type: 'string' }, rodzaj: { type: 'string', enum: PRODUCT_KINDS }, jednostka: { type: 'string', enum: ['SZT', 'KG'] }, ean: nullable({ type: 'string' }), aktywny: { type: 'boolean' }, kategoria: nullable({ type: 'object', properties: { id: { type: 'string' }, sciezka: { type: 'string' } }, required: ['id', 'sciezka'] }) },
+  required: ['sku', 'nazwa', 'rodzaj', 'jednostka', 'ean', 'aktywny', 'kategoria'],
 }
 const PART_OUT: JsonSchema = { type: 'object', properties: { sku: { type: 'string' }, nazwa: { type: 'string' }, ilosc: { type: 'integer' } }, required: ['sku', 'nazwa', 'ilosc'] }
 const ORDER_REF_OUT: JsonSchema = {
@@ -267,6 +268,7 @@ const produktySzukaj: McpTool = {
   description: [
     'Szuka produktów w katalogu firmy po fragmencie SKU, nazwy albo po pełnym EAN; filtr po rodzaju (STOCKED towar, BUNDLE zestaw, DIGITAL e-book/usługa).',
     'Użyj, gdy użytkownik nie zna dokładnego SKU, np. „jakie mamy przyprawy?”. Potem stany albo produkt_szczegoly po SKU.',
+    'Filtr kategoria: id albo ścieżka kategorii (np. „Napoje > Soki”, razem z podkategoriami) albo „brak” (bez kategorii).',
     'Domyślnie tylko aktywne produkty; kolejność po SKU, kursor w polu nastepny.',
   ].join(' '),
   inputSchema: {
@@ -275,6 +277,7 @@ const produktySzukaj: McpTool = {
       fraza: str('Fragment SKU lub nazwy albo EAN.'),
       rodzaj: { type: 'array', items: { type: 'string', enum: PRODUCT_KINDS }, minItems: 1, maxItems: 3, description: 'Rodzaje produktów.' },
       aktywne: { type: 'string', enum: ['tak', 'nie', 'wszystkie'], description: 'Domyślnie tak.' },
+      kategoria: str('Id kategorii, ścieżka („Napoje > Soki”) albo „brak”.'),
       limit: { type: 'integer', minimum: 1, maximum: MCP_MAX_PRODUCTS, description: 'Ile produktów na stronę (domyślnie 50).' },
       kursor: CURSOR,
     },
@@ -285,7 +288,7 @@ const produktySzukaj: McpTool = {
   limitArg: 'limit',
   annotations: { title: 'Szukaj produktów', ...READ },
   async run(ctx, a) {
-    const q = productSearchQuery({ fraza: optStr(a.fraza), rodzaj: optList(a.rodzaj), aktywne: optStr(a.aktywne), limit: optInt(a.limit), po: optStr(a.kursor) }, MCP_MAX_PRODUCTS)
+    const q = productSearchQuery({ fraza: optStr(a.fraza), rodzaj: optList(a.rodzaj), aktywne: optStr(a.aktywne), kategoria: optStr(a.kategoria), limit: optInt(a.limit), po: optStr(a.kursor) }, MCP_MAX_PRODUCTS)
     const r = await searchProducts(ctx.db, q)
     return { data: r, items: r.produkty.length }
   },
@@ -360,7 +363,7 @@ const raportDnia: McpTool = {
   name: 'raport_dnia',
   title: 'Raport dnia',
   description: [
-    'Liczby dzisiejszego dnia (czas polski) jak pulpit „Dziś” w panelu: sprzedaż (liczba zamówień i kwota brutto, także na konto kanału), praca do zrobienia (do spakowania, braki, do wyjaśnienia, nieopłacone z rezerwacją, faktury, które się nie wystawiły) i liczba zamówień oznaczonych dziś jako wysłane.',
+    'Liczby dzisiejszego dnia (czas polski) jak pulpit „Dziś” w panelu: sprzedaż (liczba zamówień i kwota brutto, także na konto kanału; kwota brutto w złotych, zamówienia w innej walucie przeliczone po kursie średnim NBP, rozbicie z kursem w inneWaluty), praca do zrobienia (do spakowania, braki, do wyjaśnienia, nieopłacone z rezerwacją, faktury, które się nie wystawiły) i liczba zamówień oznaczonych dziś jako wysłane.',
     'Użyj przy pytaniach „jak idzie dzisiaj?”, „ile mamy do spakowania?”. Same liczby, bez list klientów.',
   ].join(' '),
   inputSchema: { type: 'object', properties: {}, additionalProperties: false },
@@ -482,7 +485,7 @@ const raportSprzedazyTool: McpTool = {
   name: 'raport_sprzedazy',
   title: 'Raport sprzedaży',
   description: [
-    'Sprzedaż w zakresie dat (czas polski, data złożenia zamówienia): liczba zamówień, wartość brutto, sprzedaż produktów netto i brutto po zwrotach, sztuki, marża z ceny zakupu produktu, anulowane osobno, porównanie z poprzednim okresem tej samej długości; podział na okresy (dzień, tydzień, miesiąc), konta kanałów i produkty (najlepiej sprzedające się pierwsze).',
+    'Sprzedaż w zakresie dat (czas polski, data złożenia zamówienia): liczba zamówień, wartość brutto (kwoty w złotych, inne waluty przeliczone po kursie średnim NBP, rozbicie z kursem w inneWaluty), sprzedaż produktów netto i brutto po zwrotach, sztuki, marża z ceny zakupu produktu, anulowane osobno, porównanie z wybranym okresem (porownaj: poprzedni = tyle samo dni tuż przed, domyślnie; rok = te same daty rok wcześniej; miesiac/tydzien = te same dni miesiąc/tydzień wcześniej; wlasny z porownaj_od i porownaj_do; brak), z oznaczeniem porównania sprzed początku danych (poprzedni.bezDanych, poprzedni.kontaBezDanych: wtedy nie licz wzrostu); podział na okresy (dzień, tydzień, miesiąc), konta kanałów i produkty (najlepiej sprzedające się pierwsze).',
     'Użyj przy pytaniach „ile sprzedaliśmy w październiku?”, „który kanał rośnie?”, „jaka marża na TEST-PRZYPRAWA?”. Produkt bez ceny zakupu ma `brakCenyZakupu: true` i marżę null (nie 100%). Same agregaty, bez klientów.',
     'od/do: RRRR-MM-DD (domyślnie od 1. dnia miesiąca do dziś), najwyżej 366 dni; konto: klucz konta z `konta[].konto`, np. WOO:sklep.',
   ].join(' '),
@@ -494,6 +497,9 @@ const raportSprzedazyTool: McpTool = {
       grupuj: { type: 'string', enum: ['dzien', 'tydzien', 'miesiac'], description: 'Okresy w podziale (domyślnie wg długości zakresu).' },
       konto: str('Tylko jedno konto kanału, np. WOO:sklep.', 120),
       produktow: { type: 'integer', minimum: 1, maximum: MCP_MAX_PRODUCTS, description: 'Ile produktów (domyślnie 50).' },
+      porownaj: { type: 'string', enum: [...TRYBY_POROWNANIA], description: 'Z czym porównać: poprzedni (domyślnie), rok, miesiac, tydzien, wlasny, brak.' },
+      porownaj_od: { type: 'string', pattern: DZIEN_PATTERN, description: 'Początek porównania przy porownaj=wlasny (RRRR-MM-DD).' },
+      porownaj_do: { type: 'string', pattern: DZIEN_PATTERN, description: 'Koniec porównania przy porownaj=wlasny, włącznie (RRRR-MM-DD).' },
     },
     additionalProperties: false,
   },
@@ -504,7 +510,7 @@ const raportSprzedazyTool: McpTool = {
       do: { type: 'string' },
       grupuj: { type: 'string' },
       razem: MIARY_OUT,
-      poprzedni: { type: 'object' },
+      poprzedni: { type: ['object', 'null'] },
       okresy: { type: 'array', items: { type: 'object' } },
       konta: { type: 'array', items: { type: 'object' } },
       produkty: {
@@ -518,6 +524,8 @@ const raportSprzedazyTool: McpTool = {
       produktowRazem: { type: 'integer' },
       wiecejProduktow: { type: 'boolean' },
       pozaKompletorem: { type: 'object' },
+      zArchiwum: { type: 'object' },
+      zKanalemOdtworzonym: { type: 'object' },
     },
     required: ['od', 'do', 'grupuj', 'razem', 'poprzedni', 'okresy', 'konta', 'produkty', 'wiecejProduktow'],
   },
@@ -527,7 +535,7 @@ const raportSprzedazyTool: McpTool = {
   annotations: { title: 'Raport sprzedaży', ...READ, idempotentHint: false },
   async run(ctx, a) {
     const now = ctx.now()
-    const q = zapytanieSprzedazy({ od: optStr(a.od), do: optStr(a.do), grupuj: optStr(a.grupuj), konto: optStr(a.konto), produktow: optInt(a.produktow) ?? MCP_MAX_PRODUCTS }, now)
+    const q = zapytanieSprzedazy({ od: optStr(a.od), do: optStr(a.do), grupuj: optStr(a.grupuj), konto: optStr(a.konto), produktow: optInt(a.produktow) ?? MCP_MAX_PRODUCTS, porownaj: optStr(a.porownaj), porownajOd: optStr(a.porownaj_od), porownajDo: optStr(a.porownaj_do) }, now)
     const r = await raportSprzedazy(ctx.db, q, now)
     return { data: r as unknown as Record<string, unknown>, items: r.produkty.length + r.okresy.length }
   },

@@ -10,6 +10,13 @@ import { CARRIER_LABEL } from '../panel/format'
 import { dopasowanaRegula, validateCarrierRule, type CarrierRuleT } from '../rdzen/przewoznicy'
 import { kluczReguly, SEKRETY_KONTA_RE } from './adapter-przewoznika'
 import { kontaPrzewoznikow, POLA_UKRYTE, sufiksyKontTrwalych } from './konta'
+import { idKontaPrzewoznika, maKontoPrzewoznika, nalozUstawieniaKonta, POLA_SERWERA_PRZEWOZNIKA, polaKonta as polaKontaManifestu, rodzinaAdaptera, sufiksKonta, ustawieniaKont, zmienUstawieniaKont, type UstawieniaKonta } from './ustawienia-konta'
+
+/**
+ * czy reguła zmienia przewoźnika modułu (inna rodzina adaptera, np. Base Courier → DPD). W obrębie rodziny
+ * (wersja odczytu ↔ wersja z zapisem) ustawienia reguły zostają.
+ */
+const innyPrzewoznik = (stary: string | null, nowy: string | null): boolean => (stary ? rodzinaAdaptera(stary) : null) !== (nowy ? rodzinaAdaptera(nowy) : null)
 
 export class RegulyError extends Error {
   constructor(
@@ -132,8 +139,44 @@ export interface WynikZapisuRegul {
   reguly: number
   zmienione: boolean
   /** istniejące reguły przeniesione na inne konto; numer wiersza od 1, sufiks konta (null = główne) */
-  przeniesione: { nr: number; konto: string | null; adapterKey: string | null }[]
+  przeniesione: RegulaPrzeniesiona[]
 }
+
+/**
+ * reguła przeniesiona na inne konto (albo moduł innego przewoźnika) i co się przy tym stało z jej
+ * ustawieniami, do komunikatu po zapisie: nadawanie zawsze jest wyłączane, pola konta bez wartości w nowym koncie
+ * przechodzą z poprzedniego (wymiary, waga), a pola z umowy konta (`zKontaPrzewoznika`: FID-y, środowisko) nie.
+ */
+export interface RegulaPrzeniesiona {
+  nr: number
+  konto: string | null
+  adapterKey: string | null
+  /** reguła nadawała przed zmianą, a po niej ma nadawanie wyłączone */
+  nadawanieWylaczone: boolean
+  /** opisy pól przeniesionych do nowego konta (nowe konto ich nie miało) */
+  przeniesionePola: string[]
+  /** opisy pól, które poprzednie konto miało, a nowe konto nie ma i ich nie dostało (do wpisania w karcie konta) */
+  doUzupelnienia: string[]
+}
+
+/**
+ * komunikat po zapisie reguł dla reguły przeniesionej na inne konto: że nadawanie jest wyłączone i trzeba je
+ * włączyć, co przeszło z poprzedniego konta i czego nowe konto nie ma (nic nie znika bez słowa).
+ */
+export function opisPrzeniesienia(p: RegulaPrzeniesiona, nazwaKonta: string): string {
+  const czesci = [`Reguła ${p.nr} przeniesiona na: ${nazwaKonta}.`]
+  czesci.push(
+    p.nadawanieWylaczone
+      ? 'Nadawanie tej reguły jest teraz wyłączone: sprawdź ustawienia konta i włącz je ponownie na ekranie Konta przewoźników.'
+      : 'Nadawanie tej reguły jest wyłączone: włączysz je na ekranie Konta przewoźników.',
+  )
+  if (p.przeniesionePola.length) czesci.push(`Z poprzedniego konta przeszły: ${p.przeniesionePola.join(', ')}.`)
+  if (p.doUzupelnienia.length) czesci.push(`Poprzednie konto miało, a to konto nie ma (nie przenosimy, bo zależą od umowy konta): ${p.doUzupelnienia.join(', ')}. Wpisz je w karcie konta, jeśli dotyczą tego konta.`)
+  return czesci.join(' ')
+}
+
+/** Krótki opis pola z manifestu do komunikatu: opis do pierwszego nawiasu, średnika albo dwukropka. */
+const krotkiOpis = (opis: string): string => opis.split(/\s*[(;:]/)[0]!.trim() || opis
 
 /**
  * Zapis listy reguł: usuwa reguły, których nie ma na liście, aktualizuje istniejące (po id, `config` zostaje), dopisuje
@@ -150,7 +193,11 @@ export async function zapiszRegulyPrzewoznikow(
 ): Promise<WynikZapisuRegul> {
   const organizationId = organizationIdOf(db)
   if (wiersze.length > 100) throw new RegulyError('Najwyżej 100 reguł')
-  const przed = await db.carrierRule.findMany({ select: { id: true, priority: true, channel: true, pattern: true, carrier: true, shippingModule: true, adapterKey: true, config: true } })
+  const [przed, org] = await Promise.all([
+    db.carrierRule.findMany({ select: { id: true, priority: true, channel: true, pattern: true, carrier: true, shippingModule: true, adapterKey: true, config: true } }),
+    db.organization.findFirst({ select: { settings: true } }),
+  ])
+  const ustawienia = ustawieniaKont(org?.settings)
   const ids = new Set(przed.map((r) => r.id))
   // konto musi istnieć w rodzinie modułu reguły (lista kont jak na ekranie Kont)
   let kontaFirmy: Awaited<ReturnType<typeof kontaPrzewoznikow>> | null = null
@@ -172,7 +219,9 @@ export async function zapiszRegulyPrzewoznikow(
     }
     const konto = w.konto === undefined ? undefined : w.konto.trim()
     if (konto && !SEKRETY_KONTA_RE.test(konto)) throw new RegulyError('Wybierz konto przewoźnika z listy', `regula-${i}-konto`)
-    if (konto && konto !== kontoZ(przed.find((x) => x.id === w.id)?.config)) {
+    const poprzednia = przed.find((x) => x.id === w.id)
+    // konto przy zmianie przewoźnika modułu też musi istnieć u nowego przewoźnika
+    if (konto && (konto !== kontoZ(poprzednia?.config) || (poprzednia && innyPrzewoznik(kluczReguly(poprzednia), kluczReguly({ adapterKey, shippingModule }))))) {
       const klucz = kluczReguly({ adapterKey, shippingModule })
       if (!klucz) throw new RegulyError('Drugie konto przewoźnika działa tylko z modułem wysyłki: wybierz moduł', `regula-${i}-modul`)
       kontaFirmy ??= await kontaPrzewoznikow(db, registry)
@@ -200,21 +249,113 @@ export async function zapiszRegulyPrzewoznikow(
   }
   // konfiguracja po zapisie: konto z kolumny „Konto” (gdy podane). Przy zmianie konta z configu
   // znikają pola konta poprzedniego (z manifestu, spoza POLA_UKRYTE: np. FID płatnika DPD) i wyłącznik nadawania, żeby
-  // reguła nie nadawała kluczami nowego konta z płatnikiem starego. Ustawienia spoza panelu (envPrefix, baseUrl…) zostają.
+  // reguła nie nadawała kluczami nowego konta z płatnikiem starego. Tak samo przy zmianie przewoźnika modułu
+  // (inna rodzina adaptera, np. Base Courier → DPD), a do tego znikają ustawienia serwera starego przewoźnika (adres
+  // API, przedrostek env) i konto reguły, gdy kolumna „Konto” go nie podała. Zmiana w obrębie rodziny (wersja odczytu ↔
+  // wersja z zapisem) i reszta ustawień spoza panelu (nadawca) zostają. Wartości pól konta nie giną: zapis przenosi je
+  // do ustawień konta (`doKont` niżej).
   const obj = (v: unknown): Record<string, unknown> => (v && typeof v === 'object' && !Array.isArray(v) ? { ...(v as Record<string, unknown>) } : {})
   const polaKonta = (adapterKey: string | null) => (adapterKey ? (registry.get(adapterKey)?.manifest.config ?? []) : []).map((f) => f.key).filter((k) => !POLA_UKRYTE.has(k))
   const configPo = (r: (typeof nowe)[number]): Record<string, unknown> | null => {
     const stara = przed.find((x) => x.id === r.id)
     const cur = obj(stara?.config)
-    if (r.konto === undefined || (r.konto || null) === kontoZ(cur)) return null // bez zmiany
-    for (const k of [...(stara ? polaKonta(kluczReguly(stara)) : []), ...polaKonta(kluczReguly({ adapterKey: r.adapterKey ?? null, shippingModule: r.shippingModule }))]) delete cur[k]
+    const nowyKlucz = kluczReguly({ adapterKey: r.adapterKey ?? null, shippingModule: r.shippingModule })
+    const inny = !!stara && innyPrzewoznik(kluczReguly(stara), nowyKlucz)
+    if (!inny && (r.konto === undefined || (r.konto || null) === kontoZ(cur))) return null // bez zmiany
+    for (const k of [...(stara ? polaKonta(kluczReguly(stara)) : []), ...polaKonta(nowyKlucz)]) delete cur[k]
     delete cur['zapisWlaczony']
-    if (r.konto) cur['sekretyKonta'] = r.konto
+    if (inny) for (const k of POLA_SERWERA_PRZEWOZNIKA) delete cur[k]
+    const konto = r.konto !== undefined ? r.konto || null : inny ? null : kontoZ(cur)
+    if (konto) cur['sekretyKonta'] = konto
     else delete cur['sekretyKonta']
     return cur
   }
-  // reguły istniejące przeniesione na inne konto (do komunikatu: uzupełnić ustawienia konta i włączyć nadawanie)
-  const przeniesione = nowe.flatMap((r, i) => (r.id && configPo(r) !== null ? [{ nr: i + 1, konto: r.konto || null, adapterKey: r.adapterKey ?? null }] : []))
+  // konto przewoźnika, z którego korzysta reguła po zapisie (id jak na ekranie kont); null = bez konta
+  const kontoReguly = (key: string | null, config: Record<string, unknown>): string | null => {
+    const def = key ? registry.get(key) : undefined
+    return key && def && maKontoPrzewoznika(def.manifest) ? idKontaPrzewoznika(key, sufiksKonta(config)) : null
+  }
+  const kontoPo = (r: (typeof nowe)[number]): string | null => {
+    const stara = przed.find((x) => x.id === r.id)
+    const cfg = stara ? (configPo(r) ?? obj(stara.config)) : r.konto ? { sekretyKonta: r.konto } : {}
+    return kontoReguly(kluczReguly({ adapterKey: r.adapterKey ?? null, shippingModule: r.shippingModule }), cfg)
+  }
+  const kontoPrzed = (stara: (typeof przed)[number]): string | null => kontoReguly(kluczReguly(stara), obj(stara.config))
+  const poZapisie = new Map(nowe.flatMap((r) => (r.id ? [[r.id, kontoPo(r)] as const] : [])))
+  const kontaPo = new Set(nowe.map(kontoPo))
+  // pola konta zapisane w configu reguły (wartości niepuste, tylko pola z manifestu jej adaptera)
+  const polaZReguly = (stara: (typeof przed)[number]): UstawieniaKonta => {
+    const key = kluczReguly(stara)
+    const cfg = obj(stara.config)
+    const pola: UstawieniaKonta = {}
+    for (const k of key ? polaKontaManifestu(registry.get(key)!.manifest) : []) {
+      const v = cfg[k]
+      if ((typeof v === 'string' && v !== '') || typeof v === 'boolean' || (typeof v === 'number' && Number.isFinite(v))) pola[k] = v
+    }
+    return pola
+  }
+  const wgPriorytetu = [...przed].sort((x, y) => x.priority - y.priority)
+  // Pola konta z configów reguł trafiają do ustawień konta (tylko pola, których konto jeszcze nie ma), żeby nie zginęły
+  // i żeby wszystkie reguły konta działały na tych samych ustawieniach:
+  // 1. reguła zostawia swoje konto bez żadnej reguły (usunięta, przeniesiona, inny przewoźnik);
+  // 2. Reguła dołącza do konta, którego ustawienia są tylko w configu innej reguły (np. kurier DPD
+  //    przełączony z Base Couriera na konto, które ma już regułę salonu Empik): wartości z pierwszej (wg priorytetu)
+  //    reguły, która była i zostaje na tym koncie.
+  const doKont: { id: string; pola: UstawieniaKonta }[] = []
+  const dodajDoKonta = (id: string, pola: UstawieniaKonta) => {
+    if (Object.keys(pola).length) doKont.push({ id, pola })
+  }
+  for (const stara of wgPriorytetu) {
+    const id = kontoPrzed(stara)
+    if (id && !kontaPo.has(id)) dodajDoKonta(id, polaZReguly(stara))
+  }
+  // 3. („dołączenie do konta przenosi ustawienia z reguły”): reguła przeniesiona na inne konto zabiera
+  //    swoje ustawienia, z którymi działała (config reguły z nałożonymi ustawieniami starego konta), do pól, których
+  //    nowe konto nie ma, po regule z pkt 2. Bez pól z umowy konta (`zKontaPrzewoznika`: FID płatnika, środowisko
+  //    kluczy): paczka nie może pójść kluczami nowego konta z płatnikiem starego; te trafiają do komunikatu.
+  const definicja = (key: string | null, pole: string) => (key ? registry.get(key)?.manifest.config.find((f) => f.key === pole) : undefined)
+  const zabraneZReguly = new Map<string, { przeniesione: string[]; doUzupelnienia: string[] }>()
+  for (const r of nowe) {
+    const id = kontoPo(r)
+    const stara = przed.find((x) => x.id === r.id)
+    if (!id || (stara && kontoPrzed(stara) === id)) continue
+    const zrodlo = wgPriorytetu.find((x) => x.id !== r.id && kontoPrzed(x) === id && poZapisie.get(x.id) === id)
+    if (zrodlo) dodajDoKonta(id, polaZReguly(zrodlo))
+    if (!stara) continue
+    const nowyKlucz = kluczReguly({ adapterKey: r.adapterKey ?? null, shippingModule: r.shippingModule })
+    const staryKlucz = kluczReguly(stara)
+    const stareId = kontoPrzed(stara)
+    const dzialala = nalozUstawieniaKonta(polaZReguly(stara), stareId ? ustawienia[stareId] : undefined)
+    const maNowe = new Set([...Object.keys(ustawienia[id] ?? {}), ...doKont.filter((d) => d.id === id).flatMap((d) => Object.keys(d.pola))])
+    const pola: UstawieniaKonta = {}
+    const wynik = { przeniesione: [] as string[], doUzupelnienia: [] as string[] }
+    for (const k of nowyKlucz ? polaKontaManifestu(registry.get(nowyKlucz)!.manifest) : []) {
+      const v = dzialala[k] as UstawieniaKonta[string] | undefined
+      const f = definicja(nowyKlucz, k)!
+      if (v === undefined || v === null || v === '' || maNowe.has(k)) continue
+      // wartość musi pasować do pola nowego modułu (inny przewoźnik może mieć pole o tej samej nazwie
+      // z innym typem, wzorcem albo listą wartości); niepasująca nie przechodzi i trafia do komunikatu
+      const pasuje = typeof v === f.type && (!f.pattern || f.pattern.test(String(v))) && (!f.options || f.options.some((o) => o.value === v))
+      if (!pasuje) {
+        wynik.doUzupelnienia.push(krotkiOpis(f.description))
+        continue
+      }
+      if (f.zKontaPrzewoznika || definicja(staryKlucz, k)?.zKontaPrzewoznika) wynik.doUzupelnienia.push(krotkiOpis(f.description))
+      else {
+        pola[k] = v
+        wynik.przeniesione.push(krotkiOpis(f.description))
+      }
+    }
+    dodajDoKonta(id, pola)
+    zabraneZReguly.set(r.id!, wynik)
+  }
+  // reguły istniejące przeniesione na inne konto (do komunikatu: co przeszło, co uzupełnić, nadawanie do włączenia)
+  const przeniesione: RegulaPrzeniesiona[] = nowe.flatMap((r, i) => {
+    if (!r.id || configPo(r) === null) return []
+    const stara = przed.find((x) => x.id === r.id)
+    const z = zabraneZReguly.get(r.id)
+    return [{ nr: i + 1, konto: r.konto || null, adapterKey: r.adapterKey ?? null, nadawanieWylaczone: obj(stara?.config)['zapisWlaczony'] === true, przeniesionePola: z?.przeniesione ?? [], doUzupelnienia: z?.doUzupelnienia ?? [] }]
+  })
   // serwer sam porównuje wiersze z bazą; ta sama lista = nic do zapisu i bez wpisu w historii.
   // porównanie kolejności (id po kolei), nie wartości priorytetu: priorytety z bazy nie muszą być
   // wielokrotnościami 10 (reguła wstawiona ręcznie, stary seed), a ta sama kolejność to ta sama lista.
@@ -228,6 +369,17 @@ export async function zapiszRegulyPrzewoznikow(
     })
   if (bezZmian) return { reguly: nowe.length, zmienione: false, przeniesione: [] }
   await db.$transaction(async (tx) => {
+    const przeniesioneUstawienia = await zmienUstawieniaKont(tx, organizationId, doKont, { tylkoBrakujace: true })
+    if (przeniesioneUstawienia.length)
+      await tx.auditLog.create({
+        data: {
+          entity: 'CarrierRule.config',
+          entityId: organizationId,
+          actorId,
+          before: { konta: przeniesioneUstawienia.map((u) => ({ id: u.id, ustawienia: u.przed })) } as Prisma.InputJsonValue,
+          after: { konta: przeniesioneUstawienia.map((u) => ({ id: u.id, ustawienia: u.po })), zRegul: true } as Prisma.InputJsonValue,
+        },
+      })
     const usun = usuwane.map((r) => r.id)
     if (usun.length) await tx.carrierRule.deleteMany({ where: { id: { in: usun } } })
     // unikalny (firma, priorytet): najpierw priorytety tymczasowe, potem docelowe

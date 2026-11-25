@@ -54,7 +54,8 @@ import { odbiorcaDoCelu } from '../klienci/wejscia'
 import type { FakturyWfirma } from '../rdzen/rozchod'
 import type { KorektyWfirma } from '../rdzen/zwroty'
 import { loadImportConfig } from '../organizacje'
-import { BaseLinkerReadOnly } from '../zrodla/baselinker'
+import { BaseLinkerReadOnly, BaseLinkerStatusZapis } from '../zrodla/baselinker'
+import { przebiegStatusuBl, STATUS_BL_JOB, statusBlFirmy } from '../kanaly/status-bl'
 import { cienOdczytZEnv, KSEF_WYSYLKA_JOB, LUSTRO_WFIRMY_JOB, lustroWfirmyZEnv, ZWROTY_KANALOW_JOB } from './harmonogram'
 import { przebiegKsefZLimitem } from '../ksef/wysylka'
 import { zadaniePlanuAkcji } from '../akcje/silnik'
@@ -82,6 +83,8 @@ import { ZADANIE_WYSYLKI } from '../poczta/wysylka'
 import { ZADANIE_ODBIC, zadanieOdbicPoczty } from '../poczta/czytnik-odbic'
 import { przebiegZapisuKanalow, wyslijStanyKonta, ZAPIS_KANALOW_JOB } from '../kanaly/zapis-host'
 import { ZADANIE_SLEDZENIA, ZADANIE_WYSLANE_PO_PRZYJEZDZIE, zadanieSledzenia, zadanieWyslanePoPrzyjezdzie } from '../pakowanie/wyslane-po-przyjezdzie'
+import { KURIER_AUTOMAT_JOB, zamowKurieraAutomatycznie } from '../wysylka/zamowienie-kuriera'
+import { KURSY_WALUT_JOB, odswiezKursy } from '../kursy/nbp'
 
 /**
  * Katalog raportu z payloadu zadania: tylko podkatalog RAPORTY_DIR (domyślnie ./raporty), bez ścieżek
@@ -172,9 +175,10 @@ export async function doWyslaniaPoFakturze(db: PrismaClient, now = new Date(), o
       ...(pominiete.length ? { id: { notIn: pominiete } } : {}),
       OR: [{ updatedAt: { gte: okno } }, { invoices: { some: { state: 'ISSUED', updatedAt: { gte: okno } } } }],
       invoices: { some: { state: 'ISSUED' } },
-      carrierShipments: { some: { state: 'UTWORZONA' } },
+      carrierShipments: { some: { state: 'UTWORZONA', extraNo: 0 } },
     },
-    select: { id: true, carrierShipments: { where: { state: 'UTWORZONA' }, orderBy: { createdAt: 'desc' }, take: 1, select: { trackingNumber: true } } },
+    // tylko przesyłka główna: numer dodatkowej przesyłki nie może trafić do sklepu jako numer nadania zamówienia
+    select: { id: true, carrierShipments: { where: { state: 'UTWORZONA', extraNo: 0 }, orderBy: { createdAt: 'desc' }, take: 1, select: { trackingNumber: true } } },
     orderBy: { updatedAt: 'asc' },
     take: opts.limit ?? 50,
   })
@@ -279,6 +283,10 @@ export const handlers: Record<string, Handler> = {
   },
   'akcje-plan': zadaniePlanuAkcji, // plan akcji („wysłałbym”), nic nie wychodzi
   // zlecenia druku po 8 h → WYGASLO, bajty plików zakończonych zleceń (dane zamówień) usuwane po 7 dniach
+  // kursy średnie NBP do ustawień firmy (lib/kursy/nbp.ts); błąd = poprzednie kursy zostają, `ostatniBlad` w zapisie
+  [KURSY_WALUT_JOB]: async (db) => {
+    await odswiezKursy(db)
+  },
   'druk-sprzatanie': async (db) => {
     await sprzatajDruk(db)
   },
@@ -433,6 +441,15 @@ export const handlers: Record<string, Handler> = {
   [ZAPIS_KANALOW_JOB]: async (db, _payload, ctx) => {
     await przebiegZapisuKanalow(db, { registry, secrets: ctx.secrets })
   },
+  // status w BL dla zamówień zrealizowanych w Kompletorze. Wyłącznik firmy przed tokenem: wyłączone = zero
+  // wywołań BL. Błędy pojedynczych zamówień zostają w ich historii i alertach (bez rzucania: brak ponowień całego zadania).
+  [STATUS_BL_JOB]: async (db, _payload, ctx) => {
+    const ustawienia = await statusBlFirmy(db)
+    if (!ustawienia.wlaczony) return
+    const token = await blToken(db, ctx)
+    if (!token) return
+    await przebiegStatusuBl(db, new BaseLinkerStatusZapis(token), { ustawienia })
+  },
   // „Przyjechał <przewoźnik>” → spakowane z numerem nadania do „Wysłane” (raport w CarrierPickupShipping)
   [ZADANIE_WYSLANE_PO_PRZYJEZDZIE]: async (db, payload, ctx) => {
     await zadanieWyslanePoPrzyjezdzie(db, payload, { env: ctx.secrets.env })
@@ -440,6 +457,11 @@ export const handlers: Record<string, Handler> = {
   // śledzenie przesyłki (sam odczyt u przewoźnika) — paczka odebrana bez kliknięcia przyjazdu → „Wysłane”
   [ZADANIE_SLEDZENIA]: async (db, _payload, ctx) => {
     await zadanieSledzenia(db, { registry, secrets: ctx.secrets, env: ctx.secrets.env })
+  },
+  // zamawianie kuriera przez automat (konto przewoźnika „Zamawiaj kuriera automatycznie”): najwyżej jedno żądanie na
+  // przewoźnika i przebieg, ochrona przed drugim zleceniem na dzień w lib/wysylka/zamowienie-kuriera.ts
+  [KURIER_AUTOMAT_JOB]: async (db, _payload, ctx) => {
+    await zamowKurieraAutomatycznie(db, { registry, secrets: ctx.secrets, env: ctx.secrets.env })
   },
   'rdzen-audyt': async (db) => {
     await auditInvariants(db)

@@ -1,22 +1,33 @@
 // Podgląd przesyłki zamówienia (także Wysyłam z Allegro): liczy parametry i zapisuje je w PreparedShipment.
 // Bez sieci i bez klucza (działa, zanim dojdzie autoryzacja przesyłek Allegro), bez instancji adaptera, bez
 // zmian w zamówieniu, rezerwacjach i stanie. Nic nie zostaje nadane. Klient bazy firmy z sesji (RLS). Danych odbiorcy tu
-// nie ma: Order ich nie trzyma, a wiersz zawiera tylko parametry przesyłki.
+// nie ma: Order ich nie trzyma, a wiersz zawiera tylko parametry przesyłki. Wyjątek: gdy moduł wymaga punktu
+// odbioru, kod punktu przychodzi z zapisanych danych klienta (`punktOdbioruZBazy`) i żyje tylko w pamięci liczenia.
 import { Prisma, type Carrier, type OrderStatus, type PrismaClient } from '@prisma/client'
 import { ALLEGRO_WYSYLAM_KEY, DEFAULT_SHIPPING_ADAPTER } from '@/lib/adaptery'
 import type { PowodNiepewnejKwoty, PreparedParcel, ShipmentProblem } from '@/lib/adaptery/kontrakt'
 import { organizationIdOf } from '@/lib/db'
+import { punktOdbioruZBazy } from '@/lib/klienci/wejscia'
 import { GABARYTY, gabarytyDla, isGabaryt, ocenaGabarytu, type Gabaryt } from '@/lib/stanowisko/gabaryty'
 import { wczytajZamowienia, type ZamowienieStanowiska } from '@/lib/stanowisko/zamowienia'
 import { czyPowodInnegoModulu, POWOD_REGULY_ZMIENIONE, regulaDlaZamowienia } from '@/lib/rdzen/przewoznicy'
 import { LICZENIE_PRZESYLKI, maLiczeniePrzesylki, type KluczPrzesylki } from './moduly'
 import { kwotyPobraniaRodziny } from './pobranie-paczek'
 import { POWOD_KWOTY, wagaZeSkladu } from './przesylka'
+import { konfiguracjaZKontem } from './ustawienia-konta'
 
 type Db = PrismaClient
 
 /** Błąd akcji z komunikatem dla użytkownika panelu. */
 export class BladPrzesylki extends Error {}
+
+/** podgląd bez danych klienta w bazie nie wie, czy punkt jest; nadanie czyta go z danych klienta. */
+export const PUNKT_PRZY_NADANIU = 'Punkt odbioru zostanie sprawdzony przy tworzeniu przesyłki (dane klienta nie są jeszcze zapisane w Kompletorze).'
+/** dane klienta są, ale podgląd ich nie przeczyta; tekst mówi prawdę, bez żadnych danych klienta. */
+export const PUNKT_DANE_USUNIETE = 'Punkt odbioru zostanie sprawdzony przy tworzeniu przesyłki (dane klienta usunięto po okresie przechowywania).'
+export const PUNKT_DANE_NIEODCZYTANE = 'Punkt odbioru zostanie sprawdzony przy tworzeniu przesyłki (danych klienta nie udało się teraz odczytać).'
+const TEKST_PUNKTU = { BRAK: PUNKT_PRZY_NADANIU, USUNIETE: PUNKT_DANE_USUNIETE, NIEODCZYTANE: PUNKT_DANE_NIEODCZYTANE } as const
+const jestBrakPunktu = (p: ShipmentProblem) => p.kod === 'punkt' && p.poziom === 'BLAD'
 
 export type WynikPrzygotowania = { wynik: 'przygotowane'; orderId: string; packageNo: number; parcel: PreparedParcel } | { wynik: 'nie_dotyczy'; powod: string }
 
@@ -83,7 +94,9 @@ export async function regulaPrzesylki(db: Db, z: Pick<ZamowienieStanowiska, 'cha
   if (!r || !maLiczeniePrzesylki(adapterKey)) return { powod: powodBezModulu(z.carrier, r ? adapterKey : null) }
   // Wysyłam z Allegro nada tylko zamówienie z Allegro (przesyłka idzie do formularza zakupu)
   if (adapterKey === ALLEGRO_WYSYLAM_KEY && z.channel !== 'ALLEGRO') return { powod: 'Wysyłam z Allegro działa tylko dla zamówień z Allegro: popraw regułę przewoźnika.' }
-  return { adapterKey, config: asObject(r.config), powod: null }
+  // wymiary, waga i kod kuriera z ustawień konta przewoźnika (ekran Konta przewoźników), inaczej z reguły
+  const org = await db.organization.findUnique({ where: { id: organizationIdOf(db) }, select: { settings: true } })
+  return { adapterKey, config: konfiguracjaZKontem(org?.settings, adapterKey, asObject(r.config)), powod: null }
 }
 
 /**
@@ -144,7 +157,7 @@ export async function prepareForOrder(db: Db, orderId: string, gabaryt?: string 
   // kwota pobrania paczki z jej pozycji; tylko przy pobraniu (inne zamówienia jej nie potrzebują)
   const paczki = podzielone && platnosc.paymentState !== 'PAID' ? await kwotyPobraniaRodziny(db, orderId) : null
   const kwotaPaczkiGr = paczki?.kwotyGr?.get(orderId) ?? null
-  const parcel = LICZENIE_PRZESYLKI[regula.adapterKey](
+  const licz = (pickupPoint: string | null) => LICZENIE_PRZESYLKI[regula.adapterKey](
     {
       carrier: z.carrier!,
       courierCode: regula.config['courierCode'],
@@ -156,11 +169,20 @@ export async function prepareForOrder(db: Db, orderId: string, gabaryt?: string 
       totalGross: kwotaPaczkiGr !== null ? kwotaPaczkiGr / 100 : Number(o.totalGross),
       codAmountUncertain: powodKwoty(podzielone, kwotaPaczkiGr !== null, o.lines.length > 0, o.shortages.map((s) => s.state)),
       wielePaczek: podzielone,
-      // podgląd: kanały nie dają kodu punktu do cienia (problem na liście); nadanie podaje punkt z danych klienta
-      pickupPoint: opcje.punktOdbioru ?? null,
+      pickupPoint,
     },
     regula.config,
   )
+  // Nadanie podaje punkt z danych klienta (`null` = punktu naprawdę nie ma). Podgląd bez punktu
+  // dawał fałszywy BLAD „brak punktu”, choć rekord klienta miał kod (salon, paczkomat). Teraz, gdy moduł chce punktu,
+  // podgląd bierze kod z zapisanych danych klienta (tylko baza, bez kanału); bez danych w bazie zamiast błędu jest
+  // informacja, że punkt sprawdzi nadanie.
+  let parcel = licz(opcje.punktOdbioru ?? null)
+  if (opcje.punktOdbioru === undefined && parcel.problems.some(jestBrakPunktu)) {
+    const punkt = await punktOdbioruZBazy(db, z.id)
+    if (punkt.stan === 'JEST') parcel = licz(punkt.kod)
+    else if (punkt.stan === 'NIEZNANY') parcel.problems = parcel.problems.map((p): ShipmentProblem => (jestBrakPunktu(p) ? { kod: 'punkt_przy_nadaniu', poziom: 'INFO', tekst: TEKST_PUNKTU[punkt.powod] } : p))
+  }
   // powód, dla którego kwoty paczki nie da się wyliczyć, dopisany do problemu „Nieznana kwota pobrania” adaptera
   if (paczki?.powod) for (const p of parcel.problems) if (p.kod === 'pobranie' && p.tekst.includes(POWOD_KWOTY.PODZIAL)) p.tekst = `${p.tekst.replace(/\.$/, '')} (${paczki.powod}).`
   if (wybrany.zaDuze) parcel.problems.push({ kod: 'gabaryt_za_duzy', poziom: 'BLAD', tekst: wybrany.zaDuze })
@@ -196,6 +218,8 @@ export interface PodgladPrzesylki {
     /** Wartość robocza, a nie potwierdzona: ekran mówi to przy liczbie, nie tylko na liście problemów. */
     wymiaryRobocze: boolean
     wagaRobocza: boolean
+    /** waga domyślna z ustawień przewoźnika firmy (produkty bez wagi), bez potwierdzania co paczkę. */
+    wagaZUstawien: boolean
     pobranie: Prisma.Decimal | null
     problemy: ShipmentProblem[]
     przygotowano: Date
@@ -228,7 +252,9 @@ export async function podgladPrzesylki(db: Db, orderId: string): Promise<Podglad
           wymiary: r.sideXCm && r.sideYCm && r.sideZCm ? `${r.sideXCm} × ${r.sideYCm} × ${r.sideZCm} cm` : null,
           wagaKg: r.weightKg === null ? null : Number(r.weightKg),
           wymiaryRobocze: problemy.some((p) => p.kod === 'wymiary_domyslne'),
-          wagaRobocza: problemy.some((p) => p.kod === 'waga_domyslna'),
+          // waga z ustawień firmy (INFO) nie jest „robocza, do potwierdzenia”
+          wagaRobocza: problemy.some((p) => p.kod === 'waga_domyslna' && p.poziom !== 'INFO'),
+          wagaZUstawien: problemy.some((p) => p.kod === 'waga_domyslna' && p.poziom === 'INFO'),
           pobranie: r.codAmount,
           problemy,
           przygotowano: r.createdAt,
@@ -236,6 +262,23 @@ export async function podgladPrzesylki(db: Db, orderId: string): Promise<Podglad
         }
       : null,
   }
+}
+
+/**
+ * ostrzeżenia z zapisanego podglądu, które człowiek potwierdza przed nadaniem (pola wyboru przy „Utwórz
+ * przesyłkę” widoczne przed pierwszym kliknięciem). Tylko podpowiedź: nadanie liczy przesyłkę od nowa i odda nowe
+ * ostrzeżenia w `doPotwierdzenia`, gdy podgląd się zestarzał.
+ */
+export async function ostrzezeniaDoPotwierdzenia(db: Db, orderId: string): Promise<{ kod: string; tekst: string }[]> {
+  const r = await db.preparedShipment.findFirst({ where: { orderId }, select: { problems: true, createdAt: true } })
+  if (!r) return []
+  // podgląd nieaktualny (zamówienie zmieniło się po policzeniu) = bez pól do zaznaczenia; teksty z liczbami
+  // (waga, wymiary, kwota pobrania) mogłyby już nie odpowiadać temu, co pójdzie do przewoźnika. Pierwsze kliknięcie
+  // „Utwórz przesyłkę” liczy od nowa i oddaje świeże teksty w odmowie „do potwierdzenia”.
+  if (await zmienioneOd(db, orderId, r.createdAt)) return []
+  // podpowiedź gabarytu znika, gdy przycisk nadania niesie gabaryt; jeśli nadanie jej wymaga, odda ją w `doPotwierdzenia`
+  const lista = problemyZWiersza(r.problems).filter((p) => p.poziom === 'OSTRZEZENIE' && p.kod !== 'gabaryt_podpowiedz')
+  return [...new Map(lista.map((p) => [p.kod, { kod: p.kod, tekst: p.tekst }])).values()]
 }
 
 /** Ostatnia zmiana zamówienia albo którejkolwiek pozycji jest późniejsza niż chwila policzenia podglądu. */
@@ -251,6 +294,7 @@ async function zmienioneOd(db: Db, orderId: string, od: Date): Promise<boolean> 
  * lib/wysylka/nadanie.ts) bierze parametry stąd, z punktem odbioru z danych klienta. „Nie dotyczy” = przesyłki nie będzie.
  */
 export async function przesylkaDoNadania(db: Db, orderId: string, gabaryt?: string | null, punktOdbioru?: string | null): Promise<WynikPrzygotowania> {
-  // odświeża też podgląd (wiersz znów odpowiada zamówieniu); punkt odbioru nie ma kolumny, znika tylko problem „punkt”
-  return prepareForOrder(db, orderId, gabaryt, { punktOdbioru })
+  // odświeża też podgląd (wiersz znów odpowiada zamówieniu); punkt odbioru nie ma kolumny, znika tylko problem „punkt”.
+  // `null` (nie `undefined`): punkt podał odczyt odbiorcy nadania, więc podgląd nie czyta go drugi raz
+  return prepareForOrder(db, orderId, gabaryt, { punktOdbioru: punktOdbioru ?? null })
 }

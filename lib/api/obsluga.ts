@@ -15,7 +15,10 @@ import { wybierzStatusFirmy } from '@/lib/panel/statusy'
 import { statusyFirmy } from '@/lib/panel/statusy-firmy-dane'
 import { readJsonBody } from './zapis'
 import { ApiInputError, apiError } from './odpowiedzi'
-import { CHANNELS, money, ORDER_STATUSES, shipmentsOf, trackingNumbers, type ShipmentOut } from './zamowienia'
+import { linkSledzeniaDoMaila } from '@/lib/wysylka/link-sledzenia'
+import { NAZWA_STANU } from '@/lib/wysylka/status-kuriera'
+import { SLEDZENIE_PO_WYSYLCE_CO_MS } from '@/lib/pakowanie/wyslane-po-przyjezdzie'
+import { CHANNELS, money, ORDER_STATUSES, rodzajApi, trackingNumbers, type RodzajPrzesylkiApi } from './zamowienia'
 
 export const OBSLUGA_PER_MINUTE = 30
 export const OBSLUGA_PER_HOUR = 600
@@ -50,6 +53,36 @@ export const OBSLUGA_ORDER_FIELDS = [
 export const OBSLUGA_LINE_FIELDS = ['nazwa', 'ilosc'] as const
 export const HISTORIA_FIELDS = ['status', 'statusNazwa', 'kiedy'] as const
 export const FAKTURA_FIELDS = ['numer', 'wystawiono'] as const
+export const SHIPMENT_FIELDS = ['przewoznik', 'numerNadania', 'stan', 'stanNazwa', 'stanOd', 'sprawdzono', 'sledzona', 'linkSledzenia', 'rodzaj'] as const
+/** Najwięcej przesyłek jednego zamówienia w odpowiedzi (od najstarszej). */
+export const MAX_SHIPMENTS = 10
+/**
+ * Stan paczki w API obsługi. Nazwy jak stany drogi paczki na main (`ShipmentTrackState`), żeby kontrakt nie zmienił się
+ * po wejściu pełnego śledzenia na produkcję; dziś produkcja zna cztery stany śledzenia (`StanPrzesylki`).
+ */
+export const STANY_PRZESYLKI_OBSLUGI = ['UTWORZONA', 'PRZEKAZANA', 'DORECZONA', 'NIEZNANY'] as const
+export type StanPrzesylkiObslugi = (typeof STANY_PRZESYLKI_OBSLUGI)[number]
+/** Kompletor uznaje paczkę za śledzoną, gdy sprawdzał ją u przewoźnika nie dawniej niż dwa cykle śledzenia po wysyłce. */
+export const SLEDZONA_GDY_SPRAWDZONA_MS = 2 * SLEDZENIE_PO_WYSYLCE_CO_MS
+
+export interface ShipmentOut {
+  przewoznik: Carrier
+  numerNadania: string | null
+  /** ostatni stan paczki u przewoźnika albo null, gdy Kompletor nie ma jeszcze odczytu */
+  stan: StanPrzesylkiObslugi | null
+  /** stały tekst stanu (bez opisu przewoźnika, który może nieść dane odbiorcy) */
+  stanNazwa: string | null
+  /** chwila ostatniego zapisanego odczytu tego stanu (ISO 8601 UTC); zmiana kodu przewoźnika w tym samym stanie ją przesuwa */
+  stanOd: string | null
+  /** ostatnia próba odczytu u przewoźnika (ISO 8601 UTC), także nieudana */
+  sprawdzono: string | null
+  /** stan jest świeży: jest zdarzenie stanu, próba odczytu niedawna, nie doręczona, stan nie przeczy statusowi zamówienia */
+  sledzona: boolean
+  /** strona śledzenia u przewoźnika albo null (wtedy sam numer) */
+  linkSledzenia: string | null
+  /** GLOWNA albo rodzaj przesyłki dodatkowej (dosyłka za wyłącznikiem firmy, domyślnie wyłączona) */
+  rodzaj: RodzajPrzesylkiApi
+}
 
 export interface HistoriaOut {
   status: OrderStatus
@@ -258,6 +291,79 @@ export async function fakturyZamowien(db: PrismaClient, orderIds: string[]): Pro
   return out
 }
 
+/** Stan śledzenia (StanPrzesylki z lib/adaptery/kontrakt.ts) → stan w API obsługi. */
+export function stanObslugi(stan: string | null | undefined): StanPrzesylkiObslugi {
+  if (stan === 'PRZED_NADANIEM') return 'UTWORZONA'
+  if (stan === 'PRZEKAZANA' || stan === 'DORECZONA') return stan
+  return 'NIEZNANY'
+}
+
+/** Statusy zamówienia, przy których paczka jest już u przewoźnika (stan „przed nadaniem” jest wtedy nieaktualny). */
+const ZAMOWIENIE_WYSLANE: ReadonlySet<OrderStatus> = new Set<OrderStatus>(['WYSLANE', 'ODEBRANE'])
+
+/**
+ * Czy stan paczki jest świeży. `sprawdzono` (Shipment.trackedAt) to ostatnia PRÓBA odczytu, podbijana także po błędzie
+ * u przewoźnika, więc sam czas nie wystarcza: potrzebne jest zdarzenie stanu, a stan nie może przeczyć statusowi zamówienia.
+ */
+export function sledzonaObslugi(
+  p: { stan: StanPrzesylkiObslugi | null; sprawdzono: Date | null; statusZamowienia: OrderStatus | null | undefined },
+  now: Date = new Date(),
+): boolean {
+  if (!p.stan || !p.sprawdzono || p.stan === 'DORECZONA') return false
+  if (now.getTime() - p.sprawdzono.getTime() > SLEDZONA_GDY_SPRAWDZONA_MS) return false
+  if (p.stan === 'UTWORZONA' && p.statusZamowienia && ZAMOWIENIE_WYSLANE.has(p.statusZamowienia)) return false
+  return true
+}
+
+/**
+ * Przesyłki zamówień utworzone u przewoźnika (anulowane pomijamy) ze stanem paczki: ostatnie zdarzenie
+ * PRZESYLKA_STATUS tej przesyłki (`data.przesylka`, zapis śledzenia w lib/pakowanie/wyslane-po-przyjezdzie.ts).
+ * Z bazy wychodzą tylko kod stanu i czas zdarzenia; opis przewoźnika i surowy kod zostają w panelu.
+ */
+export async function przesylkiObslugi(
+  db: PrismaClient,
+  orderIds: string[],
+  now: Date = new Date(),
+  statusZamowien: ReadonlyMap<string, OrderStatus> = new Map(),
+): Promise<Map<string, ShipmentOut[]>> {
+  const out = new Map<string, ShipmentOut[]>()
+  if (!orderIds.length) return out
+  const [rows, stany] = await Promise.all([
+    db.shipment.findMany({
+      where: { orderId: { in: orderIds }, state: 'UTWORZONA' },
+      orderBy: [{ orderId: 'asc' }, { packageNo: 'asc' }, { createdAt: 'asc' }, { id: 'asc' }],
+      select: { id: true, orderId: true, carrier: true, trackingNumber: true, trackedAt: true, extraNo: true, extraKind: true },
+    }),
+    db.$queryRaw<{ przesylka: string; stan: string | null; createdAt: Date }[]>`
+      SELECT DISTINCT ON (data->>'przesylka') data->>'przesylka' AS przesylka, data->>'stan' AS stan, "createdAt"
+      FROM "OrderEvent"
+      WHERE "orderId" = ANY(${orderIds}::text[]) AND kind = 'PRZESYLKA_STATUS' AND jsonb_typeof(data->'przesylka') = 'string'
+      ORDER BY data->>'przesylka', "createdAt" DESC, id DESC`,
+  ])
+  const stanPaczki = new Map(stany.map((r) => [r.przesylka, r]))
+  for (const s of rows) {
+    const lista = out.get(s.orderId) ?? []
+    if (lista.length >= MAX_SHIPMENTS) continue
+    const st = stanPaczki.get(s.id)
+    const stan = st ? stanObslugi(st.stan) : null
+    const kod = stan === 'UTWORZONA' ? 'PRZED_NADANIEM' : stan
+    // allowlista: każde pole wypisane jawnie, kolejność jak w SHIPMENT_FIELDS
+    lista.push({
+      przewoznik: s.carrier,
+      numerNadania: s.trackingNumber ? s.trackingNumber.slice(0, 100) : null,
+      stan,
+      stanNazwa: kod ? (NAZWA_STANU[kod] ?? null) : null,
+      stanOd: st ? st.createdAt.toISOString() : null,
+      sprawdzono: s.trackedAt ? s.trackedAt.toISOString() : null,
+      sledzona: sledzonaObslugi({ stan, sprawdzono: s.trackedAt, statusZamowienia: statusZamowien.get(s.orderId) }, now),
+      linkSledzenia: linkSledzeniaDoMaila(s.carrier, s.trackingNumber),
+      rodzaj: rodzajApi(s.extraNo, s.extraKind),
+    })
+    out.set(s.orderId, lista)
+  }
+  return out
+}
+
 /** Zamówienia o tych id (już zawężonych do kontaktu) w kształcie obsługi, w podanej kolejności. */
 export async function zamowieniaObslugi(db: PrismaClient, orderIds: string[]): Promise<ObslugaOrderOut[]> {
   if (!orderIds.length) return []
@@ -269,7 +375,7 @@ export async function zamowieniaObslugi(db: PrismaClient, orderIds: string[]): P
   const [products, tracking, shipments, historia, faktury, sf] = await Promise.all([
     productIds.length ? db.product.findMany({ where: { id: { in: productIds } }, select: { id: true, title: true } }) : Promise.resolve([]),
     trackingNumbers(db, ids),
-    shipmentsOf(db, ids),
+    przesylkiObslugi(db, ids, new Date(), new Map(ordered.map((r) => [r.id, r.status]))),
     historiaStatusow(db, ordered),
     fakturyZamowien(db, ids),
     statusyFirmy(db),

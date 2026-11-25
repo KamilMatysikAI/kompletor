@@ -1,7 +1,8 @@
 import Link from 'next/link'
 import type { ReactNode } from 'react'
-import { PasekAkcjiMasowych, PoleZaznaczenia, PrzyciskLink, PustyStan, ToastZAdresuZapisu, ZaznaczanieTabeli, ZaznaczWszystkie } from '@/app/ui'
-import { grupaZAdresu, isProductFilter, PAGE_SIZE, PRODUCT_FILTERS, productsPage, type ProductFilter } from '@/lib/panel/dane'
+import { NaglowekSortu, PasekAkcjiMasowych, PoleZaznaczenia, PrzyciskLink, PustyStan, SortNaTelefonie, ToastZAdresuZapisu, ZaznaczanieTabeli, ZaznaczWszystkie } from '@/app/ui'
+import { grupaZAdresu, isProductFilter, PAGE_SIZE, PRODUCT_FILTERS, PRODUCT_SORT_DEFAULT, productSortZ, productsPage, type ProductFilter, type ProductSortKey } from '@/lib/panel/dane'
+import type { Kierunek } from '@/lib/panel/tabela'
 import { int, qty } from '@/lib/panel/format'
 import { requireSession } from '@/lib/panel/kontekst'
 import { firmaMaWfirme } from '@/lib/kanaly/firma'
@@ -14,6 +15,12 @@ import { OFERTY_MASOWO_MAX, OFERTY_RAPORTY } from '@/lib/oferty/masowo'
 import { przygotujOfertyZaznaczonych } from './akcje-oferty'
 import { synchronizujStany } from './akcje-stany'
 import { PrzygotujOferty } from './_lista/przygotuj-oferty'
+import { drzewoKategorii, FILTR_BEZ_KATEGORII, MASOWO_MAX, warunekKategorii } from '@/lib/produkty/kategorie'
+import { przypiszKategorieZaznaczonym } from './akcje-kategorie'
+import { PrzypiszKategorie } from './_lista/przypisz-kategorie'
+import { ZmienAktywnosc } from './_lista/zmien-aktywnosc'
+import { ustawAktywnoscZaznaczonym } from './akcje-aktywnosc'
+import { AKTYWNOSC_MASOWO_MAX } from '@/lib/produkty/aktywnosc'
 
 export const metadata = { title: 'Produkty' }
 
@@ -30,20 +37,42 @@ export default async function Produkty({ searchParams }: Props) {
   const q = one(sp.q) ?? ''
   const page = Math.max(1, Number(one(sp.strona)) || 1)
   const grupa = grupaZAdresu(one(sp.grupa)) // warianty jednej grupy
-  const komp = await kompletnoscProduktow(ctx.db)
-  const [data, hasWfirma] = await Promise.all([productsPage(ctx.db, { filter, q, page, grupa, ...(brak ? { tylkoId: komp.braki[brak] } : {}) }), firmaMaWfirme(ctx.db)])
+  // filtr kategorii (cała gałąź) albo „bez kategorii”
+  const kategoria = /^[a-z0-9]{1,40}$/i.test(one(sp.kategoria) ?? '') ? one(sp.kategoria)! : undefined
+  // sortowanie całej listy (biała lista kluczy); domyślne (nazwa rosnąco) nie trafia do adresu
+  const sort = productSortZ(sp)
+  const sortDomyslny = sort.klucz === PRODUCT_SORT_DEFAULT.klucz && sort.kierunek === PRODUCT_SORT_DEFAULT.kierunek
+  const [komp, kategorie, warunekKat] = await Promise.all([kompletnoscProduktow(ctx.db), drzewoKategorii(ctx.db), warunekKategorii(ctx.db, kategoria)])
+  const [data, hasWfirma] = await Promise.all([productsPage(ctx.db, { filter, q, page, grupa, kategoria: warunekKat, sort, ...(brak ? { tylkoId: komp.braki[brak] } : {}) }), firmaMaWfirme(ctx.db)])
   const canAdd = ctx.permissions.has('produkty.dodawanie')
   const zdj = await glowneZdjecia(ctx.db, data.rows.map((r) => r.id)) // miniatury
   const pages = Math.max(1, Math.ceil(data.total / PAGE_SIZE))
   const qs = (patch: Record<string, string | number | undefined>) => {
     const p = new URLSearchParams()
-    for (const [k, v] of Object.entries({ filtr, q, grupa: grupa ?? undefined, ...patch })) if (v !== undefined && v !== '' && !(k === 'filtr' && v === 'wszystkie') && !(k === 'strona' && Number(v) === 1)) p.set(k, String(v))
+    for (const [k, v] of Object.entries({ filtr, q, grupa: grupa ?? undefined, kategoria, sort: sortDomyslny ? undefined : sort.klucz, kier: sortDomyslny ? undefined : sort.kierunek, ...patch })) if (v !== undefined && v !== '' && !(k === 'filtr' && v === 'wszystkie') && !(k === 'strona' && Number(v) === 1)) p.set(k, String(v))
     const s = p.toString()
     return s ? `/produkty?${s}` : '/produkty'
   }
+  // klik w nagłówek: ta sama kolumna odwraca kierunek, inna zaczyna od rosnąco; zawsze strona 1 (jak `adresSortu`)
+  const kierunekKolumny = (k: ProductSortKey): Kierunek | undefined => (sort.klucz === k ? sort.kierunek : undefined)
+  const sortHref = (k: ProductSortKey) => {
+    const kier: Kierunek = sort.klucz === k && sort.kierunek === 'rosnaco' ? 'malejaco' : 'rosnaco'
+    const domyslny = k === PRODUCT_SORT_DEFAULT.klucz && kier === PRODUCT_SORT_DEFAULT.kierunek
+    return qs({ sort: domyslny ? undefined : k, kier: domyslny ? undefined : kier, strona: undefined })
+  }
+  const kolumnySortu: { klucz: ProductSortKey; etykieta: string; prawo?: boolean }[] = [
+    { klucz: 'produkt', etykieta: 'Produkt' },
+    ...(kategorie.length > 0 ? [{ klucz: 'kategoria' as const, etykieta: 'Kategoria' }] : []),
+    { klucz: 'lokalizacja', etykieta: 'Lokalizacja' },
+    { klucz: 'fizycznie', etykieta: 'Fizycznie', prawo: true },
+    { klucz: 'zarezerwowane', etykieta: 'Zarezerwowane', prawo: true },
+    { klucz: 'dostepne', etykieta: 'Dostępne', prawo: true },
+    { klucz: 'oferty', etykieta: 'Oferty', prawo: true },
+  ]
+  const ileZAdresu = /^\d{1,4}$/.test(one(sp.ile) ?? '') ? one(sp.ile)! : '' // liczba w komunikacie wyłączenia
   return (
     <>
-      <ToastZAdresuZapisu />
+      <ToastZAdresuZapisu uwaga="uwaga" komunikaty={{ kategoria: 'Kategoria zapisana dla zaznaczonych produktów.', wylaczone: `Wyłączone produkty: ${ileZAdresu}.`, wlaczone: `Włączone produkty: ${ileZAdresu}.` }} />
       {one(sp.stany) === 'zlecone' && (
         <p className="small" role="status">
           Odczyt stanów z wFirmy zlecony: nowe stany pojawią się w ciągu kilku minut (odśwież stronę).
@@ -63,6 +92,14 @@ export default async function Produkty({ searchParams }: Props) {
               : `Katalog (${int(data.total)} w widoku) · fizycznie − zarezerwowane = dostępne · stan prowadzi ten system: start z kanału, zmiany korektą w karcie produktu`}
           </div>
         </div>
+        {/* drzewo kategorii także dla samego podglądu (ekran wymaga tylko panel.podglad, zmiany tylko produkty.dodawanie) */}
+        {!canAdd && (
+          <div className="np-head-actions">
+            <Link className="btn" href="/produkty/kategorie">
+              Kategorie
+            </Link>
+          </div>
+        )}
         {canAdd && (
           <div className="np-head-actions">
             {/* 19.11.2026: pełny odczyt stanów z wFirmy na żądanie (np. po przyjęciu towaru w wFirmie) */}
@@ -78,6 +115,10 @@ export default async function Produkty({ searchParams }: Props) {
             </Link>
             <Link className="btn" href="/produkty/csv">
               Import i eksport CSV
+            </Link>
+            {/* drzewo kategorii firmy (przycisk, nie pozycja menu) */}
+            <Link className="btn" href="/produkty/kategorie">
+              Kategorie
             </Link>
             {/* zdjęcia produktów bez zdjęcia z feedu produktowego sklepu (Google Merchant XML) */}
             <Link className="btn" href="/produkty/zdjecia-z-feedu">
@@ -119,16 +160,32 @@ export default async function Produkty({ searchParams }: Props) {
       <form className="filters-grid" method="get" action="/produkty">
         {filtr !== 'wszystkie' && <input type="hidden" name="filtr" value={filtr} />}
         {grupa && <input type="hidden" name="grupa" value={grupa} />}
+        {!sortDomyslny && <input type="hidden" name="sort" value={sort.klucz} />}
+        {!sortDomyslny && <input type="hidden" name="kier" value={sort.kierunek} />}
         <div className="field">
           <label htmlFor="p-q">Szukaj</label>
           <input className="input" id="p-q" name="q" defaultValue={q} placeholder="nazwa, SKU albo EAN" />
         </div>
+        {kategorie.length > 0 && (
+          <div className="field">
+            <label htmlFor="p-kat">Kategoria</label>
+            <select className="input" id="p-kat" name="kategoria" defaultValue={kategoria ?? ''}>
+              <option value="">Wszystkie kategorie</option>
+              <option value={FILTR_BEZ_KATEGORII}>Bez kategorii</option>
+              {kategorie.map((k) => (
+                <option key={k.id} value={k.id}>
+                  {`${'  '.repeat(k.depth - 1)}${k.name} (${int(k.wGalezi)})`}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
         <div className="field filters-go">
           <button className="btn primary" type="submit">
             Szukaj
           </button>
-          {q && (
-            <Link className="btn ghost" href={qs({ q: undefined, strona: undefined })}>
+          {(q || kategoria) && (
+            <Link className="btn ghost" href={qs({ q: undefined, kategoria: undefined, strona: undefined })}>
               Wyczyść
             </Link>
           )}
@@ -137,7 +194,7 @@ export default async function Produkty({ searchParams }: Props) {
 
       {data.rows.length === 0 ? (
         <PustyStan
-          tytul={q ? 'Nic nie pasuje do wyszukiwania' : 'Nie ma produktów w tym widoku'}
+          tytul={q || kategoria ? 'Nic nie pasuje do wyszukiwania' : 'Nie ma produktów w tym widoku'}
           akcja={
             !q && canAdd ? (
               <PrzyciskLink href="/produkty/nowy" wariant="glowny">
@@ -153,8 +210,18 @@ export default async function Produkty({ searchParams }: Props) {
           {canAdd && (
             <PasekAkcjiMasowych>
               <PrzygotujOferty akcja={przygotujOfertyZaznaczonych} maks={OFERTY_MASOWO_MAX} />
+              {kategorie.length > 0 && (
+                <PrzypiszKategorie
+                  akcja={przypiszKategorieZaznaczonym}
+                  maks={MASOWO_MAX}
+                  wroc={qs({ strona: page })}
+                  opcje={[...kategorie.map((k) => ({ wartosc: k.id, etykieta: k.path })), { wartosc: FILTR_BEZ_KATEGORII, etykieta: 'Bez kategorii (usuń kategorię)' }]}
+                />
+              )}
+              <ZmienAktywnosc akcja={ustawAktywnoscZaznaczonym} maks={AKTYWNOSC_MASOWO_MAX} wroc={qs({ strona: page })} domyslnie={filter === 'nieaktywne' ? 'tak' : 'nie'} />
             </PasekAkcjiMasowych>
           )}
+        <SortNaTelefonie opcje={kolumnySortu.map((k) => ({ klucz: k.klucz, etykieta: k.etykieta, href: sortHref(k.klucz), kierunek: kierunekKolumny(k.klucz) }))} />
         <KlikalneWiersze>
           <table className="tbl cards plist">
             <thead>
@@ -164,12 +231,9 @@ export default async function Produkty({ searchParams }: Props) {
                     <ZaznaczWszystkie />
                   </th>
                 )}
-                <th>Produkt</th>
-                <th>Lokalizacja</th>
-                <th className="right">Fizycznie</th>
-                <th className="right">Zarezerwowane</th>
-                <th className="right">Dostępne</th>
-                <th className="right">Oferty</th>
+                {kolumnySortu.map((k) => (
+                  <NaglowekSortu key={k.klucz} etykieta={k.etykieta} href={sortHref(k.klucz)} kierunek={kierunekKolumny(k.klucz)} className={k.prawo ? 'right' : undefined} />
+                ))}
               </tr>
             </thead>
             <tbody>
@@ -207,6 +271,11 @@ export default async function Produkty({ searchParams }: Props) {
                         </span>
                       </span>
                     </td>
+                    {kategorie.length > 0 && (
+                      <td data-label="Kategoria" className="small">
+                        {p.kategoria ? <span title={p.kategoria.path}>{p.kategoria.name}</span> : <span className="muted">—</span>}
+                      </td>
+                    )}
                     <td data-label="Lokalizacja" className="mono">
                       {p.location ?? <span className="muted">—</span>}
                     </td>

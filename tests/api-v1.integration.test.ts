@@ -19,7 +19,7 @@ import { ALL_API_SCOPES, type ApiScope } from '@/lib/api/zakresy'
 import { LINE_FIELDS, MAX_SHIPMENTS, ORDER_FIELDS, SHIPMENT_FIELDS } from '@/lib/api/zamowienia'
 import { ALLEGRO_WYSYLAM_ZAPIS_KEY } from '@/lib/adaptery/allegro-wysylam-zapis'
 import { INPOST_SHIPX_ZAPIS_KEY } from '@/lib/adaptery/inpost-zapis'
-import { zapiszAutomatyWysylki } from '@/lib/wysylka/automaty'
+import { zapiszAutomatyWysylki, zapiszSledzeniePrzewoznikow } from '@/lib/wysylka/automaty'
 import { tokenHash } from '@/lib/auth/sesje'
 import { defaultRegistry } from '@/lib/adaptery/domyslne'
 import { accountsForComparison, planOrderPolls } from '@/lib/cien/harmonogram'
@@ -333,10 +333,15 @@ describe('GET /api/v1/zamowienia', () => {
     ])
     const text = JSON.stringify(z)
     for (const x of ['Zmyślony', 'out_for_delivery', s1.id, 'api-p-1', INPOST_SHIPX_ZAPIS_KEY]) expect(text).not.toContain(x)
-    // śledzenie do doręczenia włączone: InPost ShipX odświeżany (domyślnie śledzony), Wysyłam z Allegro domyślnie nie
+    // śledzenie do doręczenia włączone: InPost ShipX i Wysyłam z Allegro odświeżane (oba domyślnie śledzone;
+    // Allegro jak na produkcji od 22.11.2026, SLEDZENIE_DOMYSLNIE_WLACZONE)
     await zapiszAutomatyWysylki(a, { wyslanePoPrzyjezdzie: true, sledzenie: true, anulowanieWKanale: true, sledzenieDoDoreczenia: true }, 'u-admin')
     const [po] = (await (await getNumer('WC-TEST-1000', t)).json()).zamowienia
-    expect(po.przesylki.map((p: { sledzona: boolean }) => p.sledzona)).toEqual([true, false])
+    expect(po.przesylki.map((p: { sledzona: boolean }) => p.sledzona)).toEqual([true, true])
+    // moduł wyłączony w ustawieniach firmy (Przewoźnicy → „Których przewoźników pytać”): jego paczka nie jest śledzona
+    await zapiszSledzeniePrzewoznikow(a, { [ALLEGRO_WYSYLAM_ZAPIS_KEY]: false }, [ALLEGRO_WYSYLAM_ZAPIS_KEY], 'u-admin')
+    const [poWylaczeniu] = (await (await getNumer('WC-TEST-1000', t)).json()).zamowienia
+    expect(poWylaczeniu.przesylki.map((p: { sledzona: boolean }) => p.sledzona)).toEqual([true, false])
     // Kompletor przestał pytać o paczkę (seria błędów, brak przesyłki u przewoźnika) albo minęło okno 30 dni: false, jak na karcie
     await a.shipment.update({ where: { id: s1.id }, data: { trackingStoppedAt: odczyt } })
     expect((await (await getNumer('WC-TEST-1000', t)).json()).zamowienia[0].przesylki[0].sledzona).toBe(false)

@@ -127,6 +127,31 @@ export function wzBezFaktury(settings: Prisma.JsonValue | null | undefined): boo
 }
 
 /**
+ * wyłącznik firmy „Faktury w walucie zamówienia” (`settings.faktury.walutaZamowienia`). Włączony (i program
+ * wFirma zapisany jawnie) = zamówienie w obcej walucie dostaje fakturę w wFirmie w tej walucie, kurs średni NBP liczy
+ * wFirma sama (pole `currency_exchange` jest w API tylko do odczytu). Wyłączony = blokada („wystaw ręcznie”).
+ * KSeF bezpośrednio nie korzysta z tego ustawienia: tam obca waluta zostaje zablokowana.
+ */
+export function walutaZamowieniaWlaczona(settings: Prisma.JsonValue | null | undefined): boolean {
+  const f = obj(obj(settings)['faktury'])
+  return f['walutaZamowienia'] === true && f['program'] === 'wfirma'
+}
+
+/**
+ * chwila włączenia „Faktury w walucie zamówienia” (`settings.faktury.walutaZamowieniaOd`,
+ * zapis ekranu przy przejściu z wyłączonego na włączony, zegar bazy). Automat wystawia fakturę w obcej walucie tylko
+ * zamówieniu, które weszło w status wystawiania od tej chwili; wcześniejsze wracają tylko po „Ponów fakturę” (biuro
+ * mogło wystawić fakturę ręcznie). null = wyłączone albo włączone bez chwili (ustawienia ze skryptu: żadne automatem).
+ */
+export function walutaZamowieniaOd(settings: Prisma.JsonValue | null | undefined): Date | null {
+  if (!walutaZamowieniaWlaczona(settings)) return null
+  const od = obj(obj(settings)['faktury'])['walutaZamowieniaOd']
+  if (typeof od !== 'string') return null
+  const t = Date.parse(od)
+  return Number.isFinite(t) ? new Date(t) : null
+}
+
+/**
  * sufit rabatu na całe zamówienie w procentach wartości pozycji
  * (`settings.faktury.rabatMaksProcent`, 0–100, domyślnie 50). Różnica „pozycje + wysyłka − kwota zamówienia” większa niż
  * sufit nie jest rabatem (bon, zła kwota, netto zamiast brutto): dokument staje z `pozycje-drozsze-niz-zamowienie`.

@@ -7,7 +7,8 @@ import { glowneZdjecia } from '../produkty/zdjecia'
 import { plikLogo } from '../firma/logo'
 import { organizationIdOf } from '@/lib/db'
 import { accountName, accounts } from '@/lib/panel/dane'
-import { channelPrefix, CARRIER_LABEL, shortExternalId } from '@/lib/panel/format'
+import { channelPrefix, CARRIER_LABEL } from '@/lib/panel/format'
+import { numerListyZPrzedrostkiem } from '@/lib/karta/opis'
 import { toWarsaw } from '@/lib/rdzen/kalendarz'
 import { numerKartyZamowienia } from '@/lib/stanowisko/kod'
 import { koszykiZamowien } from '@/lib/koszyki/koszyki'
@@ -17,7 +18,9 @@ import type { ListaWysylkowaDane, NumerZamowienia } from '@/lib/wydruki/typy'
 import { dayLabel, nextPickup, PICKUP_CARRIERS, PICKUP_CARRIERS_NA_ZADANIE, validateSchedule, warsawMinute, type NextPickup, type PickupArrivalT, type PickupCarrier, type PickupScheduleT } from './harmonogram'
 import { raportyPrzyjazdow, zlecWyslanePoPrzyjezdzie } from './wyslane-po-przyjezdzie'
 import { buildQueue, pageOfQueue, QUEUE_STATUSES, type QueueGroup, type QueueOrder } from './kolejka'
+import { idsKurieraPozaStrona } from './zaznaczenie'
 import { matchesZone, orderZone, parseZoneFilter, productZone, sortZones, zoneCounts, type ZoneCounts, type ZoneDefT, type ZoneFilter, type ZoneOfProduct, type ZoneRuleT } from './strefy'
+import { WALUTA_DOMYSLNA, walutyZamowien } from '../rdzen/waluta'
 
 type Db = PrismaClient
 
@@ -75,6 +78,8 @@ export interface QueueRow extends QueueOrder {
   mode: 'PRACA' | 'CIEN'
   paymentState: PaymentState
   totalGross: number
+  /** waluta zamówienia z kopii kanału (lib/rdzen/waluta.ts); `totalGross` jest w tej walucie. */
+  waluta: string
   /** Wynik ćwiczenia na sucho: po zamknięciu okna pakowania widać, co już przećwiczone. */
   cwiczenie: 'SPAKOWANE' | 'NIE_SPAKOWANO' | null
   lines: QueueLine[]
@@ -106,6 +111,12 @@ export interface PackingQueue {
    * spakowania”, na ekranie osobna ramka z numerami. Pakowanie i tak odmawia (`blokadaPakowaniaFakturaBl`).
    */
   konczyBl: { id: string; number: string; faktura: string }[]
+  /**
+   * id zamówień do spakowania każdego kuriera (klucz `kluczKuriera`) w całej zakładce i strefie, ze wszystkich
+   * stron, w kolejności kolejki; tylko kurierzy, którzy mają zamówienia poza bieżącą stroną. Z danych, które kolejka i tak
+   * czyta (bez dodatkowego zapytania).
+   */
+  idsKuriera: Record<string, string[]>
 }
 
 const num = (v: { toString(): string } | null | undefined): number => (v === null || v === undefined ? 0 : Number(v.toString()))
@@ -167,6 +178,7 @@ async function queueRows(
         channel: true,
         channelAccountId: true,
         externalId: true,
+        channelNumber: true,
         status: true,
         carrier: true,
         paymentState: true,
@@ -193,7 +205,7 @@ async function queueRows(
   const orders = wszystkie.filter((o) => !zFakturaBl.has(o.id))
   const konczyBl = wszystkie
     .filter((o) => zFakturaBl.has(o.id))
-    .map((o) => ({ id: o.id, number: `${channelPrefix(o.channel, accountName(accs, o.channel, o.channelAccountId))} ${shortExternalId(o.externalId)}`, faktura: zFakturaBl.get(o.id)! }))
+    .map((o) => ({ id: o.id, number: numerListyZPrzedrostkiem(channelPrefix(o.channel, accountName(accs, o.channel, o.channelAccountId)), o), faktura: zFakturaBl.get(o.id)! }))
   const ids = [...new Set(orders.flatMap((o) => o.lines.map((l) => l.productId).filter((x): x is string => !!x)))]
   const prods = ids.length
     ? await db.product.findMany({ where: { id: { in: ids } }, select: { id: true, title: true, sku: true, unit: true, kind: true, packingZone: true } })
@@ -201,9 +213,10 @@ async function queueRows(
   const byId = new Map(prods.map((p) => [p.id, { ...p, zone: productZone(p, rules).zone }]))
   const zdj = await glowneZdjecia(db, ids) // miniatury w kolejce pakowania
   // lokalizacja przy każdej pozycji i koszyk zamówienia
-  const [stocks, koszyki] = await Promise.all([
+  const [stocks, koszyki, waluty] = await Promise.all([
     ids.length ? db.stock.findMany({ where: { productId: { in: ids }, location: { not: null } }, select: { productId: true, location: true } }) : [],
     koszykiZamowien(db, orders.map((o) => o.id)),
+    walutyZamowien(db, orders), // jedno zapytanie na kolejkę
   ])
   const lok = new Map<string, string>()
   for (const st of stocks) if (st.location?.trim() && !lok.has(st.productId)) lok.set(st.productId, st.location.trim())
@@ -229,11 +242,13 @@ async function queueRows(
       channel: o.channel,
       channelAccountId: o.channelAccountId,
       accountName: name,
-      number: `${channelPrefix(o.channel, name)} ${shortExternalId(o.externalId)}`,
+      // ten sam numer co lista zamówień i karta (numer z kanału w całości)
+      number: numerListyZPrzedrostkiem(channelPrefix(o.channel, name), o),
       externalId: o.externalId,
       mode: acc?.statusMode === 'PRACA' ? 'PRACA' : 'CIEN',
       paymentState: o.paymentState,
       totalGross: num(o.totalGross),
+      waluta: waluty.get(o.id) ?? WALUTA_DOMYSLNA,
       cwiczenie: cwiczenia.get(o.id) ?? null,
       koszyk: koszyki.get(o.id) ?? null,
       lines: lines.map(({ l, p }) => ({ lokalizacja: p ? (lok.get(p.id) ?? null) : null, zdjecie: p ? (zdj.get(p.id) ?? null) : null, title: p?.title ?? (l.channelName ? `${l.channelName} (bez powiązania z produktem)` : 'pozycja bez powiązania z produktem'), sku: p?.sku ?? l.channelSku ?? null, qty: l.qty, unit: p?.unit ?? 'SZT', bundle: p?.kind === 'BUNDLE' })),
@@ -269,6 +284,7 @@ export async function packingQueue(
   const zone = parseZoneFilter(opts.zone, zones)
   const filtered = all.map((g) => ({ ...g, orders: g.orders.filter((o) => matchesZone(o.zone, zone)) }))
   const page = pageOfQueue(opts.tab === 'etykiety' ? [] : filtered, Math.max(1, Math.floor(opts.page ?? 1)), QUEUE_PAGE_SIZE)
+  const idsKuriera = idsKurieraPozaStrona(opts.tab === 'etykiety' ? [] : filtered, page.groups)
   return {
     now,
     tab: opts.tab,
@@ -284,6 +300,7 @@ export async function packingQueue(
     hidden,
     exampleSchedules: sch.some((s) => s.active && s.example),
     konczyBl,
+    idsKuriera,
   }
 }
 

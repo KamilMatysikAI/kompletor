@@ -42,6 +42,21 @@ export interface WejscieFaktury {
   paczkiDodatkowe?: boolean
   /** `WejsciePozycji.rabatMatkiNaDokumencie` (paczka dodatkowa). */
   rabatMatkiNaDokumencie?: boolean
+  /**
+   * zapłacone przed wystawieniem (`zaplaconoDoFaktury`, lib/wfirma/platnosci.ts): `CALOSC` albo grosze.
+   * Idzie do wFirmy polem `alreadypaid_initial` (dokumentacja API wFirmy, moduł `invoices`: „Kwota zapłacono określona
+   * przy dodawaniu i modyfikowaniu faktury. Kwota jest widoczna na wydruku faktury.”), najwyżej brutto faktury.
+   * Brak albo 0 = bez pola (faktura „do zapłaty”, jak przed zmianą). Pobranie nigdy nie jest „zapłacone”.
+   */
+  zaplacono?: 'CALOSC' | number
+  /** dzień wystawienia RRRR-MM-DD; przy zapłacie w całości = `paymentdate` (termin płatności). */
+  dataWystawienia?: string
+  /**
+   * kod waluty zamówienia (ISO, wielkie litery). Inny niż PLN = pole `currency` faktury; ceny pozycji, wysyłka
+   * i zapłacono zostają w tej walucie (kwoty zamówienia są w walucie kanału), kurs średni NBP liczy wFirma (pola kursu są
+   * w API tylko do odczytu). Brak albo PLN = treść bajt w bajt jak przed zmianą.
+   */
+  waluta?: string
 }
 
 export interface ZlozonaFaktura {
@@ -52,6 +67,8 @@ export interface ZlozonaFaktura {
   forma: FormaPlatnosci | null
   bruttoGr: number
   nettoGr: number
+  /** kwota zapłacona wysyłana jako `alreadypaid_initial` (grosze; 0 = pole pominięte). */
+  zaplaconoGr?: number
 }
 
 const zl = (g: number) => (g / 100).toFixed(2)
@@ -77,6 +94,10 @@ export function zlozFakture(w: WejscieFaktury): ZlozonaFaktura {
   const forma = formaPlatnosci(w.paymentMethod, w.paymentState, w.konfiguracja.platnosci)
   if (!forma) problemy.push({ kategoria: 'INNE', kod: 'nieznana-platnosc' })
 
+  // kwota zapłacona przy wystawieniu; pobranie zostaje „do zapłaty” (klient płaci kurierowi)
+  const zaplaconoGr = forma === 'cod' || w.paymentState === 'COD' ? 0 : Math.min(poz.bruttoGr, w.zaplacono === 'CALOSC' ? poz.bruttoGr : Math.max(0, Math.round(w.zaplacono ?? 0)))
+  const wCalosci = zaplaconoGr > 0 && zaplaconoGr === poz.bruttoGr
+
   const tresc = problemy.length
     ? null
     : {
@@ -84,8 +105,11 @@ export function zlozFakture(w: WejscieFaktury): ZlozonaFaktura {
           invoice: {
             type: 'normal',
             price_type: 'brutto',
+            ...(w.waluta && w.waluta !== 'PLN' ? { currency: w.waluta } : {}),
             paymentmethod: forma,
             id_external: w.idExternal,
+            ...(zaplaconoGr > 0 ? { alreadypaid_initial: zl(zaplaconoGr) } : {}),
+            ...(wCalosci && w.dataWystawienia ? { paymentdate: w.dataWystawienia } : {}),
             ...(w.konfiguracja.seriaId ? { series: { id: w.konfiguracja.seriaId } } : {}),
             ...(w.kontrahent ? { contractor: w.kontrahent } : {}),
             invoicecontents: Object.fromEntries(
@@ -94,5 +118,5 @@ export function zlozFakture(w: WejscieFaktury): ZlozonaFaktura {
           },
         },
       }
-  return { tresc, linie, problemy, forma, bruttoGr: poz.bruttoGr, nettoGr: poz.nettoGr }
+  return { tresc, linie, problemy, forma, bruttoGr: poz.bruttoGr, nettoGr: poz.nettoGr, zaplaconoGr }
 }

@@ -62,11 +62,11 @@ describe('paczkaDodatkowej', () => {
     expect(p.problems.filter((x) => x.poziom === 'BLAD')).toEqual([])
     expect(p.problems.some((x) => x.kod === 'pickup_jedna_paczka')).toBe(false)
   })
-  it('salon Empik: dosyłka do tego samego salonu bez błędu jednej paczki (zostaje ostrzeżenie salonu do potwierdzenia)', () => {
+  it('salon Empik: dosyłka do tego samego salonu bez błędu jednej paczki i bez ostrzeżenia salonu (salony potwierdzone nadaniem)', () => {
     const p = paczkaDodatkowej({ carrier: 'DPD_EMPIK', pozycje } as never, 'dpd.services.zapis.v1', DPD_CONFIG, 'DPD', 'PL99001')!
     expect(p.courierCode).toBe('DPD_PICKUP')
     expect(p.pickupPoint).toBe('PL99001')
-    expect(p.problems.map((x) => `${x.poziom}:${x.kod}`)).toEqual(['OSTRZEZENIE:empik_niepotwierdzone'])
+    expect(p.problems.map((x) => `${x.poziom}:${x.kod}`)).toEqual([])
   })
 })
 

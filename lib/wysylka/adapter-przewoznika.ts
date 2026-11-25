@@ -1,5 +1,5 @@
 // Adapter przewoźnika z reguły przewoźnika firmy: klucz z `CarrierRule.adapterKey` (albo domyślny dla
-// modułu), konfiguracja z `CarrierRule.config`, sekrety firmy z bazy (IntegrationSecret bez konta kanału), w self-hoście
+// modułu), konfiguracja z `CarrierRule.config` z nałożonymi ustawieniami konta (./ustawienia-konta), sekrety firmy z bazy (IntegrationSecret bez konta kanału), w self-hoście
 // jednofirmowym też z env (z przedrostkiem `envPrefix` reguły, np. DPD_EMPIK_LOGIN dla drugiego konta DPD). Drugie konto
 // tego samego przewoźnika w bazie (DPD Salony Empik obok DPD) = reguła z `sekretyKonta: "EMPIK"`: host czyta wtedy
 // sekrety `<NAZWA>_EMPIK` (np. DPD_LOGIN_EMPIK) i podaje adapterowi pod nazwami z manifestu. Dane nadawcy (DPD, Base
@@ -17,6 +17,7 @@ import { parseNadawca } from './zlecenie-dpd'
 import type { FetchLike } from '../zrodla/http'
 import { type OpcjeOslony, oslonAdapter } from '../integracje/oslona'
 import { type KontoIntegracji, kluczPrzewoznika, zapiszPorazke } from '../integracje/zdrowie'
+import { konfiguracjaZKontem, SEKRETY_KONTA_RE } from './ustawienia-konta'
 
 export interface RegulaNadania {
   id: string
@@ -26,7 +27,7 @@ export interface RegulaNadania {
   config: Record<string, unknown>
 }
 
-export const SEKRETY_KONTA_RE = /^[A-Z][A-Z0-9]{0,15}$/
+export { SEKRETY_KONTA_RE }
 
 const asObject = (v: unknown): Record<string, unknown> => (v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : {})
 
@@ -69,7 +70,9 @@ export async function adapterPrzewoznika(db: PrismaClient, regula: RegulaNadania
   const def = registry.get(key)
   if (!def) throw new AdapterConfigError(`Nieznany adapter „${key}” (brak w rejestrze)`)
   if (def.manifest.kind !== 'carrier') throw new AdapterConfigError(`Adapter ${key} nie jest adapterem przewoźnika`)
-  const config = { ...asObject(regula.config) }
+  // ustawienia konta przewoźnika (ekran Konta przewoźników) nałożone na config reguły
+  const org = await db.organization.findUnique({ where: { id: organizationIdOf(db) }, select: { settings: true } })
+  const config = konfiguracjaZKontem(org?.settings, key, asObject(regula.config))
   const sufiks = config['sekretyKonta']
   for (const k of POLA_HOSTA) delete config[k]
   if (sufiks !== undefined && (typeof sufiks !== 'string' || !SEKRETY_KONTA_RE.test(sufiks))) throw new AdapterConfigError('sekretyKonta: wielkie litery i cyfry, np. EMPIK')
@@ -81,7 +84,6 @@ export async function adapterPrzewoznika(db: PrismaClient, regula: RegulaNadania
     if (v) sekrety[n] = v
   }
   if (def.manifest.config.some((f) => f.key === 'nadawca')) {
-    const org = await db.organization.findUnique({ where: { id: organizationIdOf(db) }, select: { settings: true } })
     const n = nadawcaFirmy(org?.settings)
     if (n !== undefined) config['nadawca'] = JSON.stringify(n)
   }

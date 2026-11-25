@@ -129,6 +129,9 @@ const ETYKIETY: Record<string, string> = {
   akceptacjaBraki: 'Przyjmowanie zamówień: gdy brakuje towaru',
   akceptacjaAlertGodzin: 'Alert, gdy zamówienie czeka na przyjęcie (godz.)',
   kodyPrzewoznikow: 'Kody przewoźników',
+  //
+  stanZerowy: 'Przy stanie 0',
+  limitZakonczenDoba: 'Limit zakończeń ofert na dobę',
   magazynEmpik: 'Magazyn w Empiku',
   nipMetaKey: 'Pole z NIP-em w zamówieniu',
   pickupPointMetaKey: 'Pole z punktem odbioru',

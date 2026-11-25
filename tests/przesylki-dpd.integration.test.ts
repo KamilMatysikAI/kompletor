@@ -44,7 +44,8 @@ describe('prepareForOrder z modułem DPD bezpośrednio', () => {
     expect(r).toMatchObject({ wynik: 'przygotowane', parcel: { courierCode: 'DPD_CLASSIC', pickupPoint: null } })
     const w = await db.preparedShipment.findFirstOrThrow({ where: { orderId: id } })
     expect(w).toMatchObject({ organizationId: ORG_A, adapterKey: 'dpd.services.v1', carrier: 'DPD', courierCode: 'DPD_CLASSIC', parcelSize: 'DPD', sideXCm: 40, sideYCm: 30, sideZCm: 20, codAmount: null })
-    expect(kody(w)).toEqual(['OSTRZEZENIE:waga_domyslna', 'OSTRZEZENIE:gabaryt_podpowiedz'])
+    // waga domyślna z ustawień firmy = INFO (bez potwierdzania co paczkę)
+    expect(kody(w)).toEqual(['INFO:waga_domyslna', 'OSTRZEZENIE:gabaryt_podpowiedz'])
     await prepareForOrder(db, id)
     await Promise.all([prepareForOrder(db, id), prepareForOrder(db, id)])
     expect(await db.preparedShipment.count({ where: { orderId: id } })).toBe(1)
@@ -58,13 +59,14 @@ describe('prepareForOrder z modułem DPD bezpośrednio', () => {
     expect(Number((await db.preparedShipment.findFirstOrThrow({ where: { orderId: id } })).codAmount)).toBe(Number(o.totalGross))
   })
 
-  it('salon Empik: Pickup bez kodu salonu = BLAD punkt i ostrzeżenie empik_niepotwierdzone', async () => {
+  it('salon Empik bez danych klienta w bazie: Pickup, podgląd = INFO „punkt sprawdzi nadanie” zamiast BLAD, bez ostrzeżenia empik_niepotwierdzone', async () => {
     const id = await zamowienie(EMPIK)
     await prepareForOrder(db, id)
     const w = await db.preparedShipment.findFirstOrThrow({ where: { orderId: id } })
     expect(w).toMatchObject({ adapterKey: 'dpd.services.v1', carrier: 'DPD_EMPIK', courierCode: 'DPD_PICKUP' })
-    expect(kody(w)).toEqual(expect.arrayContaining(['OSTRZEZENIE:empik_niepotwierdzone', 'BLAD:punkt']))
-    expect((await podgladPrzesylki(db, id))!.zapisana!.problemy.map((p) => p.kod)).toContain('empik_niepotwierdzone')
+    expect(kody(w)).toContain('INFO:punkt_przy_nadaniu')
+    expect(kody(w)).not.toContain('BLAD:punkt')
+    expect((await podgladPrzesylki(db, id))!.zapisana!.problemy.map((p) => p.kod)).not.toContain('empik_niepotwierdzone')
   })
 
   it('podział paczki („dośle później”): salon Empik dostaje BLAD pickup_jedna_paczka, kurier nie', async () => {

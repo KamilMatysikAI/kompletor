@@ -41,14 +41,15 @@ beforeEach(async () => {
 })
 
 describe('podgląd przesyłki InPost ShipX', () => {
-  it('paczkomat: usługa ShipX, wymiary gabarytu, brak punktu jako BLAD, adapterKey z modułu', async () => {
+  it('paczkomat: usługa ShipX, wymiary gabarytu, bez danych klienta punkt sprawdza nadanie (INFO), adapterKey z modułu', async () => {
     await modulInpost()
     const id = await zamowienie(PACZKOMAT)
     const przed = await db.order.findUniqueOrThrow({ where: { id }, include: { reservations: true, events: true, lines: true } })
     expect(await prepareForOrder(db, id, 'INPOST_C')).toMatchObject({ wynik: 'przygotowane', parcel: { courierCode: 'inpost_locker_standard' } })
     const w = await db.preparedShipment.findFirstOrThrow({ where: { orderId: id } })
     expect(w).toMatchObject({ organizationId: ORG_A, adapterKey: 'inpost.shipx.v1', carrier: 'PACZKOMATY', courierCode: 'inpost_locker_standard', parcelSize: 'INPOST_C', sideXCm: 41, sideYCm: 38, sideZCm: 64 })
-    expect(kody(w.problems)).toEqual(expect.arrayContaining(['punkt', 'waga_domyslna']))
+    expect(kody(w.problems)).toEqual(expect.arrayContaining(['punkt_przy_nadaniu', 'waga_domyslna']))
+    expect(kody(w.problems)).not.toContain('punkt')
     expect(await db.order.findUniqueOrThrow({ where: { id }, include: { reservations: true, events: true, lines: true } })).toEqual(przed)
   })
 

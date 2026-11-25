@@ -87,6 +87,8 @@ describe('linkSledzeniaDoMaila (mail „Faktura”)', () => {
   it('daje stronę śledzenia InPost i DPD, innym przewoźnikom i złym numerom nic', () => {
     expect(linkSledzeniaDoMaila('PACZKOMATY', '620999667762053436691541')).toBe('https://inpost.pl/sledzenie-przesylek?number=620999667762053436691541')
     expect(linkSledzeniaDoMaila('DPD', '0000123456789A')).toBe('https://tracktrace.dpd.com.pl/parcelDetails?typ=1&p1=0000123456789A')
+    expect(linkSledzeniaDoMaila('ALLEGRO', 'ALE0000000E5D200')).toBe('https://allegro.pl/allegrodelivery/sledzenie-paczki?numer=ALE0000000E5D200')
+    expect(linkSledzeniaDoMaila('ALLEGRO', 'ALE 1&x=2')).toBeNull()
     expect(linkSledzeniaDoMaila('GLS', '12345678901')).toBeNull()
     expect(linkSledzeniaDoMaila('DPD', '123 456&x=1')).toBeNull()
     expect(linkSledzeniaDoMaila('DPD', null)).toBeNull()

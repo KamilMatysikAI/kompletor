@@ -220,19 +220,50 @@ describe('Allegro: odbiorca', () => {
 })
 
 // ─── Empik (Mirakl) ──────────────────────────────────────────────────────────
+// Kształt potwierdzony odczytem OR11 20.11.2026 (15 zamówień): kod punktu w `order_additional_fields[]`
+// „delivery-point-name”; przy punkcie `shipping_address` opisuje PUNKT (nazwisko = kod punktu, bez imienia, ulica i
+// miasto punktu, `additional_info` = opis paczkomatu, telefon klienta); klient w `customer.*` i `billing_address`;
+// prawdziwy e-mail w polu „customer-email”, `customer_notification_email` = alias Mirakla; `country_iso_code` pusty,
+// kraj nazwą w `country`.
 
 const adres = (p: Record<string, unknown> = {}) => ({ firstname: 'Jan', lastname: 'Testowy', company: null, street_1: ULICA, street_2: null, zip_code: '00-001', city: 'Testowo', country: 'Polska', country_iso_code: 'POL', phone: TELEFON, ...p })
+const ALIAS = 'alias-123@notification.example.invalid'
+const ULICA_PUNKTU = 'Punktowa 5'
+const ULICA_KLIENTA = 'Kliencka 7/3'
+/** Adres punktu tak, jak Empik podaje go w shipping_address (kod punktu w nazwisku, bez imienia). */
+const adresPunktu = (kod: string, p: Record<string, unknown> = {}) => ({ lastname: kod, company: null, company_2: null, street_1: ULICA_PUNKTU, street_2: null, zip_code: '00-002', city: 'Punktowo', country: 'Polska', country_iso_code: null, state: null, phone: TELEFON, additional_info: null, ...p })
+const adresKlienta = (p: Record<string, unknown> = {}) => ({ firstname: 'Jan', lastname: 'Testowy', company: null, company_2: null, street_1: ULICA_KLIENTA, street_2: null, zip_code: '00-001', city: 'Testowo', country: 'Polska', country_iso_code: null, state: null, phone: TELEFON, ...p })
+const pole = (code: string, value: unknown, type = 'STRING') => ({ code, type, value })
+const dodatkowe = (...f: ReturnType<typeof pole>[]) => [pole('customer-email', EMAIL), ...f, pole('order-type', 'REGULAR', 'LIST'), pole('price-calibrated', 'false', 'BOOLEAN')]
 
 function miraklRaw(customer: Record<string, unknown> | undefined, extra: Record<string, unknown> = {}): Record<string, unknown> {
   return { order_id: 'E-1-A', order_state: 'SHIPPING', ...(customer ? { customer } : {}), customer_notification_email: EMAIL, ...extra }
 }
+/** Zamówienie w kształcie z odczytu: alias Mirakla w customer_notification_email, prawdziwy e-mail w polu dodatkowym. */
+function zamowienie(typ: 'PACKSTATION' | 'STORE' | 'COURIER', o: { kod?: string | null; opis?: string | null; pola?: unknown } = {}): Record<string, unknown> {
+  const label = { PACKSTATION: 'Paczkomaty InPost', STORE: 'Dostawa do Salonu Empik', COURIER: 'KURIER' }[typ]
+  const kod = o.kod === undefined ? (typ === 'PACKSTATION' ? 'TST01M' : 'PL99999') : o.kod
+  const shipping = typ === 'COURIER' ? adresKlienta({ street_1: ULICA }) : adresPunktu(kod ?? 'TST01M', { additional_info: o.opis ?? null })
+  return {
+    order_id: 'E-2-A',
+    order_state: 'SHIPPING',
+    shipping_type_code: typ,
+    shipping_type_label: label,
+    shipping_pudo_id: null,
+    customer_notification_email: ALIAS,
+    customer: { firstname: 'Jan', lastname: 'Testowy', shipping_address: shipping, billing_address: adresKlienta() },
+    order_additional_fields: o.pola !== undefined ? o.pola : dodatkowe(...(typ !== 'COURIER' && kod !== null ? [pole('delivery-point-name', kod)] : [])),
+  }
+}
 
 describe('Empik (Mirakl): odbiorca', () => {
-  it('pełny komplet: shipping_address, kraj alpha-3 → alpha-2, faktura z billing_address bez NIP', () => {
+  it('pełny komplet: shipping_address, kraj alpha-3 → alpha-2, faktura na firmę z billing_address bez NIP', () => {
     const r = miraklRecipientFromApi(miraklRaw({ firstname: 'Jan', lastname: 'Testowy', shipping_address: adres(), billing_address: adres({ company: 'Firma Fikcyjna' }) }))
     expect(r.dostawa).toEqual({ imieNazwisko: IMIE, firma: null, ulica: ULICA, numerDomu: null, numerLokalu: null, kodPocztowy: '00-001', miasto: 'Testowo', kraj: 'PL', telefon: TELEFON, email: EMAIL })
     expect(r.faktura).toEqual({ nazwa: 'Firma Fikcyjna', nip: null, ulica: ULICA, kodPocztowy: '00-001', miasto: 'Testowo', kraj: 'PL' })
-    expect(r.problemy).toEqual(['adres_bez_podzialu', 'nip_niedostepny_w_kanale', 'punkt_nieznany'])
+    // bez sposobu dostawy z punktem (kurier): punktu nie ma i nie powinno być
+    expect(r.punktOdbioru).toBeNull()
+    expect(r.problemy).toEqual(['adres_bez_podzialu', 'nip_niedostepny_w_kanale'])
   })
 
   it('adres ukryty przed przyjęciem: dostawa null i adres_niedostepny_w_kanale, nie błąd', () => {
@@ -249,15 +280,79 @@ describe('Empik (Mirakl): odbiorca', () => {
     expect(r.problemy).toEqual(expect.arrayContaining(['brak_telefon', 'brak_email']))
   })
 
-  it('faktura tylko przy firmie w billing_address; osoba prywatna z adresem rozliczeniowym = null', () => {
-    const r = miraklRecipientFromApi(miraklRaw({ firstname: 'Jan', lastname: 'Testowy', shipping_address: adres(), billing_address: adres() }))
-    expect(r.faktura).toBeNull()
+  it('osoba prywatna: dane do faktury z billing_address (imię, nazwisko, adres), bez problemu z NIP-em', () => {
+    const r = miraklRecipientFromApi(miraklRaw({ firstname: 'Jan', lastname: 'Testowy', shipping_address: adres(), billing_address: adres({ street_1: ULICA_KLIENTA }) }))
+    expect(r.faktura).toEqual({ nazwa: IMIE, nip: null, ulica: ULICA_KLIENTA, kodPocztowy: '00-001', miasto: 'Testowo', kraj: 'PL' })
     expect(r.problemy).not.toContain('nip_niedostepny_w_kanale')
+  })
+
+  it('billing_address bez adresu albo bez nazwy: faktura null', () => {
+    expect(miraklRecipientFromApi(miraklRaw({ shipping_address: adres(), billing_address: adres({ street_1: null, zip_code: null, city: null }) })).faktura).toBeNull()
+    expect(miraklRecipientFromApi(miraklRaw({ shipping_address: adres(), billing_address: adres({ firstname: null, lastname: null }) })).faktura).toBeNull()
+  })
+
+  it('kurier: odbiorca i adres z shipping_address, bez punktu i bez punkt_nieznany; prawdziwy e-mail zamiast aliasu', () => {
+    const r = miraklRecipientFromApi(zamowienie('COURIER'))
+    expect(r.punktOdbioru).toBeNull()
+    expect(r.problemy).not.toContain('punkt_nieznany')
+    expect(r.dostawa).toEqual({ imieNazwisko: IMIE, firma: null, ulica: ULICA, numerDomu: null, numerLokalu: null, kodPocztowy: '00-001', miasto: 'Testowo', kraj: 'PL', telefon: TELEFON, email: EMAIL })
+    expect(r.faktura).toMatchObject({ nazwa: IMIE, ulica: ULICA_KLIENTA, kraj: 'PL' })
+  })
+
+  it('paczkomat: punkt = kod, opis i adres punktu; odbiorca = klient (nie kod punktu); faktura z adresu klienta', () => {
+    const r = miraklRecipientFromApi(zamowienie('PACKSTATION', { opis: 'Obok sklepu' }))
+    expect(r.punktOdbioru).toEqual({ kod: 'TST01M', nazwa: 'Obok sklepu', adres: { ulica: ULICA_PUNKTU, kodPocztowy: '00-002', miasto: 'Punktowo' } })
+    expect(r.dostawa).toEqual({ imieNazwisko: IMIE, firma: null, ulica: ULICA_PUNKTU, numerDomu: null, numerLokalu: null, kodPocztowy: '00-002', miasto: 'Punktowo', kraj: 'PL', telefon: TELEFON, email: EMAIL })
+    expect(r.faktura).toEqual({ nazwa: IMIE, nip: null, ulica: ULICA_KLIENTA, kodPocztowy: '00-001', miasto: 'Testowo', kraj: 'PL' })
+    expect(r.problemy).not.toContain('punkt_nieznany')
+    expect(JSON.stringify([r.dostawa, r.faktura])).not.toContain('TST01M')
+  })
+
+  it('salon Empik: kod salonu i adres salonu jako punkt; odbiorca klient; bez opisu = nazwa null', () => {
+    const r = miraklRecipientFromApi(zamowienie('STORE'))
+    expect(r.punktOdbioru).toEqual({ kod: 'PL99999', nazwa: null, adres: { ulica: ULICA_PUNKTU, kodPocztowy: '00-002', miasto: 'Punktowo' } })
+    expect(r.dostawa).toMatchObject({ imieNazwisko: IMIE, firma: null, ulica: ULICA_PUNKTU, telefon: TELEFON, email: EMAIL })
+    expect(r.faktura).toMatchObject({ nazwa: IMIE, ulica: ULICA_KLIENTA })
+    expect(JSON.stringify([r.dostawa, r.faktura])).not.toContain('PL99999')
+  })
+
+  it('punkt: imię klienta zapasowo z billing_address, gdy customer.* puste', () => {
+    const raw = zamowienie('PACKSTATION')
+    raw['customer'] = { ...(raw['customer'] as Record<string, unknown>), firstname: null, lastname: '' }
+    expect(miraklRecipientFromApi(raw).dostawa?.imieNazwisko).toBe(IMIE)
+  })
+
+  it('dostawa do punktu bez kodu (brak pola, puste, kod nie do użycia): punkt null i punkt_nieznany, odbiorca dalej klient', () => {
+    for (const typ of ['PACKSTATION', 'STORE'] as const) {
+      for (const pola of [dodatkowe(), dodatkowe(pole('delivery-point-name', '')), dodatkowe(pole('delivery-point-name', 'TST 01/../M')), null]) {
+        const r = miraklRecipientFromApi(zamowienie(typ, { pola }))
+        expect(r.punktOdbioru).toBeNull()
+        expect(r.problemy).toContain('punkt_nieznany')
+        expect(r.dostawa?.imieNazwisko).toBe(IMIE)
+      }
+    }
+    // sam opis sposobu dostawy (bez kodu sposobu) też rozpoznaje punkt
+    const raw = zamowienie('PACKSTATION', { pola: dodatkowe() })
+    delete raw['shipping_type_code']
+    expect(miraklRecipientFromApi(raw).problemy).toContain('punkt_nieznany')
+  })
+
+  it('e-mail: zły albo brak w polu dodatkowym = adres zastępczy Mirakla', () => {
+    expect(miraklRecipientFromApi(zamowienie('COURIER', { pola: [pole('customer-email', 'bez-malpy')] })).dostawa?.email).toBe(ALIAS)
+    expect(miraklRecipientFromApi(zamowienie('COURIER', { pola: [] })).dostawa?.email).toBe(ALIAS)
   })
 
   it('zły typ pola: UnreadableDataError bez wartości', () => {
     bezDanych(catchErr(() => miraklRecipientFromApi(miraklRaw({ shipping_address: adres({ zip_code: { v: '00-001' } }) }))))
     bezDanych(catchErr(() => miraklRecipientFromApi(miraklRaw({ shipping_address: [ULICA] }))))
+    bezDanych(catchErr(() => miraklRecipientFromApi(zamowienie('PACKSTATION', { pola: { code: 'delivery-point-name' } }))))
+    bezDanych(catchErr(() => miraklRecipientFromApi(zamowienie('PACKSTATION', { pola: [pole('delivery-point-name', { v: ULICA })] }))))
+  })
+
+  it('faktura imienna przy paczkomacie: kontrahent z adresu klienta, nigdy z adresu punktu', () => {
+    const k = naKontrahenta(miraklRecipientFromApi(zamowienie('PACKSTATION')))
+    expect(k).toMatchObject({ ok: true, wartosc: { name: IMIE, street: ULICA_KLIENTA, tax_id_type: 'none' } })
+    expect(JSON.stringify(k)).not.toContain(ULICA_PUNKTU)
   })
 })
 
@@ -275,6 +370,13 @@ describe('przejścia na przesyłkę i fakturę', () => {
     expect(naOdbiorcePrzesylki(PELNY)).toEqual({ ok: true, wartosc: { imieNazwisko: IMIE, firma: null, ulica: 'Testowa', numerDomu: '1', numerLokalu: null, kodPocztowy: '00-001', miasto: 'Testowo', telefon: TELEFON, email: EMAIL } })
     expect(naOdbiorcePrzesylki({ ...PELNY, dostawa: { ...PELNY.dostawa!, numerDomu: null, email: null } })).toEqual({ ok: false, braki: ['numer_domu', 'email'] })
     expect(naOdbiorcePrzesylki({ ...PELNY, dostawa: null })).toEqual({ ok: false, braki: ['dostawa'] })
+  })
+
+  it('punkt odbioru bez numeru domu i ulicy = komplet (linia adresu bez zmian); kurier bez numeru = brak', () => {
+    const punkt = { ...PELNY, punktOdbioru: { kod: 'KRA01M', nazwa: null } }
+    expect(naOdbiorcePrzesylki({ ...punkt, dostawa: { ...PELNY.dostawa!, ulica: 'Lipowa 7 3', numerDomu: null } })).toMatchObject({ ok: true, wartosc: { ulica: 'Lipowa 7 3', numerDomu: null } })
+    expect(naOdbiorcePrzesylki({ ...punkt, dostawa: { ...PELNY.dostawa!, ulica: null, numerDomu: null } })).toMatchObject({ ok: true, wartosc: { ulica: null, numerDomu: null } })
+    expect(naOdbiorcePrzesylki({ ...PELNY, dostawa: { ...PELNY.dostawa!, ulica: 'Lipowa 7 3', numerDomu: null } })).toEqual({ ok: false, braki: ['numer_domu'] })
   })
 
   it('adres spoza PL = brak kraj_zagraniczny (przesyłka nie niesie kraju); pl małymi i brak kraju przechodzą', () => {

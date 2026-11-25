@@ -116,7 +116,7 @@ describe('utworzenie przesyłki', () => {
     expect(await db.shipment.count({ where: { orderId: id } })).toBe(1)
   })
 
-  it('Kurier DPD (wymiary firmy) i salon Empik (punkt) jak przyciski BL', async () => {
+  it('Kurier DPD (wymiary firmy) jak przycisk BL; salon Empik = odmowa bez zamówienia w Base Courier', async () => {
     await firma()
     const dpd = await zamowienie({ dostawa: 'Kurier DPD', punkt: null })
     expect((await bramkaNadania(db, dpd, deps()))!.gabaryty).toEqual([{ kod: 'DPD', nazwa: 'DPD' }])
@@ -126,9 +126,25 @@ describe('utworzenie przesyłki', () => {
     expect(bc.zamowienia[0]!.Order).toMatchObject({ taker_point: '' })
     expect(bc.zamowienia[0]!.CourierSearch).toMatchObject({ origin: 'kompletor' })
     const empik = await zamowienie({ dostawa: 'Dostawa do salonu Empik', punkt: 'PL12345' })
-    expect((await utworz(empik, 'DPD')).wynik).toBe('UTWORZONA')
-    expect(bc.zamowienia[1]!.Order).toMatchObject({ taker_point: 'PL12345' })
+    expect(await utworz(empik, 'DPD')).toMatchObject({ wynik: 'BLAD', powod: expect.stringMatching(/Base Courier nie nadaje paczek do salonów Empik/) })
+    expect(zamowien()).toBe(1)
     expect((await db.shipment.findFirstOrThrow({ where: { orderId: empik } })).carrier).toBe('DPD_EMPIK')
+  })
+
+  it('podjazd kuriera włączony w koncie: dzień i godziny z harmonogramu odbiorów firmy, po „wyślemy dziś do” następny dzień odbioru', async () => {
+    await db.carrierPickup.deleteMany({ where: { carrier: 'DPD' } })
+    await db.carrierPickup.create({ data: { carrier: 'DPD', weekdays: [1, 2, 3, 4, 5], pickupMinute: 13 * 60, promiseUntilMinute: 12 * 60, active: true } })
+    bc = bcAtrapa({ terminyPodjazdu: ['2026-11-23', '2026-11-24'] })
+    await firma({ config: { ...KONFIG, zamawiajPodjazd: true } })
+    const dpd = await zamowienie({ dostawa: 'Kurier DPD', punkt: null })
+    // piątek 20.11.2026 15:00 w Warszawie: po 12:00, więc podjazd w poniedziałek 23.11 od 13:00 do 15:00
+    const w = await utworzPrzesylke(db, { orderId: dpd, gabaryt: 'DPD', potwierdzoneOstrzezenia: POTWIERDZONE, userId: 'u-test' }, { ...deps(), now: () => new Date('2026-11-20T14:00:00Z') })
+    expect(w.wynik).toBe('UTWORZONA')
+    expect(bc.calls.map((c) => c.endpoint)).toEqual(['getPickupDateOptions.json', 'createOrderV2.json', 'getWaybill.json'])
+    expect(bc.zamowienia[0]!.CourierSearch).toMatchObject({ no_pickup: false })
+    expect(bc.zamowienia[0]!.Order).toMatchObject({ pickup_date: '2026-11-23', pickup_ready_time: '13', pickup_ready_time_minute: '00', pickup_close_time: '15', pickup_close_time_minute: '00' })
+    // przesyłka bez uwagi (termin zgodny z harmonogramem)
+    expect((await db.shipment.findFirstOrThrow({ where: { orderId: dpd } })).lastError).toBeNull()
   })
 
   it('pobranie: kwota zamówienia jako uptake, zapisana w przesyłce; bez rachunku zwrotu = BLAD bez zamówienia w Base Courier', async () => {

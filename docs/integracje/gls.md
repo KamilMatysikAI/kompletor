@@ -54,7 +54,7 @@ Self-host: klucze mogą przyjść z env (`GLS_ADE_LOGIN`, `GLS_ADE_HASLO` z prze
 | Login ADE | konto przewoźnika (klucz) | użytkownik ADE z dostępem do API |
 | Hasło ADE | konto przewoźnika (klucz) | szyfrowane, nie wraca na ekran |
 | Środowisko | konto przewoźnika, „Zaawansowane” | testowe (domyślnie) albo produkcyjne |
-| Waga domyślna | konto przewoźnika | waga paczki, gdy produkty nie mają wagi (wtedy ostrzeżenie do potwierdzenia) |
+| Waga domyślna | konto przewoźnika | waga paczki, gdy produkty nie mają wagi (wtedy niebieska informacja „Paczka pójdzie z wagą …”, bez potwierdzania; bez tego ustawienia paczka idzie z wbudowanym 1 kg i to trzeba zaznaczyć przed nadaniem) |
 | Limit pobrania | konto przewoźnika | najwyższa kwota pobrania wg umowy (domyślnie 10 000 zł) |
 | Nadawanie z Kompletora | Konta przewoźników, przełącznik przy koncie | bez niego moduł nie wysyła do ADE żadnego żądania nadania, etykiety ani odszukania |
 | Format etykiety | reguła przewoźnika (`formatEtykiety`) | PDF (domyślnie) albo ZPL |

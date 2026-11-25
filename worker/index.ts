@@ -14,6 +14,7 @@ import { activeOrganizations, OrgClients, planSchedule, runNextJob, type WorkerD
 import { handlers } from '../lib/worker/zadania'
 import { przeniesZdjeciaZDysku } from '../lib/produkty/zdjecia'
 import { FEED_JOB } from '../lib/produkty/zdjecia-feed'
+import { KURIER_AUTOMAT_JOB } from '../lib/wysylka/kurier-regula'
 import { loopAlive } from './zycie'
 
 const POLL_MS = Number(process.env.WORKER_POLL_MS) || 2_000
@@ -98,10 +99,10 @@ async function main(): Promise<void> {
       const n = await reapStale(system, STALE_MS).catch(() => 0)
       if (n) console.warn(`[worker] przywrócono ${n} porzuconych zadań`)
       // techniczne wiersze kolejki z harmonogramu (DONE starsze niż doba) — nie dane, tylko ślad wykonania; także
-      // zdjęcia z feedu (planowane co godzinę, wynik przebiegu jest w ImportRun)
+      // zdjęcia z feedu (planowane co godzinę, wynik przebiegu jest w ImportRun) i automat kuriera (co 2 minuty, wynik w zamówieniach kuriera)
       await system.job
         .deleteMany({
-          where: { status: 'DONE', OR: [{ kind: { startsWith: 'rdzen-' } }, { kind: { startsWith: 'cien-' } }, { kind: FEED_JOB }], updatedAt: { lt: new Date(Date.now() - 24 * 3600_000) } },
+          where: { status: 'DONE', OR: [{ kind: { startsWith: 'rdzen-' } }, { kind: { startsWith: 'cien-' } }, { kind: FEED_JOB }, { kind: KURIER_AUTOMAT_JOB }], updatedAt: { lt: new Date(Date.now() - 24 * 3600_000) } },
         })
         .catch(() => 0)
       lastReap = Date.now()

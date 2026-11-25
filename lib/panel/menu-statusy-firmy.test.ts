@@ -60,7 +60,9 @@ const znajdz = (lista: PozycjaMenu[], etykieta: string): PozycjaMenu | undefined
 describe('statusy firmy w menu „Zamówienia”', () => {
   it('kolejność: „Wszystkie”, „Wymaga działania”, statusy bez grupy, grupy z sumą, „Bez statusu firmy”, „Ustaw statusy”', () => {
     expect(p.map((x) => x.etykieta)).toEqual(['Wszystkie', 'Wymaga działania', 'Nowe zamówienia', 'Do realizacji', 'Zakończone', 'Bez statusu firmy', 'Ustaw statusy'])
-    expect(p[0]).toMatchObject({ licznik: 19, widok: { widok: 'wszystkie' } })
+    // „Wszystkie” bez licznika; „Wymaga działania” i statusy z licznikiem
+    expect(p[0]).toMatchObject({ etykieta: 'Wszystkie', widok: { widok: 'wszystkie' } })
+    expect(p[0]!.licznik).toBeUndefined()
     expect(p[1]).toMatchObject({ licznik: 6, licznikTon: 'ostrzezenie', widok: { widok: 'wymaga' } })
     // grupa bez widocznych statusów nie ma pozycji (jak w panelu)
     expect(znajdz(p, 'Pusta')).toBeUndefined()

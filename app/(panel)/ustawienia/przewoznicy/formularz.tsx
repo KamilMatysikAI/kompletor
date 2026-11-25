@@ -3,7 +3,7 @@
 // i reguły przypisania „sposób dostawy → przewoźnik → moduł wysyłki” (dodaj, usuń, w górę/w dół). Reguły jako słowa
 // rozdzielone przecinkami; wzorzec spoza samych słów (z presetu) zostaje jako „wzorzec zaawansowany” bez zmian.
 import { useActionState, useEffect, useRef, useState } from 'react'
-import { Karta, PasekZapisu, Potwierdzenie, Przycisk, ToastPoAkcji } from '@/app/ui'
+import { Baner, Karta, PasekZapisu, Potwierdzenie, Przycisk, PrzyciskLink, ToastPoAkcji } from '@/app/ui'
 import { poleZeWzorca, slowaDoZamiany } from '@/lib/panel/slowa'
 import type { RegulaPanelu } from '@/lib/wysylka/reguly'
 import { zapiszPrzewoznikow, type StanPrzewoznikow } from './akcje'
@@ -116,6 +116,23 @@ export function FormularzPrzewoznikow({
         setPotwierdzone([])
       }} aria-label="Przewoźnicy" className="stack">
       <ToastPoAkcji stan={stan} bledy={!stan.pole} />
+      {/* reguła przeniesiona na inne konto: nadawanie wyłączone, co przeszło i czego brakuje (zostaje do zmiany strony) */}
+      {stan.ok && stan.przeniesienie?.length ? (
+        <Baner
+          ton="ostrzezenie"
+          rola="status"
+          tytul="Reguła na innym koncie: nadawanie wyłączone"
+          akcja={
+            <PrzyciskLink href="/ustawienia/przewoznicy/konta" rozmiar="sm">
+              Konta przewoźników
+            </PrzyciskLink>
+          }
+        >
+          {stan.przeniesienie.map((t) => (
+            <p key={t}>{t}</p>
+          ))}
+        </Baner>
+      ) : null}
       {potwierdzone
         .filter((id) => !wiersze.some((w) => w.id === id))
         .map((id) => (

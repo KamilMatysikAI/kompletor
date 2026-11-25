@@ -2,6 +2,7 @@ import Link from 'next/link'
 import { dashboard, warsawRanges } from '@/lib/panel/dane'
 import { int, longDay, money, outsideCoreNote, SALES_COUNT_CANCELLED, time, when } from '@/lib/panel/format'
 import { requireSession } from '@/lib/panel/kontekst'
+import { jestPrzeliczenie, kwotaZObcymi, notkaWalut, opisBezKursu, ZNAK_PRZELICZENIA } from '@/lib/panel/sumy-walut'
 import { toWarsaw } from '@/lib/rdzen/kalendarz'
 import { WykresMiesiaca } from '../_komponenty/wykres-miesiaca'
 import { firmaMaBlWPanelu, firmaMaWfirme, firmaPrzechodziZBlWPanelu } from '@/lib/kanaly/firma'
@@ -157,8 +158,18 @@ export default async function Pulpit({ searchParams }: Props) {
               <span className="muted small">od 00:00 do {time(now)}</span>
             </div>
             <p className="today-sum">
-              <b className="big">{int(d.today.count)}</b> <span className="muted">zamówień</span> <b className="big">{money(d.today.gross)}</b>{' '}
-              <span className="muted">brutto</span>
+              <b className="big">{int(d.today.count)}</b> <span className="muted">zamówień</span> {jestPrzeliczenie(d.today.foreign) && (
+                <span className="muted" title="Z przeliczeniem obcych walut po kursie NBP">
+                  {ZNAK_PRZELICZENIA}{' '}
+                </span>
+              )}
+              <b className="big">{money(d.today.gross)}</b> <span className="muted">brutto</span>
+              {opisBezKursu(d.today.foreign) && (
+                <>
+                  {' '}
+                  <b className="big">+ {opisBezKursu(d.today.foreign)}</b>
+                </>
+              )}
             </p>
             {todayNote && (
               <p className="small muted" style={{ marginTop: 0 }}>
@@ -175,7 +186,7 @@ export default async function Pulpit({ searchParams }: Props) {
                       <i style={{ width: `${Math.round((a.count / maxToday) * 100)}%` }} />
                     </span>
                     <span className="v">{a.count}</span>
-                    <span className="a num">{money(a.gross)}</span>
+                    <span className="a num">{kwotaZObcymi(a.gross, a.foreign)}</span>
                   </div>
                 ))}
               </div>
@@ -184,6 +195,12 @@ export default async function Pulpit({ searchParams }: Props) {
             )}
             <p className="small muted" style={{ marginTop: 8, marginBottom: 0 }}>
               Pasek = liczba zamówień złożonych dziś w kanale (także zrealizowanych, zanim system zaczął czytać konto{SALES_COUNT_CANCELLED ? '' : '; bez anulowanych'}); kwota brutto obok, z kosztem wysyłki zapłaconym przez klienta.
+              {d.today.foreign.length > 0 && (
+                <>
+                  {` ${notkaWalut(d.today.foreign)} Rozbicie na waluty: `}
+                  <Link href="/raporty">Raporty</Link>.
+                </>
+              )}
             </p>
           </section>
 

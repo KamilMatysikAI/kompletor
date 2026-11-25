@@ -6,6 +6,7 @@ import { revalidatePath } from 'next/cache'
 import { redirect } from 'next/navigation'
 import { requirePermission } from '@/lib/panel/kontekst'
 import { cofnijZakonczenie, zakonczPrzejscie } from '@/lib/przeprowadzka/zakonczenie'
+import { zapiszStatusBl } from '@/lib/kanaly/status-bl'
 import { katalogZFormularza, MAX_TOKEN_BL, maTokenBl, mapaFirmy, mapaZFormularza, PrzeprowadzkaError, usunTokenBl, zapiszMapeFirmy, zapiszTokenBl, zlecPrzeprowadzke } from '@/lib/przeprowadzka/z-panelu'
 
 const PATH = '/ustawienia/przeprowadzka'
@@ -100,4 +101,16 @@ export async function cofnijZakonczeniePrzejscia(): Promise<void> {
   }
   revalidatePath('/pulpit')
   wroc({ zapisano: 'Oznaczenie cofnięte: firma znów przechodzi z BaseLinkera.' })
+}
+
+/** wyłącznik i numer statusu BL ustawianego zamówieniom zrealizowanym w Kompletorze (sekcja 6). */
+export async function zapiszStatusBlFirmy(form: FormData): Promise<void> {
+  const ctx = await requirePermission('ustawienia')
+  const wlaczony = form.get('wlaczony') === 'tak'
+  try {
+    await zapiszStatusBl(ctx.db, { wlaczony, statusId: String(form.get('statusId') ?? '').trim().slice(0, 13) }, ctx.user.id)
+  } catch (e) {
+    wroc({ blad: e instanceof Error && e.message.startsWith('Podaj numer') ? e.message : 'Nie udało się zapisać, spróbuj ponownie.' })
+  }
+  wroc({ zapisano: wlaczony ? 'Zapisano: Kompletor będzie ustawiał status w BaseLinkerze po wysłaniu.' : 'Zapisano: Kompletor nie zmienia statusów w BaseLinkerze.' })
 }

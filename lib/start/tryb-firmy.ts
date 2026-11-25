@@ -6,7 +6,7 @@ import type { PrismaClient } from '@prisma/client'
 import type { AdapterRegistry } from '../adaptery/rejestr'
 import { organizationIdOf } from '../db'
 import { KontoError } from '../kanaly/konta'
-import { blokadaInstancji, prowadziZamowienia, trybKonta, zmienTrybKonta } from '../kanaly/tryb'
+import { blokadaInstancji, kontoTylkoApi, prowadziZamowienia, trybKonta, zmienTrybKonta } from '../kanaly/tryb'
 
 type Env = Record<string, string | undefined>
 
@@ -51,7 +51,10 @@ export async function wlaczPraceFirmy(db: PrismaClient, opts: { actorId: string;
       continue
     }
     try {
-      const w = await zmienTrybKonta(db, { channel: r.channel, channelAccountId: r.channelAccountId }, 'PRACA', opts)
+      // konto zasilane tylko przez API (EasyTools) nie ma ofert ani sklepu, do którego szłyby stany: dostaje
+      // pracę bez stanów (zamówienia w pracy, stany w podglądzie), jak na ekranie konta, bez testu połączenia
+      const cel = kontoTylkoApi(r.channel) ? 'BEZ_STANOW' : 'PRACA'
+      const w = await zmienTrybKonta(db, { channel: r.channel, channelAccountId: r.channelAccountId }, cel, opts)
       if (w === 'ZMIENIONO') out.wlaczone.push(r.name)
     } catch (e) {
       // KontoError niesie nasz tekst warunku; inny błąd bez szczegółów (mógłby nieść dane wejściowe)

@@ -13,7 +13,7 @@ import { organizationIdOf } from '../db'
 import { ODBIORCA_AUDIT_ENTITY } from '../odbiorca/pobierz'
 import type { Env } from '../sekrety'
 import { KLIENT_ZAPIS_JOB, zapisKlientaWlaczony } from './kolejka'
-import { skrotRekordu, type RekordKlienta, type SkrotKlienta } from './rekord'
+import { klientNaLiscie, skrotRekordu, type RekordKlienta, type SkrotKlienta } from './rekord'
 import { kluczSkrotowZEnv, odczytaniaFrazy, rozpoznajFraze, skrot } from './skroty'
 import { BladSzyfruKlienta, BrakKluczaKlientow, kluczeKlientowZEnv, odszyfrujKlienta } from './szyfr'
 import { ZAPIS_AUDIT } from './zapis'
@@ -102,6 +102,52 @@ export async function daneKlienta(db: PrismaClient, orderId: string, o: OpcjeOdc
   await slad(db, orderId, o.actorId, { cel: o.cel, zakres })
   if (zakres === 'SKROT') return { stan: 'SKROT', skrot: skrotRekordu(rekord), zrodlo: row.source, odczytano: row.fetchedAt }
   return { stan: 'PELNY', rekord, zrodlo: row.source, odczytano: row.fetchedAt, rewizja: row.revision }
+}
+
+/** najwięcej zamówień w jednym odczycie listy (największa strona listy to 250). */
+export const LISTA_KLIENTOW_MAX = 250
+
+/**
+ * kolumna „Klient” listy zamówień: firma albo imię i nazwisko dla zamówień jednej strony, jednym zapytaniem
+ * (bez odczytu na wiersz). Tylko osoba z `klienci.dane` (sprawdzane tutaj, jak w `szukajKlientaFragmentem`); bez
+ * uprawnienia, bez klucza albo bez danych = pusta mapa. Paczka dodatkowa bez własnych danych bierze dane zamówienia
+ * głównego (jak etykieta odbioru). Jeden wpis w dzienniku podglądów na stronę (`cel: PODGLAD`, `lista`, identyfikatory
+ * zamówień z pokazanym klientem), zapisany przed zwrotem danych. Uszkodzony rekord pomija jeden wiersz. Wynik tylko do
+ * renderu strony: nie zapisuj go w logu, adresie ani innej tabeli.
+ */
+export async function klienciNaLiscie(db: PrismaClient, zamowienia: readonly { id: string; parentOrderId?: string | null }[], o: { actorId: string; env?: Env }): Promise<Map<string, string>> {
+  const out = new Map<string, string>()
+  const lista = zamowienia.slice(0, LISTA_KLIENTOW_MAX)
+  if (!lista.length || typeof o.actorId !== 'string' || !o.actorId.trim() || o.actorId.startsWith('system:')) return out
+  if (!(await uprawnieniaOsoby(db, o.actorId)).has('klienci.dane')) return out
+  let ring
+  try {
+    ring = kluczeKlientowZEnv(o.env ?? process.env)
+  } catch (e) {
+    if (e instanceof BrakKluczaKlientow) return out
+    throw e
+  }
+  const ids = [...new Set(lista.flatMap((z) => (z.parentOrderId ? [z.id, z.parentOrderId] : [z.id])))]
+  const rows = await db.orderCustomer.findMany({
+    where: { orderId: { in: ids }, purgedAt: null },
+    select: { orderId: true, ciphertext: true, iv: true, authTag: true, keyVersion: true },
+  })
+  const organizationId = organizationIdOf(db)
+  const nazwy = new Map<string, string>()
+  for (const r of rows) {
+    try {
+      const n = klientNaLiscie(odszyfrujKlienta(ring, organizationId, r.orderId, r))
+      if (n) nazwy.set(r.orderId, n)
+    } catch {
+      continue // uszkodzony rekord albo stary klucz: pusta komórka w tym jednym wierszu
+    }
+  }
+  for (const z of lista) {
+    const n = nazwy.get(z.id) ?? (z.parentOrderId ? nazwy.get(z.parentOrderId) : undefined)
+    if (n) out.set(z.id, n)
+  }
+  await db.auditLog.create({ data: { entity: PODGLAD_AUDIT, entityId: 'lista', actorId: o.actorId, after: { cel: 'PODGLAD', zakres: 'PELNY', lista: true, trafienia: out.size, zamowienia: [...out.keys()] } } })
+  return out
 }
 
 /** Powód braku wiersza dla karty zamówienia (bez danych): kody do tekstu w panelu. */

@@ -91,6 +91,14 @@ describe('buildShipmentPayload', () => {
     expect(b).not.toHaveProperty('reference')
   })
 
+  it('paczkomat z niepełnym adresem = bez `address`; pełny adres idzie jak dotąd; kurier bez numeru = brak treści', () => {
+    const parcel = wyliczPrzesylkeInpost(PACZKOMAT, ustawieniaInpost({}))
+    expect(buildShipmentPayload(parcel, { ...ODBIORCA, numerDomu: null }, ust)['receiver']).not.toHaveProperty('address')
+    expect(buildShipmentPayload(parcel, { ...ODBIORCA, ulica: null, numerDomu: null, kodPocztowy: null, miasto: null }, ust)['receiver']).toMatchObject({ phone: '600100200' })
+    const kurier = wyliczPrzesylkeInpost(KURIER, ustawieniaInpost({ defaultSideXCm: 50, defaultSideYCm: 40, defaultSideZCm: 30 }))
+    expect(() => buildShipmentPayload(kurier, { ...ODBIORCA, numerDomu: null }, ust)).toThrow(/adres/)
+  })
+
   it('kurier: wymiary w mm i waga w kg, bez punktu', () => {
     const parcel = wyliczPrzesylkeInpost(KURIER, ustawieniaInpost({ defaultSideXCm: 50, defaultSideYCm: 40, defaultSideZCm: 30 }))
     const b = buildShipmentPayload(parcel, ODBIORCA, ust)

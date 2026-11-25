@@ -21,7 +21,7 @@ export interface StatusKuriera {
   kiedy: Date
 }
 
-const NAZWA_STANU: Record<string, string> = { PRZED_NADANIEM: 'Etykieta utworzona, paczka czeka na kuriera', PRZEKAZANA: 'U przewoźnika, w drodze', DORECZONA: 'Doręczona', NIEZNANY: 'Status nierozpoznany' }
+export const NAZWA_STANU: Record<string, string> = { PRZED_NADANIEM: 'Etykieta utworzona, paczka czeka na kuriera', PRZEKAZANA: 'U przewoźnika, w drodze', DORECZONA: 'Doręczona', NIEZNANY: 'Status nierozpoznany' }
 
 export async function statusyKuriera(db: PrismaClient, orderIds: string[]): Promise<Map<string, StatusKuriera>> {
   const wynik = new Map<string, StatusKuriera>()

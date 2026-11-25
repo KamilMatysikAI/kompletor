@@ -47,6 +47,7 @@ import { automatyWysylki } from './automaty'
 import { createWysylamAdapter, WYSYLAM_KEY_RE } from './allegro-konto'
 import { paczkaDodatkowej, STATUSY_DODATKOWEJ, walidujDodatkowa } from './dodatkowa'
 import { powodNieDotyczy, przesylkaDoNadania } from './podglad'
+import { propozycjaPodjazduFirmy } from './podjazd'
 import { linkSledzeniaPanelu } from './link-sledzenia'
 import { zglosNumerNadania } from './zdarzenia'
 import { odciskReferencji } from './zlecenie-orlenpaczka'
@@ -64,6 +65,11 @@ export interface DepsNadania {
   http?: { pollDelayMs?: number; minIntervalMs?: number }
   /** Tylko testy wyścigów: wołane po odczycie odbiorcy, przed rezerwacją przesyłki (np. zmiana sposobu wysyłki w tym oknie). */
   poOdczycieOdbiorcy?: () => Promise<void>
+  /**
+   * true = akcja z panelu, na którą czeka człowiek: przy wyczerpanym limicie tempa przewoźnika zapis chwilę czeka na żeton
+   * (lib/integracje/oslona.ts, `interaktywne`), zamiast od razu prosić o ponowne kliknięcie. Brak = tło (worker, automaty).
+   */
+  interaktywne?: boolean
 }
 
 const AKTYWNE = ['TWORZENIE', 'UTWORZONA', 'NIEJEDNOZNACZNA'] as const
@@ -99,7 +105,8 @@ export const ROZSTRZYGNIECIE_AUDIT = 'PRZESYLKA_ROZSTRZYGNIECIE'
 type Tx = Prisma.TransactionClient
 
 const envDeps = (d: DepsNadania): Env => d.env ?? d.secrets?.env ?? process.env
-const zrodloSekretow = (d: DepsNadania): SecretSource => d.secrets ?? { env: envDeps(d), envFallback: appModeOf(envDeps(d)) === 'self-host' }
+/** Źródło sekretów firmy dla modułów przewoźnika (także śledzenie DPD). */
+export const zrodloSekretow = (d: DepsNadania): SecretSource => d.secrets ?? { env: envDeps(d), envFallback: appModeOf(envDeps(d)) === 'self-host' }
 const teraz = (d: DepsNadania) => (d.now ?? (() => new Date()))()
 // 1000 znaków, bo odszukanie Orlen Paczki podaje listę sprawdzonych paczek z godzinami
 const krotko = (m: string) => m.replace(/\s+/g, ' ').slice(0, 1000)
@@ -128,6 +135,9 @@ async function regulaZamowienia(db: Db, z: Pick<ZamowienieStanowiska, 'channel' 
   return { regula: { id: r.id, carrier: r.carrier, shippingModule: r.shippingModule, adapterKey: r.adapterKey, config }, powod: null }
 }
 
+/** Opcje osłony z zależności nadania: tylko tryb panelu (zegar osłony zawsze bieżący). */
+const oslonaNadania = (deps: DepsNadania): { oslona?: { interaktywne: true } } => (deps.interaktywne ? { oslona: { interaktywne: true } } : {})
+
 /**
  * adapter przewoźnika do nadania. Wysyłam z Allegro powstaje na koncie Allegro zamówienia (te same tokeny
  * co odczyt zamówień), z ustawieniami reguły przewoźnika (wyłącznik nadawania, format etykiety); pozostali przewoźnicy
@@ -148,9 +158,9 @@ export async function adapterNadania(db: Db, regula: RegulaNadania, orderId: str
     if (!o || o.channel !== 'ALLEGRO') throw new AdapterConfigError('Wysyłam z Allegro nadaje tylko zamówienia z Allegro')
     const config: Record<string, unknown> = { zapisWlaczony: regula.config['zapisWlaczony'] === true }
     if (regula.config['formatEtykiety'] === 'ZPL' || regula.config['formatEtykiety'] === 'PDF') config['formatEtykiety'] = regula.config['formatEtykiety']
-    return createWysylamAdapter(db, registry, o.channelAccountId, zrodloSekretow(deps), { fetch: deps.fetch, now: deps.now, adapterKey: key, config, ...(deps.http ? { http: deps.http } : {}) })
+    return createWysylamAdapter(db, registry, o.channelAccountId, zrodloSekretow(deps), { fetch: deps.fetch, now: deps.now, adapterKey: key, config, ...(deps.http ? { http: deps.http } : {}), ...oslonaNadania(deps) })
   }
-  return adapterPrzewoznika(db, regula, registry, zrodloSekretow(deps), { fetch: deps.fetch, now: deps.now })
+  return adapterPrzewoznika(db, regula, registry, zrodloSekretow(deps), { fetch: deps.fetch, now: deps.now, ...oslonaNadania(deps) })
 }
 
 /** Tryb PRACA konta zamówienia (nadanie i anulowanie u przewoźnika): null = wolno, inaczej powód. Tylko odczyt. */
@@ -219,6 +229,12 @@ export interface ZlecenieNadania {
   gabaryt?: string | null
   /** Kody ostrzeżeń przesyłki, które człowiek świadomie przyjął (wartości robocze wymiarów, wagi). */
   potwierdzoneOstrzezenia?: readonly string[]
+  /**
+   * tekst zaznaczony przez człowieka, per kod. Podane = kod z `potwierdzoneOstrzezenia` liczy
+   * się tylko, gdy świeże liczenie ma to ostrzeżenie z tym samym tekstem (inna waga albo kwota pobrania = nowe
+   * zaznaczenie). Brak = same kody (automat stanowiska, nadanie masowe).
+   */
+  potwierdzoneTeksty?: Readonly<Record<string, string>>
   /** User.id z sesji (do śladu i `requestedBy`). */
   userId: string
 }
@@ -237,9 +253,12 @@ function wynikIstniejacej(s: Shipment): WynikNadania {
 
 /** Wersja rekordu klienta: zmiana między odczytem odbiorcy a rezerwacją = poprawka adresu w trakcie nadania. */
 const wersjaKlienta = wersjaRekorduKlienta
+/** odmowa „do potwierdzenia” to krok przed nadaniem, nie błąd (karta i stanowisko pokazują pola wyboru). */
+export const POWOD_DO_POTWIERDZENIA = 'Przed utworzeniem przesyłki zaznacz, że sprawdziłeś rzeczy z listy.'
 const ZMIANA_ODBIORCY = 'Dane odbiorcy zmieniły się w trakcie tworzenia przesyłki (poprawka adresu): kliknij „Utwórz przesyłkę” ponownie.'
 export const ZMIANA_SPOSOBU = 'Sposób wysyłki zmienił się w trakcie tworzenia przesyłki: kliknij „Utwórz przesyłkę” ponownie.'
 export const ZMIANA_POZYCJI = 'Pozycje zamówienia zmieniły się w trakcie tworzenia przesyłki: kliknij „Utwórz przesyłkę” ponownie.'
+export const ZMIANA_PLATNOSCI = 'Płatność zamówienia zmieniła się w trakcie tworzenia przesyłki (pobranie): kliknij „Utwórz przesyłkę” ponownie.'
 /**
  * Podpis pozycji zamówienia (kwota, suma sztuk w paczce, liczba nieusuniętych pozycji). Kwota pobrania i zawartość
  * paczki liczą się przed rezerwacją wiersza, więc rezerwacja porównuje podpis z odczytu sprzed bramki ze świeżym.
@@ -255,6 +274,15 @@ const sposobWysylki = (o: { carrier: Carrier | null; shippingModule: ShippingMod
   `${o.carrier ?? ''}:${o.shippingModule ?? ''}:${flagsOf(o).przewoznikRecznie === true}`
 
 /**
+ * kody potwierdzone przez człowieka, które dalej obowiązują. Bez tekstów (automat) wszystkie;
+ * z tekstami tylko te, których tekst zgadza się z ostrzeżeniem z bieżącego liczenia (z tym, co pójdzie do przewoźnika).
+ */
+export function potwierdzoneZgodnieZTekstem(problemy: readonly { kod: string; tekst: string }[], kody: readonly string[], teksty?: Readonly<Record<string, string>>): string[] {
+  if (!teksty) return [...kody]
+  return kody.filter((k) => Object.prototype.hasOwnProperty.call(teksty, k) && problemy.some((x) => x.kod === k && x.tekst === teksty[k]))
+}
+
+/**
  * „Utwórz przesyłkę” z gabarytem. Kolejność: bramki → odbiorca z danych klienta → parametry liczone od nowa (z punktem
  * odbioru) → problemy BLAD i niepotwierdzone ostrzeżenia = odmowa bez zapisu → rezerwacja wiersza pod blokadą → adapter
  * → `executeWrite` → zapis wyniku. Istniejąca aktywna przesyłka = zwrot bez wołania przewoźnika.
@@ -262,7 +290,7 @@ const sposobWysylki = (o: { carrier: Carrier | null; shippingModule: ShippingMod
 export async function utworzPrzesylke(db: Db, z: ZlecenieNadania, deps: DepsNadania = {}): Promise<WynikNadania> {
   const organizationId = organizationIdOf(db)
   // sposób wysyłki odczytany PRZED bramką: rezerwacja pod blokadą porównuje go ze świeżym
-  const o = await db.order.findUnique({ where: { id: z.orderId }, select: { id: true, packageNo: true, externalId: true, carrier: true, shippingModule: true, flags: true } })
+  const o = await db.order.findUnique({ where: { id: z.orderId }, select: { id: true, packageNo: true, externalId: true, carrier: true, shippingModule: true, flags: true, paymentState: true, parentOrderId: true } })
   if (!o) return { wynik: 'ODMOWA', powod: 'Nie ma takiego zamówienia.' }
   // pozycje odczytane PRZED parametrami przesyłki: rezerwacja pod blokadą porównuje je ze świeżymi (zmiana pozycji na karcie)
   const pozycjePrzed = await podpisPozycji(db, o.id)
@@ -291,11 +319,13 @@ export async function utworzPrzesylke(db: Db, z: ZlecenieNadania, deps: DepsNada
   const p = await przesylkaDoNadania(db, o.id, z.gabaryt, odb.punktOdbioru?.kod ?? null)
   if (p.wynik !== 'przygotowane') return { wynik: 'ODMOWA', powod: p.powod }
   await deps.poOdczycieOdbiorcy?.()
-  const potwierdzone = z.potwierdzoneOstrzezenia ?? []
+  // problemy INFO (np. waga domyślna z ustawień przewoźnika firmy) są zgodą firmy daną raz w ustawieniach,
+  // więc idą do adaptera jako potwierdzone; człowiek potwierdza tylko ostrzeżenia
+  const potwierdzone = [...new Set([...potwierdzoneZgodnieZTekstem(p.parcel.problems, z.potwierdzoneOstrzezenia ?? [], z.potwierdzoneTeksty), ...p.parcel.problems.filter((x) => x.poziom === 'INFO').map((x) => x.kod)])]
   const bledy = p.parcel.problems.filter((x) => x.poziom === 'BLAD')
   if (bledy.length) return { wynik: 'ODMOWA', powod: `Przesyłka nie jest gotowa: ${bledy.map((x) => x.tekst).join(' ')}` }
   const doPotwierdzenia = p.parcel.problems.filter((x) => x.poziom === 'OSTRZEZENIE' && !potwierdzone.includes(x.kod))
-  if (doPotwierdzenia.length) return { wynik: 'ODMOWA', powod: 'Potwierdź przed nadaniem wartości robocze przesyłki.', doPotwierdzenia: doPotwierdzenia.map((x) => ({ kod: x.kod, tekst: x.tekst })) }
+  if (doPotwierdzenia.length) return { wynik: 'ODMOWA', powod: POWOD_DO_POTWIERDZENIA, doPotwierdzenia: doPotwierdzenia.map((x) => ({ kod: x.kod, tekst: x.tekst })) }
 
   // Rezerwacja: jeden wiersz aktywny na paczkę (blokada zamówienia + indeks częściowy). Po odmowie (BLAD) ta sama
   // referencja wraca do użycia; nowa referencja dopiero po anulowaniu przesyłki.
@@ -312,6 +342,8 @@ export async function utworzPrzesylke(db: Db, z: ZlecenieNadania, deps: DepsNada
     if (!swiezy || swiezy.carrier !== b.carrier || sposobWysylki(swiezy) !== sposobWysylki(o)) return { zmianaSposobu: true as const }
     // zmiana pozycji (lib/rdzen/edycja.ts, ta sama blokada przesyłki) po odczycie: kwota pobrania i zawartość są sprzed niej
     if ((await podpisPozycji(tx, o.id)) !== pozycjePrzed) return { zmianaPozycji: true as const }
+    // zmiana płatności na karcie (pobranie, lib/karta/pobranie.ts, ta sama blokada przesyłki) po odczycie: kwota pobrania jest sprzed niej
+    if (!o.parentOrderId && (await tx.order.findUnique({ where: { id: o.id }, select: { paymentState: true } }))?.paymentState !== o.paymentState) return { zmianaPlatnosci: true as const }
     const dane = { state: 'TWORZENIE' as const, adapterKey: b.regula!.adapterKey, carrier: b.carrier!, parcelSize: p.parcel.gabaryt, weightKg: p.parcel.weightKg, codAmount: p.parcel.codAmount, requestedBy: z.userId, lastError: null, failureKind: null, accountSuffix: kontoReguly(b.regula!) }
     const blad = await tx.shipment.findFirst({ where: { orderId: o.id, packageNo: o.packageNo, extraNo: 0, state: 'BLAD' }, orderBy: { createdAt: 'desc' } })
     // wiersz po błędzie innego modułu (sposób wysyłki zmieniony na karcie) = pierwsza próba u nowego przewoźnika:
@@ -333,6 +365,7 @@ export async function utworzPrzesylke(db: Db, z: ZlecenieNadania, deps: DepsNada
   if ('zmiana' in rez) return { wynik: 'ODMOWA', powod: ZMIANA_ODBIORCY }
   if ('zmianaSposobu' in rez) return { wynik: 'ODMOWA', powod: ZMIANA_SPOSOBU }
   if ('zmianaPozycji' in rez) return { wynik: 'ODMOWA', powod: ZMIANA_POZYCJI }
+  if ('zmianaPlatnosci' in rez) return { wynik: 'ODMOWA', powod: ZMIANA_PLATNOSCI }
   const s = (rez as { nowa: Shipment }).nowa
   // ten sam wiersz po BLAD = ta referencja już szła do przewoźnika
   const ponowienie = 'ponowienie' in rez && rez.ponowienie === true
@@ -347,8 +380,10 @@ export async function utworzPrzesylke(db: Db, z: ZlecenieNadania, deps: DepsNada
   }
   if (!hasShipmentCreator(adapter)) return zapiszBlad(db, s, { kind: 'TRWALY', reference: s.reference, message: 'Moduł przewoźnika nie tworzy przesyłek.' })
 
+  // termin podjazdu z harmonogramu odbiorów firmy (używa go tylko moduł z włączonym zamawianiem podjazdu)
+  const podjazd = await propozycjaPodjazduFirmy(db, b.carrier!, teraz(deps))
   const out = await executeWrite(adapter, s.reference, () =>
-    adapter.createShipment({ parcel: p.parcel, carrier: b.carrier!, recipient: odb.recipient!, potwierdzoneOstrzezenia: potwierdzone, orderExternalId: o.externalId, ponowienie }, s.reference),
+    adapter.createShipment({ parcel: p.parcel, carrier: b.carrier!, recipient: odb.recipient!, potwierdzoneOstrzezenia: potwierdzone, orderExternalId: o.externalId, ponowienie, podjazd }, s.reference),
   )
   return zapiszWynik(db, s, adapter, out, { userId: z.userId, deps })
 }
@@ -637,7 +672,9 @@ export async function utworzDodatkowa(db: Db, z: ZlecenieDodatkowej, deps: DepsN
   if (!parcel) return { wynik: 'ODMOWA', powod: 'Ten moduł przewoźnika nie liczy paczki: wybierz inny moduł.' }
   const bledy = parcel.problems.filter((x) => x.poziom === 'BLAD')
   if (bledy.length) return { wynik: 'ODMOWA', powod: `Przesyłka nie jest gotowa: ${bledy.map((x) => x.tekst).join(' ')}` }
-  const potwierdzone = z.potwierdzoneOstrzezenia ?? []
+  // problemy INFO (np. waga domyślna z ustawień przewoźnika firmy) idą do adaptera jako potwierdzone, jak w `utworzPrzesylke`:
+  // adaptery odmawiają każdego kodu spoza `potwierdzoneOstrzezenia`, a człowiek potwierdza tylko ostrzeżenia
+  const potwierdzone = [...new Set([...(z.potwierdzoneOstrzezenia ?? []), ...parcel.problems.filter((x) => x.poziom === 'INFO').map((x) => x.kod)])]
   const doPotwierdzenia = parcel.problems.filter((x) => x.poziom === 'OSTRZEZENIE' && !potwierdzone.includes(x.kod))
   if (doPotwierdzenia.length) return { wynik: 'ODMOWA', powod: 'Potwierdź przed nadaniem wartości robocze przesyłki.', doPotwierdzenia: doPotwierdzenia.map((x) => ({ kod: x.kod, tekst: x.tekst })) }
 

@@ -105,7 +105,8 @@ describe('bramki: przycisk widoczny, z powodem, bez żądania do przewoźnika', 
   })
 
   it('wartości robocze bez potwierdzenia: odmowa z listą ostrzeżeń, zero żądań i zero wierszy', async () => {
-    await firma()
+    // bez wagi domyślnej firmy (wbudowane 1 kg) waga zostaje ostrzeżeniem do potwierdzenia
+    await firma(db, { config: { ...KONFIG, defaultWeightKg: undefined } })
     const id = await zamowienie()
     const w = await utworzPrzesylke(db, { orderId: id, userId: 'u' }, deps())
     expect(w).toMatchObject({ wynik: 'ODMOWA', doPotwierdzenia: expect.arrayContaining([expect.objectContaining({ kod: 'waga_domyslna' })]) })

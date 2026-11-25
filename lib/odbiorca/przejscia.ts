@@ -12,15 +12,18 @@ export type Przejscie<T> = { ok: true; wartosc: T } | { ok: false; braki: string
 /**
  * Odbiorca przesyłki z adresu dostawy. Numer domu musi przyjść z kanału osobno: przy `adres_bez_podzialu` (Woo,
  * Allegro, Empik dziś) wynik to brak `numer_domu` — podział linii adresu to decyzja człowieka, nie zgadywanie.
+ * przy punkcie odbioru (paczkomat, punkt DPD, salon) ulica i numer domu nie są brakiem: adres domowy nie
+ * wpływa na doręczenie, linia adresu zostaje bez zmian (numer null). Czego wymaga API, pilnuje adapter przewoźnika.
  */
 export function naOdbiorcePrzesylki(r: OrderRecipient): Przejscie<OdbiorcaPrzesylki> {
   const d = r.dostawa
   if (!d) return { ok: false, braki: ['dostawa'] }
   const braki: string[] = []
   const imie = d.imieNazwisko ?? d.firma
+  const punkt = !!r.punktOdbioru?.kod
   if (!imie) braki.push('imie_nazwisko')
-  if (!d.ulica) braki.push('ulica')
-  if (!d.numerDomu) braki.push('numer_domu')
+  if (!d.ulica && !punkt) braki.push('ulica')
+  if (!d.numerDomu && !punkt) braki.push('numer_domu')
   if (!d.kodPocztowy) braki.push('kod_pocztowy')
   if (!d.miasto) braki.push('miasto')
   if (!d.telefon) braki.push('telefon')
@@ -28,7 +31,7 @@ export function naOdbiorcePrzesylki(r: OrderRecipient): Przejscie<OdbiorcaPrzesy
   // `OdbiorcaPrzesylki` i zlecenie Base Courier nie niosą kraju: adres spoza PL poszedłby jako krajowy.
   // Do czasu obsługi kraju w przesyłce zagranica = brak; null zostaje (kanał zwykle podaje kraj).
   if (d.kraj && d.kraj.toUpperCase() !== 'PL') braki.push('kraj_zagraniczny')
-  if (braki.length || !imie || !d.ulica || !d.numerDomu || !d.kodPocztowy || !d.miasto || !d.telefon || !d.email) return { ok: false, braki }
+  if (braki.length || !imie || !d.kodPocztowy || !d.miasto || !d.telefon || !d.email) return { ok: false, braki }
   return {
     ok: true,
     wartosc: {

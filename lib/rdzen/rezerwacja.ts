@@ -39,6 +39,12 @@ export type Flags = {
   edytowaneLokalnie?: boolean
   /** Pozycje kanału sprzed pierwszej edycji z karty: externalLineId → [productId, ilość w jednostce bazowej]. */
   pozycjeKanalu?: Record<string, [string | null, number]>
+  /**
+   * ceny pozycji w kanale (externalLineId → cena brutto za sztukę oferty, „12.34”), z którymi porównuje się
+   * kolejny odczyt kanału, gdy kwoty zamówienia są zamknięte: zdjęcie z pierwszej edycji z karty (ceny sprzed edycji)
+   * albo ceny, przy których zamówienie już poszło do „Do wyjaśnienia”. Bez wpisu dla pozycji = porównanie z ceną pozycji.
+   */
+  cenyKanalu?: Record<string, string>
   /** Pozycje usunięte z karty (nie w kanale): id pozycji. */
   usunieteLokalnie?: string[]
   /** Kwota zapłacona przed pierwszą edycją z karty (zamówienie opłacone): podstawa „Do dopłaty” i „Do zwrotu”. */
@@ -55,6 +61,12 @@ export type Flags = {
    * z kanału go nie zdejmuje (przewoźnika też nie nadpisuje); paczki z podziału i dosłania dziedziczą go z przewoźnikiem.
    */
   przewoznikRecznie?: boolean
+  /**
+   * Płatność zmieniona na karcie zamówienia (lib/karta/pobranie.ts): „COD” = ustawione pobranie, „UNPAID” = pobranie
+   * cofnięte na nieopłacone. Kolejny odczyt kanału płatności nie cofa: „UNPAID” blokuje ponowne pobranie z kanału
+   * (wpłata z kanału dalej przechodzi), a pobrania odczyt kanału i tak nie zdejmuje (zmiana tylko nieopłacone → opłacone).
+   */
+  platnoscZKarty?: 'COD' | 'UNPAID'
 }
 
 export function flagsOf(o: Pick<Order, 'flags'>): Flags {

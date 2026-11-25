@@ -15,6 +15,7 @@ import { loadCarrierRules } from './przewoznicy'
 import {
   addReservation,
   clarifyReasons,
+  type Flags,
   flagsOf,
   hasOpenShortage,
   hintAllocate,
@@ -226,7 +227,52 @@ export interface OpisZKanalu {
    * (`kwotyZKanaluOtwarte`): sklep potrafi pokazać zamówienie, zanim policzy sumę (zamówienie z REST: najpierw 0).
    */
   totalGross?: number | null
-  lines: { externalLineId: string; name?: string | null; sku?: string | null; ean?: string | null }[]
+  /** `unitPriceGross` = cena brutto za sztukę oferty w kanale (jak przy przyjęciu); brak = cena nieznana, bez porównania. */
+  lines: { externalLineId: string; name?: string | null; sku?: string | null; ean?: string | null; unitPriceGross?: number | null }[]
+}
+
+/** Zdarzenie w historii: cena pozycji poprawiona odczytem z kanału przy otwartych kwotach. */
+export const ZDARZENIE_CENY_Z_KANALU = 'CENA_Z_KANALU'
+/** Zdarzenie w historii: cena pozycji w kanale inna niż w Kompletorze przy zamkniętych kwotach, bez zmiany ceny. */
+export const ZDARZENIE_CENY_W_KANALE_INNEJ = 'CENA_W_KANALE_INNA'
+
+/** Pozycja z kanału, której cena w kanale różni się od ceny odniesienia (grosze jako tekst „12.34”). */
+export type RoznicaCeny = {
+  pozycja: string
+  z: string
+  na: string
+}
+
+/**
+ * różnice cen pozycji z kanału (czysta funkcja). Porównanie tylko pozycji obecnych w Kompletorze i w kanale:
+ * bez usuniętych, bez pozycji z karty i zamienników (`isLocalLine`), bez pozycji, której kanał nie podał ceny. Cena
+ * odniesienia = `odniesienie[externalLineId]` (zapamiętana cena kanału), a bez wpisu cena pozycji. Porównanie co do grosza
+ * (adaptery zaokrąglają cenę za sztukę do grosza, ten sam odczyt daje tę samą cenę).
+ */
+export function rozniceCen(
+  linie: { externalLineId: string; unitPriceGross: { toString(): string } | number; removed: boolean }[],
+  zKanalu: readonly { externalLineId: string; unitPriceGross?: number | null }[],
+  odniesienie: Record<string, string> = {},
+): RoznicaCeny[] {
+  const gr = (v: { toString(): string } | number) => Math.round(Number(v.toString()) * 100)
+  const kanal = new Map(zKanalu.map((l) => [l.externalLineId, l.unitPriceGross]))
+  const out: RoznicaCeny[] = []
+  for (const l of linie) {
+    if (l.removed || isLocalLine(l)) continue
+    const c = kanal.get(l.externalLineId)
+    if (typeof c !== 'number' || !Number.isFinite(c) || c < 0 || c >= 1e9) continue
+    const ref = odniesienie[l.externalLineId]
+    const zGr = ref !== undefined && Number.isFinite(Number(ref)) ? gr(ref) : gr(l.unitPriceGross)
+    const naGr = Math.round(c * 100)
+    if (zGr !== naGr) out.push({ pozycja: l.externalLineId, z: (zGr / 100).toFixed(2), na: (naGr / 100).toFixed(2) })
+  }
+  return out
+}
+
+/** Powód „Do wyjaśnienia” przy cenie zmienionej w kanale po zamknięciu kwot (tekst dla obsługi, bez żargonu). */
+export function powodZmianyCeny(r: readonly RoznicaCeny[]): string {
+  const zl = (v: string) => `${v.replace('.', ',')} zł`
+  return `cena pozycji zmieniona w sklepie po przyjęciu, Kompletor zostawił poprzednią: ${r.map((x) => `${x.pozycja} ${zl(x.z)} → ${zl(x.na)}`).join(', ')}`.slice(0, 400)
 }
 
 export function opisZWejscia(i: IncomingOrder): OpisZKanalu {
@@ -272,8 +318,44 @@ export async function kwotyZKanaluOtwarte(tx: Tx, o: ZamowienieDoKwot, platnoscP
  * wartość zamówienia i zmiana zapisanego kosztu wysyłki tylko przy otwartych kwotach (`kwotyZKanaluOtwarte`,
  * pod blokadą zamówienia); brakujący koszt wysyłki uzupełnia się jak dotąd. `platnoscPrzed`: stan płatności sprzed
  * odczytu, gdy wołający właśnie go zmienił (przyjęcie rewizji z wpłatą).
+ * (`opcje.ceny`, pozycje z ceną): cena istniejącej pozycji z kanału przy otwartych kwotach idzie za kanałem
+ * (to samo jedno sprawdzenie kwot co wartość zamówienia), z wpisem w historii. Przy zamkniętych kwotach Kompletor ceny
+ * nie zmienia: `'wyjasnienie'` (odczyt kanału) przenosi zamówienie do „Do wyjaśnienia” z opisem, `'otwarte'` („Odśwież
+ * z kanału” na karcie, bez zmiany statusu) zostawia wszystko bez zmian. Bez `opcje.ceny` ceny pozycji się nie ruszają.
  */
-export async function zapiszOpisZKanalu(tx: Tx, orderId: string, opis: OpisZKanalu, opcje: { platnoscPrzed?: PaymentState; actorId?: string } = {}): Promise<number> {
+export async function zapiszOpisZKanalu(tx: Tx, orderId: string, opis: OpisZKanalu, opcje: OpcjeOpisu = {}): Promise<number> {
+  return (await zapiszOpisICeny(tx, orderId, opis, opcje)).zmian
+}
+
+export interface OpcjeOpisu {
+  platnoscPrzed?: PaymentState
+  actorId?: string
+  /** ceny pozycji z kanału; brak = bez porównania cen (opis i kwoty). */
+  ceny?: 'wyjasnienie' | 'otwarte'
+}
+
+type LiniaDoCen = { id: string; externalLineId: string; unitPriceGross: { toString(): string; toFixed(n: number): string }; removed: boolean; qtyRejected: number }
+
+/**
+ * ceny kanału, z którymi porównuje się odczyt przy zamkniętych kwotach. Zapamiętane (`cenyKanalu`) mają
+ * pierwszeństwo. Zamówienie edytowane z karty przed zapamiętywaniem cen: cena sprzed pierwszej zmiany ceny z karty
+ * (zdarzenie ZMIANA_CENY, `cenaZ`), dla pozostałych pozycji cena pozycji (z karty zmieniała się tylko przez ZMIANA_CENY).
+ */
+async function cenyOdniesienia(tx: Tx, orderId: string, flags: Flags, linie: LiniaDoCen[]): Promise<Record<string, string>> {
+  if (flags.cenyKanalu) return flags.cenyKanalu
+  if (!flags.edytowaneLokalnie) return {}
+  const zmiany = await tx.orderEvent.findMany({ where: { orderId, kind: 'ZMIANA_CENY' }, orderBy: [{ createdAt: 'asc' }, { id: 'asc' }], select: { data: true } })
+  const extPo = new Map(linie.map((l) => [l.id, l.externalLineId]))
+  const out: Record<string, string> = {}
+  for (const z of zmiany) {
+    const d = (z.data ?? {}) as Record<string, unknown>
+    const ext = typeof d['lineId'] === 'string' ? extPo.get(d['lineId']) : undefined
+    if (ext && out[ext] === undefined && typeof d['cenaZ'] === 'string') out[ext] = d['cenaZ']
+  }
+  return out
+}
+
+async function zapiszOpisICeny(tx: Tx, orderId: string, opis: OpisZKanalu, opcje: OpcjeOpisu): Promise<{ zmian: number; doWyjasnienia: boolean }> {
   let zmian = 0
   const o = await tx.order.findUnique({
     where: { id: orderId },
@@ -285,10 +367,14 @@ export async function zapiszOpisZKanalu(tx: Tx, orderId: string, opis: OpisZKana
       totalGross: true,
       channelNumber: true,
       shippingCostGross: true,
-      lines: { select: { id: true, externalLineId: true, channelName: true, channelSku: true, channelEan: true } },
+      flags: true,
+      lines: { select: { id: true, externalLineId: true, channelName: true, channelSku: true, channelEan: true, unitPriceGross: true, removed: true, qtyRejected: true } },
     },
   })
-  if (!o) return 0
+  if (!o) return { zmian: 0, doWyjasnienia: false }
+  // czy jest co sprawdzać (różnica z ceną pozycji albo z zapamiętaną ceną kanału); decyzja dopiero pod blokadą
+  const cenyDoSprawdzenia = !!opcje.ceny && (rozniceCen(o.lines, opis.lines).length > 0 || (!!flagsOf(o).cenyKanalu && rozniceCen(o.lines, opis.lines, flagsOf(o).cenyKanalu).length > 0))
+  let doWyjasnienia = false
   const nr = tekstOpisu(opis.channelNumber, 100)
   const koszt = kwotaOpisu(opis.shippingCostGross)
   const suma = kwotaOpisu(opis.totalGross)
@@ -298,27 +384,78 @@ export async function zapiszOpisZKanalu(tx: Tx, orderId: string, opis: OpisZKana
   const zmianaKosztu = koszt !== null && o.shippingCostGross !== null && o.shippingCostGross.toFixed(2) !== koszt
   const zmianaSumy = suma !== null && o.totalGross.toFixed(2) !== suma
   let kwoty: { z: string; na: string; kosztZ?: string; kosztNa?: string } | null = null
-  if (zmianaKosztu || zmianaSumy) {
+  const aktor = opcje.actorId ?? 'system:kanal'
+  if (zmianaKosztu || zmianaSumy || cenyDoSprawdzenia) {
     // blokada zamówienia (przy przyjęciu z kanału już wzięta w tej transakcji: ponowne wzięcie przechodzi od razu),
     // potem świeży odczyt: stan sprzed blokady mógł się zmienić (faktura, wpłata, pakowanie)
     await advisoryLock(tx, orderLockKey(o))
     const f = await tx.order.findUniqueOrThrow({
       where: { id: orderId },
-      select: { id: true, status: true, statusBeforeClarify: true, paymentState: true, totalGross: true, parentOrderId: true, blOrderId: true, externalId: true, flags: true, shippingCostGross: true },
+      select: {
+        id: true,
+        status: true,
+        statusBeforeClarify: true,
+        paymentState: true,
+        totalGross: true,
+        parentOrderId: true,
+        blOrderId: true,
+        externalId: true,
+        flags: true,
+        shippingCostGross: true,
+        lines: { select: { id: true, externalLineId: true, unitPriceGross: true, removed: true, qtyRejected: true } },
+      },
     })
     const kosztNa = koszt !== null && f.shippingCostGross !== null && f.shippingCostGross.toFixed(2) !== koszt ? koszt : null
     const sumaNa = suma !== null && f.totalGross.toFixed(2) !== suma ? suma : null
-    if ((kosztNa || sumaNa) && (await kwotyZKanaluOtwarte(tx, f, opcje.platnoscPrzed ?? f.paymentState))) {
+    const cenyNa = opcje.ceny ? rozniceCen(f.lines, opis.lines) : []
+    // jedno sprawdzenie kwot dla wartości, kosztu wysyłki i cen pozycji (inaczej zmiana wartości w tym samym odczycie
+    // mogłaby zamknąć kwoty dla cen i suma pozycji rozjechałaby się z wartością)
+    const otwarte = await kwotyZKanaluOtwarte(tx, f, opcje.platnoscPrzed ?? f.paymentState)
+    if ((kosztNa || sumaNa) && otwarte) {
       if (kosztNa) patch.shippingCostGross = kosztNa
       if (sumaNa) patch.totalGross = sumaNa
       kwoty = { z: f.totalGross.toFixed(2), na: sumaNa ?? f.totalGross.toFixed(2), ...(kosztNa ? { kosztZ: f.shippingCostGross!.toFixed(2), kosztNa } : {}) }
+    }
+    // pozycja z zamiennikiem albo sztukami dosłanymi/zamienionymi niesie cenę dalej (zamiennik, paczka dodatkowa): bez automatu
+    const zRodzina = (ext: string) => f.lines.some((l) => !l.removed && (l.externalLineId.startsWith(`${ext}#`) || (l.externalLineId === ext && l.qtyRejected > 0)))
+    if (cenyNa.length && otwarte && !cenyNa.some((r) => zRodzina(r.pozycja))) {
+      const poExt = new Map(f.lines.map((l) => [l.externalLineId, l]))
+      for (const r of cenyNa) await tx.orderLine.update({ where: { id: poExt.get(r.pozycja)!.id }, data: { unitPriceGross: r.na } })
+      // zapamiętane ceny kanału (z wcześniejszego sygnału) idą razem z ceną pozycji, inaczej następny odczyt przy
+      // zamkniętych kwotach porównałby się ze starą ceną i dał fałszywy sygnał
+      const zapamietane = flagsOf(f).cenyKanalu
+      if (zapamietane) await tx.order.update({ where: { id: orderId }, data: { flags: mergeFlags(f, { cenyKanalu: { ...zapamietane, ...Object.fromEntries(cenyNa.map((r) => [r.pozycja, r.na])) } }) } })
+      await tx.orderEvent.create({ data: { orderId, kind: ZDARZENIE_CENY_Z_KANALU, actorId: aktor, data: { pozycje: cenyNa } } })
+      zmian += cenyNa.length
+    } else if (opcje.ceny === 'wyjasnienie' && f.status !== 'ANULOWANE') {
+      // zamknięte kwoty (albo pozycja z zamiennikiem): ceny bez zmian, różnica z ceną kanału zapamiętaną albo z ceną pozycji
+      const flagi = flagsOf(f)
+      const odniesienie = await cenyOdniesienia(tx, orderId, flagi, f.lines)
+      const inne = rozniceCen(f.lines, opis.lines, odniesienie)
+      if (inne.length) {
+        const cenyKanalu = { ...odniesienie, ...Object.fromEntries(inne.map((r) => [r.pozycja, r.na])) }
+        // zamówienie już wysłane nie wraca do „Do wyjaśnienia” (stare zamówienia z ceną zapisaną inaczej
+        // niż dziś liczy ją adapter szłyby tam hurtem przy każdej nowej rewizji); zostaje wpis w historii i zapamiętana
+        // cena kanału, żeby sygnał nie wracał
+        const etap = f.status === 'DO_WYJASNIENIA' ? (f.statusBeforeClarify ?? 'NOWE') : f.status
+        const poWysylce = etap === 'WYSLANE' || etap === 'ODEBRANE' || etap === 'REKLAMACJA'
+        if (poWysylce) {
+          await tx.order.update({ where: { id: orderId }, data: { flags: mergeFlags(f, { cenyKanalu }) } })
+        } else {
+          const clarified = setClarify(f as unknown as Order, powodZmianyCeny(inne))
+          await tx.order.update({ where: { id: orderId }, data: { ...clarified, flags: mergeFlags({ flags: clarified.flags! }, { cenyKanalu }) } as never })
+          doWyjasnienia = true
+        }
+        await tx.orderEvent.create({ data: { orderId, kind: ZDARZENIE_CENY_W_KANALE_INNEJ, actorId: aktor, data: { pozycje: inne, otwarte, ...(poWysylce ? { poWysylce: true } : {}) } } })
+        zmian++
+      }
     }
   }
   if (Object.keys(patch).length) {
     await tx.order.update({ where: { id: orderId }, data: patch })
     zmian++
   }
-  if (kwoty) await tx.orderEvent.create({ data: { orderId, kind: ZDARZENIE_KWOTY_Z_KANALU, actorId: opcje.actorId ?? 'system:kanal', data: kwoty } })
+  if (kwoty) await tx.orderEvent.create({ data: { orderId, kind: ZDARZENIE_KWOTY_Z_KANALU, actorId: aktor, data: kwoty } })
   const byExt = new Map(opis.lines.map((l) => [l.externalLineId, opisPozycji(l)]))
   for (const l of o.lines) {
     const n = byExt.get(l.externalLineId)
@@ -332,7 +469,68 @@ export async function zapiszOpisZKanalu(tx: Tx, orderId: string, opis: OpisZKana
       zmian++
     }
   }
-  return zmian
+  return { zmian, doWyjasnienia }
+}
+
+// ─── Sposób dostawy z późniejszego odczytu kanału ────────────────
+
+/** Zdarzenie w historii: pusty sposób dostawy uzupełniony odczytem z kanału, przewoźnik dobrany z reguł firmy. */
+export const ZDARZENIE_DOSTAWY_Z_KANALU = 'DOSTAWA_Z_KANALU'
+
+const PREFIKS_NIEZNANEJ_DOSTAWY = 'nieznana metoda dostawy: '
+/** Powód „Do wyjaśnienia”, gdy reguły firmy nie znają sposobu dostawy (albo kanał go nie podał). */
+export const powodNieznanejDostawy = (m: string | null | undefined): string => `${PREFIKS_NIEZNANEJ_DOSTAWY}${m?.trim() || '(brak)'}`
+
+export interface WynikDostawyZKanalu {
+  sposob: string
+  carrier: Carrier
+  /** Status po zmianie (wyjście z „Do wyjaśnienia”, gdy brak dostawy był jedynym powodem). */
+  status: OrderStatus
+}
+
+/**
+ * zamówienie przyjęte z pustym sposobem dostawy (kanał pokazał je w trakcie zapisu, zanim dopisał wysyłkę)
+ * dostaje sposób dostawy z późniejszego odczytu kanału i przewoźnika z reguł firmy, tą samą drogą co przy przyjęciu
+ * (`carrierFor`). Tylko gdy w zamówieniu sposób dostawy jest pusty i przewoźnika nie ma (`BRAK`): przewoźnik wybrany
+ * ręcznie (karta, wyjaśnienie z wyborem, zamówienie ręczne) albo dobrany przy przyjęciu zostaje. Sposób dostawy
+ * zmieniony w kanale z jednej niepustej wartości na inną: bez zmian (jak). Tylko zamówienie główne
+ * przed zbieraniem, nie anulowane, bez przygotowanej ani nadanej przesyłki.
+ * Powód „nieznana metoda dostawy” schodzi; gdy był jedynym powodem, zamówienie wychodzi z „Do wyjaśnienia” do statusu
+ * z płatności (jak `resolveClarification`). Inny powód (wstrzymanie ręczne, automat, niezmapowana oferta) trzyma je dalej.
+ * Sposób nieznany regułom: zapisany, powód z nową nazwą, przewoźnik dalej `BRAK`. Idempotentne (drugi raz: null).
+ * Pod blokadą zamówienia (w transakcji przyjęcia już wziętą: ponowne wzięcie przechodzi od razu).
+ */
+export async function dostawaZKanalu(tx: Tx, orderId: string, sposob: string | null | undefined, actorId: string): Promise<WynikDostawyZKanalu | null> {
+  const nowy = tekstOpisu(sposob, 500)
+  if (!nowy) return null
+  const wstepnie = await tx.order.findUnique({ where: { id: orderId }, select: { organizationId: true, channel: true, channelAccountId: true, externalId: true, deliveryMethod: true, carrier: true } })
+  if (!wstepnie || tekstOpisu(wstepnie.deliveryMethod) || (wstepnie.carrier !== null && wstepnie.carrier !== 'BRAK')) return null
+  await advisoryLock(tx, orderLockKey(wstepnie))
+  const o = await tx.order.findUniqueOrThrow({ where: { id: orderId } })
+  if (tekstOpisu(o.deliveryMethod) || (o.carrier !== null && o.carrier !== 'BRAK')) return null
+  if (o.parentOrderId || o.externalId.includes('#') || flagsOf(o).przewoznikRecznie) return null
+  const etap = o.status === 'DO_WYJASNIENIA' ? (o.statusBeforeClarify ?? 'NOWE') : o.status
+  if (o.status === 'ANULOWANE' || !BEFORE_PICKING.includes(etap)) return null
+  const [przygotowane, przesylki] = await Promise.all([tx.preparedShipment.count({ where: { orderId } }), tx.shipment.count({ where: { orderId } })])
+  if (przygotowane + przesylki > 0) return null
+  const wybor = carrierFor(o.channel, nowy, await loadCarrierRules(tx))
+  const reszta = clarifyReasons(flagsOf(o)).filter((r) => !r.startsWith(PREFIKS_NIEZNANEJ_DOSTAWY))
+  const powody = wybor.carrier === 'BRAK' ? [...reszta, powodNieznanejDostawy(nowy)] : reszta
+  const wyjscie = o.status === 'DO_WYJASNIENIA' && powody.length === 0
+  const status: OrderStatus = wyjscie ? recomputeStatus(o) : o.status
+  await tx.order.update({
+    where: { id: orderId },
+    data: {
+      deliveryMethod: nowy,
+      carrier: wybor.carrier,
+      shippingModule: wybor.shippingModule,
+      // powody tylko w „Do wyjaśnienia” (zamówienie wyjaśnione wcześniej bez przewoźnika nie dostaje powodu na ekranie)
+      ...(o.status === 'DO_WYJASNIENIA' ? { flags: mergeFlags(o, withReasons(powody)) } : {}),
+      ...(wyjscie ? { status, statusBeforeClarify: null } : {}),
+    },
+  })
+  await tx.orderEvent.create({ data: { orderId, kind: ZDARZENIE_DOSTAWY_Z_KANALU, actorId, data: { sposob: nowy, przewoznik: wybor.carrier, modul: wybor.shippingModule, ...(wyjscie ? { zStatusu: o.status, status } : {}) } } })
+  return { sposob: nowy, carrier: wybor.carrier, status }
 }
 
 function partIds(cat: Map<string, CatalogEntry>, productIds: Iterable<string | null>): string[] {
@@ -369,10 +567,17 @@ export async function ingestOrder(db: Db, input: IncomingOrder, ctx: Ctx = {}): 
       include: { lines: true },
     })
     if (existing && ctx.onlyNew) throw new OrderExistsError(existing.id, existing.status)
-    const res = existing ? await updateOrder(tx, existing, input, now, wh) : await createOrder(tx, input, now, wh)
-    // płatność sprzed tej rewizji — wpłata przychodząca razem z poprawioną kwotą nie zamyka kwoty
-    if (existing && res.orderId && res.outcome !== 'PRZESTARZALE')
-      await zapiszOpisZKanalu(tx, res.orderId, opisZWejscia(input), { platnoscPrzed: existing.paymentState, actorId: `system:${input.source}` })
+    let res = existing ? await updateOrder(tx, existing, input, now, wh) : await createOrder(tx, input, now, wh)
+    // płatność sprzed tej rewizji — wpłata przychodząca razem z poprawioną kwotą nie zamyka kwoty.
+    // ceny pozycji tą samą drogą; przy zamkniętych kwotach zmiana ceny w kanale = „Do wyjaśnienia”.
+    if (existing && res.orderId && res.outcome !== 'PRZESTARZALE') {
+      const id = res.orderId
+      const op = await zapiszOpisICeny(tx, id, opisZWejscia(input), { platnoscPrzed: existing.paymentState, actorId: `system:${input.source}`, ceny: 'wyjasnienie' })
+      if (op.doWyjasnienia) res = { ...res, status: 'DO_WYJASNIENIA' }
+      // pierwszy odczyt bez sposobu dostawy (zamówienie w trakcie zapisu w kanale) — uzupełnia go ta rewizja
+      const d = await dostawaZKanalu(tx, id, input.deliveryMethod, `system:${input.source}`)
+      if (d) res = { ...res, status: d.status }
+    }
     await tx.inboundEvent.update({ where: { id: inboundId }, data: { processedAt: now, outcome: res.outcome } })
     if (res.orderId) await hintAllocate(tx, res.orderId, now)
     // dane klienta zapisuje osobne zadanie (sam Order.id, kanał czytany poza tą transakcją). Nowe zamówienie
@@ -409,7 +614,7 @@ async function createOrder(tx: Tx, input: IncomingOrder, now: Date, wh: string):
       : carrierFor(input.channel, input.deliveryMethod, await loadCarrierRules(tx))
   const reasons: string[] = []
   if (lines.some((l) => !l.productId || !cat.has(l.productId))) reasons.push('niezmapowana oferta')
-  if (carrier === 'BRAK') reasons.push(`nieznana metoda dostawy: ${input.deliveryMethod ?? '(brak)'}`)
+  if (carrier === 'BRAK') reasons.push(powodNieznanejDostawy(input.deliveryMethod))
   const natural: OrderStatus = paid ? 'DO_REALIZACJI' : 'NOWE'
   const status: OrderStatus = input.cancelled ? 'ANULOWANE' : reasons.length ? 'DO_WYJASNIENIA' : initialStatus(paid, carrier)
   const failedOnline = failedOnlineAfter(false, input)
@@ -519,7 +724,8 @@ async function updateOrder(
   // pozycji, cofnięcie statusu). Anulowane przez obsługę albo przez inny tor i płatność z innego źródła zostają bez
   // zmian (alert „płatność po anulowaniu”). Po fakturze bez automatu — tylko alert.
   if (input.cancelled === false && order.status === 'ANULOWANE' && order.cancelReason === 'CANCELLED' && (await cancelledBy(tx, order.id)) === `system:${input.source}`) {
-    const fresh = await reactivateInTx(tx, book, order, input, cat, `system:${input.source}`, now)
+    // płatność zmieniona na karcie przed anulowaniem w kanale: przywrócenie w kanale jej nie cofa
+    const fresh = await reactivateInTx(tx, book, order, { ...input, paymentState: platnoscWgKarty(order, input.paymentState) }, cat, `system:${input.source}`, now)
     if (!fresh) {
       await tx.order.update({ where: { id: order.id }, data: base })
       return { orderId: order.id, outcome: 'ZMIANA', reservedUnits: 0, shortUnits: 0, status: 'ANULOWANE' }
@@ -563,8 +769,9 @@ async function updateOrder(
   const stage = order.status === 'DO_WYJASNIENIA' ? (order.statusBeforeClarify ?? 'NOWE') : order.status
   // pozycje zmienione z karty zamówienia. Kanał o tym nie wie, więc porównanie idzie ze zdjęciem kanału sprzed
   // edycji, nie z pozycjami w Kompletorze: bez zmiany w kanale edycja zostaje, ze zmianą — decyzja obsługi, bez nadpisania.
-  // Zdjęcie i `zmianyWKanale` porównują tylko produkt i ilość: sama zmiana ceny w kanale po edycji
-  // z karty nie nadpisuje ceny w Kompletorze i nie wysyła zamówienia do „Do wyjaśnienia” (różnica przechodzi bez sygnału).
+  // Zdjęcie i `zmianyWKanale` porównują tylko produkt i ilość. Sama zmiana ceny w kanale po edycji
+  // z karty nie nadpisuje ceny w Kompletorze; sygnał daje porównanie cen po `updateOrder` (`zapiszOpisICeny`
+  // z cenami kanału sprzed edycji, `cenyKanalu`): zamówienie idzie do „Do wyjaśnienia”.
   const zdjecie = flagsOf(order).edytowaneLokalnie ? flagsOf(order).pozycjeKanalu : undefined
   if (zdjecie && order.status !== 'ANULOWANE') {
     const wKanale = zmianyWKanale(zdjecie, incoming)
@@ -680,7 +887,9 @@ async function updateOrder(
 
   // Płatność (T2, 3.3 „płatność po zwolnieniu”).
   let status = (patch.status ?? order.status) as OrderStatus
-  if (isPaid(input.paymentState) && !isPaid(order.paymentState)) {
+  // pobranie cofnięte na karcie: kanał dalej mówi „pobranie”, a zmiana z karty zostaje (wpłata z kanału przechodzi)
+  const pobranieCofnieteNaKarcie = input.paymentState === 'COD' && flagsOf(order).platnoscZKarty === 'UNPAID'
+  if (isPaid(input.paymentState) && !isPaid(order.paymentState) && !pobranieCofnieteNaKarcie) {
     // zamówienie zmienione z karty przed wpłatą. Klient zapłacił w kanale kwotę kanału, nie
     // kwotę po edycji, więc podstawą rozliczenia (dopłata / zwrot różnicy) jest kwota z kanału.
     if (input.paymentState !== 'COD') {
@@ -872,7 +1081,7 @@ async function reactivateInTx(
   const reasons: string[] = []
   if (short > 0) reasons.push('przywrócone w kanale po anulowaniu: brak towaru')
   if (order.lines.some((l) => !l.removed && !l.productId)) reasons.push('niezmapowana oferta')
-  if (order.carrier === 'BRAK') reasons.push(`nieznana metoda dostawy: ${order.deliveryMethod ?? '(brak)'}`)
+  if (order.carrier === 'BRAK') reasons.push(powodNieznanejDostawy(order.deliveryMethod))
   const upd: Partial<Order> = {
     status: reasons.length ? 'DO_WYJASNIENIA' : natural,
     statusBeforeClarify: reasons.length ? natural : null,
@@ -1005,6 +1214,7 @@ async function applyPaymentInTx(
   cat: Map<string, CatalogEntry>,
   actorId: string,
   now: Date,
+  eventKind = 'OPLACONE',
 ): Promise<OrderStatus> {
   const order = await tx.order.findUniqueOrThrow({ where: { id: orderId }, include: { lines: true } })
   if (order.status === 'ANULOWANE' && order.cancelReason === 'EXPIRED_UNPAID') {
@@ -1041,7 +1251,7 @@ async function applyPaymentInTx(
   if (current.status === 'NOWE') upd.status = 'DO_REALIZACJI'
   if (current.status === 'DO_WYJASNIENIA' && current.statusBeforeClarify === 'NOWE') upd.statusBeforeClarify = 'DO_REALIZACJI'
   await tx.order.update({ where: { id: order.id }, data: { ...upd, flags: mergeFlags(current, { niedoplata: false }) } as never })
-  await tx.orderEvent.create({ data: { orderId, kind: 'OPLACONE', actorId, data: { payment } } })
+  await tx.orderEvent.create({ data: { orderId, kind: eventKind, actorId, data: { payment } } })
   return (upd.status ?? current.status) as OrderStatus
 }
 
@@ -1096,12 +1306,61 @@ export async function markPaid(db: Db, orderId: string, payment: 'PAID' | 'COD' 
   return runTx(db, async (tx) => {
     const order = await lockOrderById(tx, orderId)
     if (isPaid(order.paymentState)) return order.status
-    const { book, cat } = await bookForOrder(tx, orderId, wh)
-    const st = await applyPaymentInTx(tx, book, orderId, payment, cat, ctx.actorId ?? 'system:platnosc', now)
-    await book.flush(tx, now)
-    await hintAllocate(tx, orderId, now)
-    return st
+    return platnoscPodBlokada(tx, orderId, payment, { ...ctx, now, warehouseId: wh })
   })
+}
+
+/**
+ * Płatność z kanału po uwzględnieniu zmiany z karty zamówienia (znacznik `platnoscZKarty`): sklep dalej podaje płatność
+ * sprzed zmiany, więc pobranie ustawione na karcie zostaje przy „nieopłacone” z kanału, a cofnięte na karcie zostaje
+ * przy „pobranie” z kanału. Wpłata z kanału (opłacone, częściowo) zawsze przechodzi.
+ */
+export function platnoscWgKarty(order: Pick<Order, 'flags'>, zKanalu: PaymentState): PaymentState {
+  const k = flagsOf(order).platnoscZKarty
+  if (k === 'COD' && zKanalu === 'UNPAID') return 'COD'
+  if (k === 'UNPAID' && zKanalu === 'COD') return 'UNPAID'
+  return zKanalu
+}
+
+/** Rodzaje zdarzeń zmiany płatności z karty: pobranie nie jest wpłatą, więc bez zdarzenia „opłacono” dla automatów. */
+export const ZDARZENIE_NA_POBRANIE = 'PLATNOSC_NA_POBRANIE'
+export const ZDARZENIE_POBRANIE_COFNIETE = 'PLATNOSC_POBRANIE_COFNIETE'
+
+/**
+ * Płatność w transakcji wołającego, gdy zamówienie jest już pod blokadą (`lockOrder`): rezerwacja stanów i przejście
+ * jak przy wpłacie (`applyPaymentInTx`). Wołający sprawdza wcześniej, że zamówienie nie jest opłacone.
+ */
+export async function platnoscPodBlokada(tx: Tx, orderId: string, payment: 'PAID' | 'COD', ctx: Ctx & { zdarzenie?: string } = {}): Promise<OrderStatus> {
+  const now = ctx.now ?? new Date()
+  const { book, cat } = await bookForOrder(tx, orderId, ctx.warehouseId ?? DEFAULT_WAREHOUSE)
+  const st = await applyPaymentInTx(tx, book, orderId, payment, cat, ctx.actorId ?? 'system:platnosc', now, ctx.zdarzenie)
+  await book.flush(tx, now)
+  await hintAllocate(tx, orderId, now)
+  return st
+}
+
+/**
+ * Pobranie z powrotem na nieopłacone (zamówienie pod blokadą, za pobraniem, przed zbieraniem): status wraca do „Nowe”,
+ * terminy płatności (przypomnienie, anulowanie bez wpłaty) liczą się od chwili zmiany, rezerwacje zostają.
+ * Znacznik `platnoscZKarty: 'UNPAID'` trzyma zmianę przy kolejnym odczycie kanału, który dalej mówi „pobranie”.
+ */
+export async function cofnijPobraniePodBlokada(tx: Tx, order: Order, ctx: Ctx = {}): Promise<OrderStatus> {
+  const now = ctx.now ?? new Date()
+  if (order.paymentState !== 'COD') throw new Error('cofnięcie pobrania: zamówienie nie jest za pobraniem')
+  const terms = termsFor(now, await getPolicy(tx))
+  const upd: Partial<Order> = {
+    paymentState: 'UNPAID',
+    termsSeasonMode: terms.seasonMode,
+    remindAt: terms.remindAt,
+    reminderSentAt: null,
+    reservationDeadline: terms.reservationDeadline,
+    stockReleaseAt: null,
+  }
+  if (order.status === 'DO_REALIZACJI') upd.status = 'NOWE'
+  if (order.status === 'DO_WYJASNIENIA' && order.statusBeforeClarify === 'DO_REALIZACJI') upd.statusBeforeClarify = 'NOWE'
+  await tx.order.update({ where: { id: order.id }, data: { ...upd, flags: mergeFlags(order, { platnoscZKarty: 'UNPAID', nieudanaPlatnoscOnline: undefined }) } as never })
+  await tx.orderEvent.create({ data: { orderId: order.id, kind: ZDARZENIE_POBRANIE_COFNIETE, actorId: ctx.actorId ?? 'system:platnosc', data: { payment: 'UNPAID' } } })
+  return (upd.status ?? order.status) as OrderStatus
 }
 
 /**

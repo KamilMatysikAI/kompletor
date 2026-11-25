@@ -1,6 +1,6 @@
 // czyste części listy zamówień v2 — liczniki panelu statusów i filtry z adresu.
 import { describe, expect, it } from 'vitest'
-import { filtryZ, ileFiltrow, nazwaWidoku, widokZ, zlozLiczniki } from './zamowienia-lista'
+import { filtryZ, ileFiltrow, nazwaWidoku, warunkiNumeru, widokZ, zlozLiczniki } from './zamowienia-lista'
 
 describe('zlozLiczniki', () => {
   it('grupy etapu dostają liczniki per przewoźnik, null liczy się jako „bez przewoźnika”', () => {
@@ -38,5 +38,31 @@ describe('filtryZ', () => {
     expect(widokZ('do_spakowania')).toBe('do_spakowania')
     expect(nazwaWidoku('nieoplacone')).toBe('Nieopłacone z rezerwacją')
     expect(nazwaWidoku('do_realizacji')).toBe('Do realizacji')
+  })
+})
+
+describe('szukanie po obu numerach (numer na liście i na karcie oraz numer w kanale)', () => {
+  it('numer z kanału i numer zamówienia BL', () => {
+    expect(warunkiNumeru('165103969')).toEqual([
+      { externalId: { contains: '165103969', mode: 'insensitive' } },
+      { channelNumber: { contains: '165103969', mode: 'insensitive' } },
+      { blOrderId: 165103969 },
+    ])
+    // numer Empiku (z literą) nie jest numerem BL
+    expect(warunkiNumeru(' 40102452771670-A ')).toEqual([
+      { externalId: { contains: '40102452771670-A', mode: 'insensitive' } },
+      { channelNumber: { contains: '40102452771670-A', mode: 'insensitive' } },
+    ])
+  })
+
+  it('numer z przedrostkiem kanału przepisany z listy', () => {
+    expect(warunkiNumeru('EMP 165103969')).toContainEqual({ blOrderId: 165103969 })
+    expect(warunkiNumeru('EMP 165103969')).toContainEqual({ externalId: { contains: 'EMP 165103969', mode: 'insensitive' } })
+  })
+
+  it('liczba spoza zakresu Int, zero i pusta fraza nie trafiają w numer BL', () => {
+    expect(warunkiNumeru('9999999999').some((w) => 'blOrderId' in w)).toBe(false)
+    expect(warunkiNumeru('0').some((w) => 'blOrderId' in w)).toBe(false)
+    expect(warunkiNumeru('   ')).toEqual([])
   })
 })

@@ -4,6 +4,7 @@
 import { useState, useTransition } from 'react'
 import { Przycisk, useToast, Wybor } from '@/app/ui'
 import { przygotujPrzesylke } from './akcje'
+import { ogloszPrzeliczeniePrzesylki } from '../../_komponenty/przeliczenie-przesylki-zdarzenie'
 
 export function PrzygotujPrzesylke({ orderId, gabaryty, ponownie }: { orderId: string; gabaryty: { kod: string; nazwa: string }[]; ponownie: boolean }) {
   const [gabaryt, setGabaryt] = useState('')
@@ -13,7 +14,11 @@ export function PrzygotujPrzesylke({ orderId, gabaryty, ponownie }: { orderId: s
     start(async () => {
       const { blad } = await przygotujPrzesylke(orderId, gabaryt || null)
       if (blad) toast.blad(blad)
-      else toast.sukces('Policzono przesyłkę.')
+      else {
+        toast.sukces('Policzono przesyłkę.')
+        // blok nadania obok bierze świeże ostrzeżenia do potwierdzenia bez F5
+        ogloszPrzeliczeniePrzesylki({ orderId })
+      }
     })
   return (
     <div className="kz-wiersz kz-odstep-gora">

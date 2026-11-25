@@ -521,6 +521,8 @@ export const POLE_LABEL: Record<string, string> = {
   location: 'lokalizacja',
   sklad: 'skład zestawu',
   zdjecia: 'kolejność zdjęć',
+  kategoria: 'kategoria', // (wartość = ścieżka w drzewie kategorii)
+  active: 'produkt', // wyłączenie / włączenie (wartość: włączony / wyłączony)
 }
 
 export { NO_STOCK_NOTE }

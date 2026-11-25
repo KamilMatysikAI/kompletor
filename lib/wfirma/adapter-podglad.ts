@@ -23,7 +23,7 @@ export class FakturyPodglad implements FakturyWfirma {
   private readonly wz: WfirmaWzReader
 
   constructor(
-    private readonly wf: Pick<WfirmaReadOnly, 'call'>,
+    protected readonly wf: Pick<WfirmaReadOnly, 'call'>,
     private readonly db: Pick<PrismaClient, 'product'>,
   ) {
     this.wz = new WfirmaWzReader(wf)

@@ -143,12 +143,14 @@ describe('drugie konto przewoźnika z panelu', () => {
 
     // przeniesienie na „Salony Empik”: zostaje tylko konto, nadawanie wyłączone, wynik mówi, którą regułę przeniesiono
     const wynik = await zapiszRegulyPrzewoznikow(a, registry, lista.map((x) => (x.id === r.id ? { ...wej(x), konto: 'SALONYEMPIK' } : wej(x))), 'u-a')
-    expect(wynik.przeniesione).toEqual([{ nr: nr + 1, konto: 'SALONYEMPIK', adapterKey: modul }])
+    // format etykiety przechodzi do nowego konta (nie miało go), FID-y z umowy konta nie, komunikat to wymienia
+    expect(wynik.przeniesione).toEqual([{ nr: nr + 1, konto: 'SALONYEMPIK', adapterKey: modul, nadawanieWylaczone: true, przeniesionePola: ['format strony etykiety'], doUzupelnienia: ['FID konta głównego do nagłówka x-dpd-fid', 'FID płatnika przesyłek'] }])
     expect((await a.carrierRule.findUniqueOrThrow({ where: { id: r.id } })).config).toEqual({ sekretyKonta: 'SALONYEMPIK' })
-    // karta konta „Salony Empik” nie pokazuje FID konta głównego; nadawanie do włączenia
+    // karta konta „Salony Empik” nie pokazuje FID-ów konta głównego, format etykiety przeszedł; nadawanie do włączenia
     const karta = (await kontaPrzewoznikow(a, registry)).find((x) => x.id === 'dpd~SALONYEMPIK')!
     expect(karta.reguly).toEqual([expect.objectContaining({ id: r.id, nadawanie: false })])
-    for (const k of ['payerFid', 'masterFid', 'labelFormat']) expect(karta.pola.find((p) => p.key === k)?.wartosc ?? '').toBe('')
+    for (const k of ['payerFid', 'masterFid']) expect(karta.pola.find((p) => p.key === k)?.wartosc ?? '').toBe('')
+    expect(karta.pola.find((p) => p.key === 'labelFormat')?.wartosc).toBe('A4')
     // ponowny zapis tej samej listy: bez zmian, nic nie przeniesione
     expect(await zapiszRegulyPrzewoznikow(a, registry, (await regulyPrzewoznikow(a, registry)).map(wej), 'u-a')).toEqual({ reguly: lista.length, zmienione: false, przeniesione: [] })
     // ustawienie spoza panelu (adres serwera) przy przeniesieniu z powrotem zostaje
@@ -192,8 +194,16 @@ describe('drugie konto przewoźnika z panelu', () => {
   it('klucze z konfiguracji serwera (self-host) to stan „serwer”; klucz z sufiksem w bazie tworzy konto; test pod blokadą', async () => {
     const env = { ...ENV, DPD_LOGIN: 'login-z-env', DPD_PASSWORD: 'haslo-z-env', DPD_MYPUDO_KEY: 'klucz' }
     const dpd = (await kontaPrzewoznikow(a, registry, { env, envFallback: true })).find((x) => x.id === 'dpd')!
-    expect(dpd.sekrety.map((s) => s.zrodlo)).toEqual(['serwer', 'serwer', 'serwer'])
-    expect(dpd.sekrety.every((s) => s.ustawiony)).toBe(true)
+    // klucze z env = „serwer”; opcjonalne dane DPDInfoServices (moduł DPD na liście śledzenia) bez wpisu = brak źródła
+    expect(dpd.sekrety.map((s) => [s.name, s.zrodlo, s.wymagany])).toEqual([
+      ['DPD_LOGIN', 'serwer', true],
+      ['DPD_PASSWORD', 'serwer', true],
+      ['DPD_MYPUDO_KEY', 'serwer', false],
+      ['DPD_SLEDZENIE_LOGIN', null, false],
+      ['DPD_SLEDZENIE_HASLO', null, false],
+    ])
+    expect(dpd.sekrety.filter((s) => s.wymagany).every((s) => s.ustawiony)).toBe(true)
+    expect(dpd.sekrety.filter((s) => s.zrodlo === 'serwer').every((s) => s.ustawiony)).toBe(true)
     // hosting (bez fallbacku na env): brak
     expect((await kontaPrzewoznikow(a, registry, { env, envFallback: false })).find((x) => x.id === 'dpd')!.sekrety.every((s) => s.zrodlo === null)).toBe(true)
     // klucz zapisany w panelu wygrywa nazwą źródła

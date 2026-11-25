@@ -14,6 +14,7 @@ import { packOrder } from '@/lib/rdzen/rozchod'
 import { ingestOrder } from '@/lib/rdzen/zamowienia'
 import { FakturyWfirmaZapis } from '@/lib/wfirma/adapter-zapis'
 import { idExternalRoboczej, idExternalStarejRoboczej, sprawdzRobocza, staraRoboczaZamowienia, usunRobocza, wystawRobocza, type ZaleznosciRoboczej } from '@/lib/wfirma/faktura-robocza'
+import { dzienWystawienia } from '@/lib/wfirma/platnosci'
 import { WfirmaReadOnly } from '@/lib/zrodla/wfirma'
 import { WfirmaZapis } from '@/lib/zrodla/wfirma-zapis'
 import { fakturaRoboczaCli } from '@/scripts/faktura-robocza'
@@ -109,7 +110,11 @@ describe('faktura robocza: treść jak prawdziwa, bez zmian w Kompletorze', () =
     const tea = await product(db, 'HERB-BAJT', 5, { wfirmaGoodId: '7102' })
     const id = await spakowane([{ productId: tea, qty: 2 }], { totalGross: 32.99 })
     const w = new WfirmaHttpAtrapa()
+    const przed = dzienWystawienia(new Date())
     await runWfirmaQueue(db, { faktury: prawdziwyAdapter(w) }, { now: min(1), tylkoPraca: true })
+    // zamówienie opłacone (BLIK) idzie jako opłacone: kwota zapłacona i termin płatności = dzień wystawienia
+    const dzien = (JSON.parse(w.ciala[0] ?? '{}') as { invoices?: { invoice?: { paymentdate?: string } } }).invoices?.invoice?.paymentdate
+    expect([przed, dzienWystawienia(new Date())]).toContain(dzien)
     expect(w.ciala).toEqual([
       JSON.stringify({
         invoices: {
@@ -118,6 +123,8 @@ describe('faktura robocza: treść jak prawdziwa, bez zmian w Kompletorze', () =
             price_type: 'brutto',
             paymentmethod: 'transfer',
             id_external: `${id}/1/1`,
+            alreadypaid_initial: '32.99',
+            paymentdate: dzien,
             series: { id: '9084290' },
             contractor: { name: 'Jan Testowy', tax_id_type: 'none', street: 'Testowa 1', zip: '00-001', city: 'Testowo', country: 'PL' },
             invoicecontents: {

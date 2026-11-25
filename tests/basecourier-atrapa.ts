@@ -42,10 +42,11 @@ const isRecord = (v: unknown): v is Record<string, unknown> => !!v && typeof v =
  * `listaJakDokumentacja` = `data[].Order` na liście jako tablica (dokumentacja), domyślnie obiekt (odczyt konta);
  * `etykietaJakDokumentacja` = `getWaybill` z `data` jako obiekt z kluczem "0" i `labels`, domyślnie tablica (wtyczka);
  * `obetnijZawartosc` = API obcina „Zawartość przesyłki” do tylu znaków; `bezZawartosci` = szczegóły bez
- * `package_content`.
+ * `package_content`. `terminyPodjazdu` = dni z `getPickupDateOptions` (domyślnie brak dni); `odrzucPodjazdNa` = dzień
+ * podjazdu, który utworzenie odrzuca błędem walidacji pola `pickup_date`.
  */
 export function bcAtrapa(
-  o: { numerOdRazu?: boolean; szczegolyBezNumeru?: boolean; listaJakDokumentacja?: boolean; etykietaJakDokumentacja?: boolean; obetnijZawartosc?: number; bezZawartosci?: boolean } = {},
+  o: { numerOdRazu?: boolean; szczegolyBezNumeru?: boolean; listaJakDokumentacja?: boolean; etykietaJakDokumentacja?: boolean; obetnijZawartosc?: number; bezZawartosci?: boolean; terminyPodjazdu?: string[]; odrzucPodjazdNa?: string } = {},
 ) {
   const calls: BcCall[] = []
   const zamowienia: ZamowienieBc[] = []
@@ -77,6 +78,7 @@ export function bcAtrapa(
     if (!ord['taker_postal']) pola['taker_postal'] = [`Kod pocztowy jest wymagany (${String(ord['taker_name'] ?? '')})`]
     if (typeof ord['taker_point'] !== 'string') pola['taker_point'] = ['Pole wymagane']
     else if (String(cs['courier_code']).startsWith('paczkomaty') && !ord['taker_point']) pola['taker_point'] = ['Wybierz paczkomat']
+    if (o.odrzucPodjazdNa && ord['pickup_date'] === o.odrzucPodjazdNa) pola['pickup_date'] = ['Niedostępna data odbioru']
     if (Object.keys(pola).length || Object.keys(polaCs).length)
       return odpowiedz({ success: false, message: `Błąd walidacji dla ${String(ord['taker_email'] ?? '')}`, data: { validationErrors: { ...(Object.keys(polaCs).length ? { CourierSearch: polaCs } : {}), ...(Object.keys(pola).length ? { Cart: [{ Order: pola }] } : {}) } } })
     const z: ZamowienieBc = { id: nastepne++, waybill_no: o.numerOdRazu === false ? '' : `6800${String(nastepne).padStart(10, '0')}`, package_content: String(ord['package_content'] ?? '').slice(0, o.obetnijZawartosc ?? Infinity), status: 'created', Order: ord, CourierSearch: cs }
@@ -140,6 +142,9 @@ export function bcAtrapa(
         }
         break
       }
+      case 'getPickupDateOptions.json':
+        res = odpowiedz({ success: true, message: '', data: { dates: Object.fromEntries((o.terminyPodjazdu ?? []).map((d) => [d, d])), hours: Object.fromEntries(Array.from({ length: 24 }, (_, i) => [String(i).padStart(2, '0'), String(i).padStart(2, '0')])), minutes: { '00': '00', '15': '15', '30': '30', '45': '45' }, start_default_hour: 8, end_default_hour: 16 } })
+        break
       case 'getProfile.json':
         res = odpowiedz({ success: true, data: { email: BC_LOGIN } })
         break

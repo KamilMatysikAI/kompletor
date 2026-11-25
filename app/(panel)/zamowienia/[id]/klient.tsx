@@ -282,7 +282,7 @@ function SposobWysylki({ d }: { d: DaneKarty }) {
         )}
       </Para>
       <Para e="Koszt wysyłki">
-        <span className="num">{koszt === null ? <span className="muted">kanał nie podał</span> : money(koszt)}</span>
+        <span className="num">{koszt === null ? <span className="muted">kanał nie podał</span> : money(koszt, d.waluta)}</span>
       </Para>
     </dl>
   )

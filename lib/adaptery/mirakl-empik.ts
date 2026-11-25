@@ -44,6 +44,7 @@ import {
   readRecipientText,
   type RecipientAddress,
   type RecipientInvoice,
+  type RecipientPickupPoint,
   type RecipientProblem,
   type RecipientReader,
   UnreadableDataError,
@@ -118,6 +119,9 @@ export const EMPIK_BEHAVIOR: ChannelBehavior = {
   stockModel: 'self-decrementing',
   channelStatuses: EMPIK_STATUSY_KANALU,
   defaultStatusMap: { WYSLANE: 'SHIPPED' },
+  // Mirakl: najpierw numer nadania (OR23), potem „wysłane” (OR24, „Validate the shipment of an order in the
+  // SHIPPING status”); host trzyma status, dopóki numer nadania tego zamówienia czeka w kolejce
+  trackingBeforeStatus: true,
 }
 
 export const MIRAKL_EMPIK_ZAPIS_MANIFEST: AdapterManifest = {
@@ -138,7 +142,7 @@ export const MIRAKL_EMPIK_ZAPIS_MANIFEST: AdapterManifest = {
       key: 'kodyPrzewoznikow',
       type: 'string',
       required: false,
-      description: 'kody przewoźników z listy Empiku jako JSON, np. {"DPD":"dpd","DPD_EMPIK":"dpd-salony"}; przewoźnik bez kodu idzie z nazwą i adresem śledzenia',
+      description: 'kody przewoźników z listy Empiku jako JSON, tylko gdy inne niż domyślne (paczkomaty: paczkomatyinpost, DPD i salon Empik: dpd, InPost kurier: inpostpaczkakurierska, GLS: gls, Orlen: ORLEN, Poczta: pocztex), np. {"DPD":"dpd"}; przewoźnik bez kodu idzie z nazwą i adresem śledzenia',
       pattern: /^\{[\s\S]{0,1000}\}$/,
     },
     { key: 'magazynEmpik', type: 'string', required: false, description: 'kod magazynu w Empiku dla stanów (puste = stan całej oferty)', pattern: /^[A-Za-z0-9_-]{1,40}$/ },
@@ -230,16 +234,67 @@ const ALPHA3: Record<string, string> = { POL: 'PL', DEU: 'DE', CZE: 'CZ', SVK: '
 const countryOf = (v: string | null) => (v && ALPHA3[v.toUpperCase()] ? ALPHA3[v.toUpperCase()]! : v)
 
 /**
- * Zamówienie OR11 → odbiorca. Kształt adresów (`customer.shipping_address`, `billing_address`) nie jest potwierdzony
- * na żywo: każde pole czytane osobno, brak = null. Mirakl może ukrywać adres przed przyjęciem zamówienia: brak adresu
- * dostawy = `adres_niedostepny_w_kanale`, nie błąd. E-mail: `customer_notification_email` (adres zastępczy Mirakla),
- * gdy jest. NIP-u OR11 nie podaje, punktu odbioru nie czytamy (do potwierdzenia).
+ * Kod punktu odbioru z OR11. Kształt potwierdzony odczytem na żywym koncie (20.11.2026, 15 zamówień): Empik podaje kod
+ * w `order_additional_fields[]` jako pole `code: "delivery-point-name"` z `value` (paczkomat InPost np. „POZ01M”, salon
+ * Empik kod punktu DPD Pickup np. „PL12345”). `shipping_pudo_id` jest pusty. Przy dostawie do punktu
+ * `customer.shipping_address` opisuje PUNKT, nie klienta: `lastname` = kod punktu, bez `firstname`, ulica, kod i
+ * miasto punktu, `additional_info` = opis punktu (tylko paczkomat), `phone` = telefon klienta. Klient (imię, nazwisko,
+ * adres) jest w `customer.firstname/lastname` i `customer.billing_address`.
+ */
+export const EMPIK_POLE_PUNKTU = 'delivery-point-name'
+/** Prawdziwy e-mail klienta (`order_additional_fields`); `customer_notification_email` to adres zastępczy Mirakla. */
+export const EMPIK_POLE_EMAIL = 'customer-email'
+const EMAIL_RE = /^[^\s@]{1,64}@[^\s@]{1,190}\.[^\s@]{2,}$/
+
+/** Wartość pola dodatkowego zamówienia po `code` (tekst albo null); zły typ listy albo wartości = UnreadableDataError. */
+function poleDodatkowe(raw: Record<string, unknown>, code: string): string | null {
+  const pola = raw['order_additional_fields']
+  if (pola === undefined || pola === null) return null
+  if (!Array.isArray(pola)) throw new UnreadableDataError('nieczytelne pole odbiorcy: order_additional_fields')
+  const f = pola.find((x): x is Record<string, unknown> => !!x && typeof x === 'object' && (x as Record<string, unknown>)['code'] === code)
+  return f ? readRecipientText(f['value'], `order_additional_fields.${code}`) : null
+}
+/** Sposoby dostawy Empiku do punktu (kod OR11 `shipping_type_code`); etykieta jako zapas, gdy kodu brak. */
+const DOSTAWA_DO_PUNKTU_KODY = new Set(['PACKSTATION', 'STORE'])
+const DOSTAWA_DO_PUNKTU_ETYKIETA = /paczkomat|salon/i
+/** Kod punktu do przewoźnika: litery, cyfry, „-” i „_”; inny = nie do użycia (nie zgadujemy). */
+const KOD_PUNKTU_RE = /^[A-Za-z0-9_-]{2,40}$/
+
+export function miraklWymagaPunktu(raw: Record<string, unknown>): boolean {
+  const code = str(raw['shipping_type_code'])
+  if (code) return DOSTAWA_DO_PUNKTU_KODY.has(code.toUpperCase())
+  const label = str(raw['shipping_type_label'])
+  return !!label && DOSTAWA_DO_PUNKTU_ETYKIETA.test(label)
+}
+
+/** Sam kod punktu z pola `delivery-point-name` (bez nazwy i adresu); kod spoza wzorca = null. */
+export function miraklKodPunktu(raw: Record<string, unknown>): string | null {
+  const kod = poleDodatkowe(raw, EMPIK_POLE_PUNKTU)
+  return kod && KOD_PUNKTU_RE.test(kod) ? kod : null
+}
+
+// OR11 podaje kraj zwykle tylko nazwą (`country`, np. „Polska”), `country_iso_code` bywa pusty
+const KRAJ_Z_NAZWY: Record<string, string> = { polska: 'PL', poland: 'PL' }
+const krajZNazwy = (v: string | null) => (v ? (KRAJ_Z_NAZWY[v.trim().toLowerCase()] ?? null) : null)
+
+/**
+ * Zamówienie OR11 → odbiorca. Każde pole czytane osobno, brak = null. Mirakl może ukrywać adres przed przyjęciem
+ * zamówienia: brak adresu dostawy = `adres_niedostepny_w_kanale`, nie błąd. NIP-u OR11 nie podaje.
+ * - Dostawa do punktu (paczkomat, salon Empik; sposób dostawy albo kod punktu): `shipping_address` to dane punktu
+ *   (kształt przy `EMPIK_POLE_PUNKTU`). Punkt = kod z pola dodatkowego, nazwa = opis punktu, adres punktu z
+ *   `shipping_address`. Odbiorca = imię i nazwisko klienta (`customer.*`, zapasowo `billing_address`), adres dostawy =
+ *   adres punktu (tak jak Allegro przy punkcie), telefon klienta. Kod punktu nigdy nie trafia do imienia ani firmy.
+ * - Dane do faktury z `billing_address`: firma albo imię i nazwisko klienta z adresem rozliczeniowym (bez nich
+ *   faktura imienna brałaby nabywcę z adresu dostawy, czyli przy punkcie z adresu paczkomatu).
+ * - E-mail: prawdziwy z pola dodatkowego `customer-email`, gdy wygląda na adres; inaczej adres zastępczy Mirakla
+ *   (`customer_notification_email`).
  */
 export function miraklRecipientFromApi(raw: Record<string, unknown>): OrderRecipient {
   const problemy: RecipientProblem[] = []
   const customer = readRecipientObject(raw['customer'], 'customer') ?? {}
   const imieKlienta = joinName(readRecipientText(customer['firstname'], 'customer.firstname'), readRecipientText(customer['lastname'], 'customer.lastname'))
-  const email = readRecipientText(raw['customer_notification_email'], 'customer_notification_email')
+  const emailPrawdziwy = poleDodatkowe(raw, EMPIK_POLE_EMAIL)
+  const email = (emailPrawdziwy && EMAIL_RE.test(emailPrawdziwy) ? emailPrawdziwy : null) ?? readRecipientText(raw['customer_notification_email'], 'customer_notification_email')
   const addr = (name: 'shipping_address' | 'billing_address') => {
     const a = readRecipientObject(customer[name], `customer.${name}`)
     if (!a) return null
@@ -251,17 +306,32 @@ export function miraklRecipientFromApi(raw: Record<string, unknown>): OrderRecip
       ulica,
       kod: t('zip_code'),
       miasto: t('city'),
-      kraj: countryOf(t('country_iso_code')),
+      kraj: countryOf(t('country_iso_code')) ?? krajZNazwy(t('country')),
       telefon: t('phone') ?? t('phone_secondary'),
+      opis: t('additional_info'),
     }
   }
   const ship = addr('shipping_address')
   const bill = addr('billing_address')
+  const kodPunktu = miraklKodPunktu(raw)
+  const doPunktu = !!kodPunktu || miraklWymagaPunktu(raw)
+  const maAdres = (a: ReturnType<typeof addr>) => !!a && !!(a.ulica || a.kod || a.miasto)
+
+  let punktOdbioru: RecipientPickupPoint | null = null
+  if (kodPunktu) {
+    punktOdbioru = {
+      kod: kodPunktu,
+      nazwa: doPunktu && ship?.opis ? ship.opis : null,
+      adres: ship && maAdres(ship) ? { ulica: ship.ulica, kodPocztowy: ship.kod, miasto: ship.miasto } : null,
+    }
+  } else if (doPunktu) problemy.push('punkt_nieznany')
+
   let dostawa: RecipientAddress | null = null
-  if (ship && (ship.ulica || ship.kod || ship.miasto)) {
+  if (ship && maAdres(ship)) {
     dostawa = {
-      imieNazwisko: ship.imie ?? imieKlienta,
-      firma: ship.firma,
+      // przy punkcie `shipping_address` niesie kod punktu w nazwisku: odbiorcą jest klient, nie punkt
+      imieNazwisko: doPunktu ? (imieKlienta ?? bill?.imie ?? null) : (ship.imie ?? imieKlienta),
+      firma: doPunktu ? null : ship.firma,
       ulica: ship.ulica,
       numerDomu: null,
       numerLokalu: null,
@@ -274,13 +344,13 @@ export function miraklRecipientFromApi(raw: Record<string, unknown>): OrderRecip
     if (dostawa.ulica) problemy.push('adres_bez_podzialu')
     problemy.push(...missingAddressProblems(dostawa))
   } else problemy.push('adres_niedostepny_w_kanale')
-  // `faktura` = klient chce faktury (jak w Allegro), nie „jest adres rozliczeniowy”: OR11 nie ma flagi faktury, więc
-  // znakiem jest tylko firma w billing_address. Osoba prywatna z adresem rozliczeniowym = null.
+
+  // Dane do faktury z adresu rozliczeniowego: firma (bez NIP-u, którego OR11 nie podaje) albo osoba prywatna.
+  const nazwaFaktury = bill?.firma ?? bill?.imie ?? imieKlienta
   const faktura: RecipientInvoice | null =
-    bill?.firma && (bill.ulica || bill.kod || bill.miasto) ? { nazwa: bill.firma, nip: null, ulica: bill.ulica, kodPocztowy: bill.kod, miasto: bill.miasto, kraj: bill.kraj } : null
-  if (faktura) problemy.push('nip_niedostepny_w_kanale')
-  problemy.push('punkt_nieznany')
-  return { dostawa, punktOdbioru: null, faktura, problemy }
+    bill && maAdres(bill) && nazwaFaktury ? { nazwa: nazwaFaktury, nip: null, ulica: bill.ulica, kodPocztowy: bill.kod, miasto: bill.miasto, kraj: bill.kraj } : null
+  if (bill?.firma && faktura) problemy.push('nip_niedostepny_w_kanale')
+  return { dostawa, punktOdbioru, faktura, problemy }
 }
 
 interface MiraklCursor {
@@ -328,6 +398,24 @@ class MiraklEmpikAdapter implements ChannelAdapter, OrderFeed, RecipientReader, 
   odczytDoOfert<T = Record<string, unknown>>(path: string, query: Record<string, string | number> = {}): Promise<T> {
     if (!ODCZYT_OFERT_MIRAKL_RE.test(path)) return Promise.reject(new ReadOnlyViolation(`Mirakl: odczyt do ofert poza dozwolonymi ścieżkami (${path.slice(0, 60)})`))
     return this.api.get<T>(path, query)
+  }
+
+  /**
+   * etap 2: strona OR11 do archiwum zamówień (tylko `GET /orders` z zakresem daty utworzenia i
+   * stronicowaniem; inny parametr = błąd przed wysłaniem). OR11 nie ma listy pól: odpowiedź zawiera dane klienta, więc
+   * importer archiwum od razu ją przycina do listy dozwolonych pól (lib/archiwum/kanaly.ts).
+   */
+  async odczytListyZamowienArchiwum(query: Record<string, string | number>): Promise<{ orders: unknown[]; totalCount: number | null }> {
+    if (Object.keys(query).some((k) => !/^(start_date|end_date|sort|order|max|offset)$/.test(k)))
+      throw new ReadOnlyViolation('Mirakl: lista zamówień do archiwum tylko z zakresem dat i stronicowaniem')
+    let r: { orders?: unknown; total_count?: unknown }
+    try {
+      r = await this.api.get('/orders', query)
+    } catch (e) {
+      throw toAdapterError(e)
+    }
+    if (!Array.isArray(r.orders)) throw new AdapterError('Mirakl OR11: brak listy orders', 'PRZEJSCIOWY')
+    return { orders: r.orders as unknown[], totalCount: typeof r.total_count === 'number' && Number.isInteger(r.total_count) ? r.total_count : null }
   }
 
   async testConnection(): Promise<ConnectionTest> {
@@ -464,6 +552,22 @@ const CARRIER_NAME: Record<Carrier, string> = {
   OSOBISTY: 'Odbiór osobisty',
   BRAK: 'Inny',
   BEZ_WYSYLKI: 'Bez wysyłki',
+}
+
+/**
+ * kody przewoźników z listy Empiku (SH21 `GET /api/shipping/carriers`, odczyt konta EMPIK 20.11.2026).
+ * Empik odrzuca OR23 z samą nazwą przewoźnika (`carrier_name`, przewoźnik niezarejestrowany) kodem HTTP 400, więc
+ * przewoźnik z tej listy idzie zawsze z `carrier_code`. Salon Empik (DPD_EMPIK) to w SH21 zwykłe DPD. Konto może
+ * nadpisać kod polem `kodyPrzewoznikow`; przewoźnik bez kodu (np. odbiór osobisty) idzie z nazwą jak dotąd.
+ */
+export const EMPIK_KODY_PRZEWOZNIKOW: Readonly<Partial<Record<Carrier, string>>> = {
+  PACZKOMATY: 'paczkomatyinpost',
+  INPOST_KURIER: 'inpostpaczkakurierska',
+  DPD: 'dpd',
+  DPD_EMPIK: 'dpd',
+  GLS: 'gls',
+  ORLEN_PACZKA: 'ORLEN',
+  POCZTA_POLSKA: 'pocztex',
 }
 
 /** Pole CSV w cudzysłowie (STO01: separator „;”); cudzysłów w treści podwojony. */
@@ -609,7 +713,8 @@ class MiraklEmpikZapisAdapter extends MiraklEmpikAdapter implements StockWriter,
 
   /** `brakFunkcji`: 403/404 to brak funkcji na koncie (np. STO01), nie odrzucony klucz: klasa KONFIGURACJA. */
   private static failure(r: MiraklWriteResult, reference: string, what: string, brakFunkcji = false): WriteOutcome {
-    const code = r.errorCode ? ` (${r.errorCode})` : ''
+    // oczyszczony komunikat Empiku w alercie (co odrzucono), bez reszty treści odpowiedzi
+    const code = `${r.errorCode ? ` (${r.errorCode})` : ''}${r.errorMessage ? `, Empik: „${r.errorMessage}”` : ''}`
     if (brakFunkcji && (r.status === 403 || r.status === 404)) return { kind: 'TRWALY', reference, message: `${what}: HTTP ${r.status}${code}`, errorClass: 'KONFIGURACJA' }
     if (r.status === 429) return { kind: 'PRZEJSCIOWY', reference, message: `${what}: HTTP 429`, ...(r.retryAfterMs ? { retryAfterMs: r.retryAfterMs } : {}) }
     // 5xx: powtórka jest bezpieczna (komentarz sekcji), więc PRZEJSCIOWY, nie NIEJEDNOZNACZNY
@@ -752,7 +857,8 @@ class MiraklEmpikZapisAdapter extends MiraklEmpikAdapter implements StockWriter,
   async setOrderStatus(orderExternalId: string, channelStatus: string, reference: string): Promise<WriteOutcome> {
     if (!this.enabled) return this.off(reference)
     if (!ID_RE.test(orderExternalId)) return { kind: 'TRWALY', reference, message: 'zły numer zamówienia Empik' }
-    if (channelStatus !== 'SHIPPED') return { kind: 'TRWALY', reference, message: `Empik: Kompletor ustawia tylko status SHIPPED (wysłane), nie „${channelStatus.slice(0, 40)}”` }
+    // bez wielkości liter — mapa zapisana z panelu przed poprawką ma „shipped”
+    if (channelStatus.trim().toUpperCase() !== 'SHIPPED') return { kind: 'TRWALY', reference, message: `Empik: Kompletor ustawia tylko status SHIPPED (wysłane), nie „${channelStatus.slice(0, 40)}”` }
     const what = `wysłanie zamówienia ${orderExternalId} (OR24)`
     const r = await this.send('PUT', `/orders/${orderExternalId}/ship`, null)
     if (!r) return { kind: 'PRZEJSCIOWY', reference, message: `${what}: brak odpowiedzi (powtórka bezpieczna: sprawdza stan zamówienia)` }
@@ -769,7 +875,7 @@ class MiraklEmpikZapisAdapter extends MiraklEmpikAdapter implements StockWriter,
     if (!TRACKING_RE.test(tracking.number)) return { kind: 'TRWALY', reference, message: `zamówienie ${orderExternalId}: zły numer nadania` }
     if (!Object.hasOwn(CARRIER_NAME, tracking.carrier)) return { kind: 'TRWALY', reference, message: `zamówienie ${orderExternalId}: nieznany przewoźnik` }
     const carrier = tracking.carrier as Carrier
-    const code = carrierCodesOf(this.ctx.config['kodyPrzewoznikow'])[carrier]
+    const code = carrierCodesOf(this.ctx.config['kodyPrzewoznikow'])[carrier] ?? EMPIK_KODY_PRZEWOZNIKOW[carrier]
     let body: Record<string, unknown>
     if (code) body = { carrier_code: code, tracking_number: tracking.number }
     else {

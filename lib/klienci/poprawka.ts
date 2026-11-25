@@ -12,7 +12,15 @@ import { PUSTY_REKORD, type RekordKlienta } from './rekord'
 import { normalizujTelefon } from './skroty'
 import { sladZapisu, zapiszRekordKlienta } from './zapis'
 
-export class BladPoprawki extends Error {}
+/** Odmowa poprawki; `pole` = nazwa pola formularza (`imie`, `kod`, …), przy którym formularz pokazuje błąd. */
+export class BladPoprawki extends Error {
+  constructor(
+    message: string,
+    readonly pole: string | null = null,
+  ) {
+    super(message)
+  }
+}
 
 export const PRZESYLKA_JEST = 'Przesyłka już jest utworzona: adres zmienia się w panelu przewoźnika, nie tutaj.'
 
@@ -35,7 +43,7 @@ const PUNKT = /^[A-Za-z0-9_-]{2,40}$/
 function pole(form: FormData, nazwa: string, etykieta: string, max = 200): string | null {
   const v = String(form.get(nazwa) ?? '').trim()
   if (!v) return null
-  if (v.length > max) throw new BladPoprawki(`${etykieta}: najwyżej ${max} znaków`)
+  if (v.length > max) throw new BladPoprawki(`${etykieta}: najwyżej ${max} znaków`, nazwa)
   return v
 }
 
@@ -52,13 +60,13 @@ export function poprawkaZFormularza(form: FormData): PoprawkaDostawy {
     telefon: pole(form, 'telefon', 'Telefon', 30),
     punkt: pole(form, 'punkt', 'Punkt odbioru', 40),
   }
-  if (!p.imieNazwisko && !p.firma) throw new BladPoprawki('Podaj imię i nazwisko albo firmę odbiorcy')
+  if (!p.imieNazwisko && !p.firma) throw new BladPoprawki('Podaj imię i nazwisko albo firmę odbiorcy', 'imie')
   const adres = p.ulica || p.numerDomu || p.kodPocztowy || p.miasto
   if (!adres && !p.punkt) throw new BladPoprawki('Podaj adres dostawy albo punkt odbioru')
-  if (adres && (!p.ulica || !p.kodPocztowy || !p.miasto)) throw new BladPoprawki('Adres dostawy: ulica, kod pocztowy i miasto razem')
-  if (p.kodPocztowy && !KOD_PL.test(p.kodPocztowy)) throw new BladPoprawki('Kod pocztowy w formacie NN-NNN')
-  if (p.telefon && !normalizujTelefon(p.telefon)) throw new BladPoprawki('Telefon: co najmniej 9 cyfr')
-  if (p.punkt && !PUNKT.test(p.punkt)) throw new BladPoprawki('Punkt odbioru: kod z liter, cyfr, „-” i „_” (np. POZ08M)')
+  if (adres && (!p.ulica || !p.kodPocztowy || !p.miasto)) throw new BladPoprawki('Adres dostawy: ulica, kod pocztowy i miasto razem', !p.ulica ? 'ulica' : !p.kodPocztowy ? 'kod' : 'miasto')
+  if (p.kodPocztowy && !KOD_PL.test(p.kodPocztowy)) throw new BladPoprawki('Kod pocztowy w formacie NN-NNN', 'kod')
+  if (p.telefon && !normalizujTelefon(p.telefon)) throw new BladPoprawki('Telefon: co najmniej 9 cyfr', 'telefon')
+  if (p.punkt && !PUNKT.test(p.punkt)) throw new BladPoprawki('Punkt odbioru: kod z liter, cyfr, „-” i „_” (np. POZ08M)', 'punkt')
   return p
 }
 

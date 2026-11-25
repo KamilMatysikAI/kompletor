@@ -2,14 +2,16 @@
 import Link from 'next/link'
 import type { OutsideCore } from '@/lib/panel/dane'
 import { money, monthName, outsideCoreNote } from '@/lib/panel/format'
+import { jestPrzeliczenie, kwotaZObcymi, notkaWalut, opisBezKursu, ZNAK_PRZELICZENIA, type ObcaKwota } from '@/lib/panel/sumy-walut'
 import { CHART, monthChart } from '@/lib/panel/wykres'
 
 const DOW = ['nd', 'pon', 'wt', 'śr', 'czw', 'pt', 'sob']
 
 export function WykresMiesiaca(p: {
   now: Date
-  month: { day: number; count: number; gross: number; future: boolean }[]
-  totals: { count: number; gross: number; outside: OutsideCore }
+  /** `gross` = PLN plus obce waluty przeliczone kursem NBP (słupki „Kwota brutto”), `foreign` = rozbicie obcych walut */
+  month: { day: number; count: number; gross: number; foreign?: ObcaKwota[]; future: boolean }[]
+  totals: { count: number; gross: number; foreign?: ObcaKwota[]; outside: OutsideCore }
   today: number
   miara: 'liczba' | 'kwota'
   monthIndex: number // 1–12
@@ -22,6 +24,7 @@ export function WykresMiesiaca(p: {
   const name = monthName(p.now)
   const note = outsideCoreNote(p.totals.outside)
   const mm = String(p.monthIndex).padStart(2, '0')
+  const obceDnia = (day: number) => p.month.find((d) => d.day === day)?.foreign ?? []
   const dow = (d: number) => DOW[new Date(Date.UTC(p.year, p.monthIndex - 1, d)).getUTCDay()]
   return (
     <section className="card" aria-labelledby="h-mies">
@@ -31,10 +34,11 @@ export function WykresMiesiaca(p: {
           <div className="small muted">
             od 1.{mm} do dziś:{' '}
             <b>
-              {p.totals.count} zamówień · {money(p.totals.gross)} brutto
+              {p.totals.count} zamówień · {kwotaZObcymi(p.totals.gross, p.totals.foreign)} brutto
             </b>{' '}
             · wszystkie kanały
             {note ? ` · ${note}` : ''}
+            {p.totals.foreign?.length ? ` · ${notkaWalut(p.totals.foreign)}` : ''}
           </div>
         </div>
         <div className="tabs" role="tablist" aria-label="Miara" style={{ margin: 0, border: 0 }}>
@@ -63,7 +67,7 @@ export function WykresMiesiaca(p: {
         {g.bars.map((b) => (
           <g key={b.day}>
             <path className={b.today ? 'bar today' : 'bar'} d={b.path}>
-              <title>{`${dow(b.day)} ${b.day}.${mm}: ${fmtVal(b.value)}${b.today ? ' (dziś do teraz)' : ''}`}</title>
+              <title>{`${dow(b.day)} ${b.day}.${mm}: ${isMoney && jestPrzeliczenie(obceDnia(b.day)) ? `${ZNAK_PRZELICZENIA} ` : ''}${fmtVal(b.value)}${isMoney && opisBezKursu(obceDnia(b.day)) ? ` + ${opisBezKursu(obceDnia(b.day))}` : ''}${b.today ? ' (dziś do teraz)' : ''}`}</title>
             </path>
           </g>
         ))}
@@ -87,7 +91,7 @@ export function WykresMiesiaca(p: {
                     {d.day}.{mm}
                   </td>
                   <td className="right num">{d.count}</td>
-                  <td className="right num">{money(d.gross)}</td>
+                  <td className="right num">{kwotaZObcymi(d.gross, d.foreign)}</td>
                 </tr>
               ))}
           </tbody>

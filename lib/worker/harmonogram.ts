@@ -6,6 +6,7 @@ import { powiadomieniaZEnv } from '../powiadomienia/adres'
 import { zapisKlientaZEnv } from '../klienci/kolejka'
 import { EMPIK_AKCEPTACJA_JOB } from '../empik/nazwy'
 import { FEED_JOB } from '../produkty/zdjecia-feed'
+import { KURIER_AUTOMAT_JOB } from '../wysylka/kurier-regula'
 import type { ScheduleEntry } from './petla'
 
 /** Zadanie lustra stanów wFirmy: przebieg kolejki wywołań wFirmy z samym odczytem stanów. */
@@ -27,8 +28,14 @@ export const HARMONOGRAM_RDZENIA: ScheduleEntry[] = [
   // wynik importów stanów, które kanał przetwarza później (Empik STO02/STO03); tylko odczyt, alert przy
   // odrzuceniach. Tylko firmy z aktywnym kontem Empik (dziś jedyny kanał z wynikiem importu).
   { kind: 'kanaly-importy-stanow', everyMs: 60_000, requires: 'empik' },
+  // status w BL (np. „Kompletor”) dla zamówień wysłanych w Kompletorze; nic bez wyłącznika firmy
+  // `statusBl` (domyślnie wyłączony) i tokena BL. Nazwa = STATUS_BL_JOB z lib/kanaly/status-bl.ts (bez importu: lekki moduł).
+  { kind: 'kanaly-status-bl', everyMs: 5 * 60_000, requires: 'baselinker' },
   // śledzenie przesyłek (sam odczyt u przewoźnika, tylko moduły z shipment.track; przełącznik firmy)
   { kind: 'wysylka-sledzenie', everyMs: 15 * 60_000 },
+  // zamawianie kuriera przez automat (konto przewoźnika „Zamawiaj kuriera automatycznie”, domyślnie wyłączone); firma
+  // bez włączonego automatu = przebieg z samym odczytem reguł przewoźników, bez sieci
+  { kind: KURIER_AUTOMAT_JOB, everyMs: 2 * 60_000 },
   { kind: 'rdzen-wygasanie', everyMs: 5 * 60_000 },
   { kind: 'rdzen-audyt', everyMs: 3600_000 },
   // nocna pełna synchronizacja kanałów i zlecenie pełnego odczytu wFirmy (handler działa tylko
@@ -76,6 +83,9 @@ export const HARMONOGRAM_RDZENIA: ScheduleEntry[] = [
   { kind: 'mcp-sprzatanie', everyMs: 24 * 3600_000 }, // dziennik wywołań MCP — wpisy starsze niż 90 dni
   // przyjmowanie zamówień Empiku (OR21); konto w cieniu tylko zapisuje „zaakceptowałbym”, alert po X godzinach
   { kind: EMPIK_AKCEPTACJA_JOB, everyMs: 60_000, requires: 'empik' },
+  // kursy średnie NBP (tabela A) do informacyjnego przeliczenia sum sprzedaży w obcych walutach; pierwszy
+  // przebieg zaraz po starcie workera, potem raz na dobę. Nazwa = KURSY_WALUT_JOB z lib/kursy/nbp.ts.
+  { kind: 'kursy-walut', everyMs: 6 * 3600_000 },
 ]
 
 const MIN_GODZIN = 1

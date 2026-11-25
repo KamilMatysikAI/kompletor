@@ -4,7 +4,7 @@ vi.mock('server-only', () => ({}))
 const { scopeRefusal } = await import('./klucze')
 import { kontaktObslugi, warunekKont, warunekNumeru } from '@/lib/klienci/obsluga'
 import { ApiInputError } from './odpowiedzi'
-import { OBSLUGA_PER_HOUR, OBSLUGA_PER_MINUTE, obslugaLimit, parseObslugaWejscie, resetObslugaLimiters } from './obsluga'
+import { OBSLUGA_PER_HOUR, OBSLUGA_PER_MINUTE, obslugaLimit, parseObslugaWejscie, resetObslugaLimiters, SLEDZONA_GDY_SPRAWDZONA_MS, sledzonaObslugi, stanObslugi, STANY_PRZESYLKI_OBSLUGI } from './obsluga'
 import { parseApiKeyInput } from './zarzadzanie'
 import { ALL_API_SCOPES, KOLEJNOSC_ZAKRESOW, OBSLUGA_SCOPE, type ApiScope } from './zakresy'
 
@@ -120,5 +120,30 @@ describe('zakres obsługi klienta', () => {
     const ogolny = new Set<ApiScope>(ALL_API_SCOPES)
     expect(scopeRefusal(ogolny, OBSLUGA_SCOPE)?.status).toBe(403)
     for (const s of ALL_API_SCOPES) expect(scopeRefusal(ogolny, s)).toBeNull()
+  })
+})
+
+describe('obsługa klienta: stan paczki', () => {
+  it('stany śledzenia produkcji → słownik stanów API obsługi; nieznany i pusty = NIEZNANY', () => {
+    expect(stanObslugi('PRZED_NADANIEM')).toBe('UTWORZONA')
+    expect(stanObslugi('PRZEKAZANA')).toBe('PRZEKAZANA')
+    expect(stanObslugi('DORECZONA')).toBe('DORECZONA')
+    for (const v of ['NIEZNANY', 'W_DRODZE', '', null, undefined]) expect(stanObslugi(v)).toBe('NIEZNANY')
+    for (const v of ['PRZED_NADANIEM', 'PRZEKAZANA', 'DORECZONA', 'NIEZNANY', 'cokolwiek']) expect(STANY_PRZESYLKI_OBSLUGI).toContain(stanObslugi(v))
+  })
+
+  it('śledzona = jest zdarzenie stanu, odczyt niedawny, nie doręczona i stan nie stoi w sprzeczności z wysłanym zamówieniem', () => {
+    const now = new Date('2026-11-23T12:00:00Z')
+    const swiezo = new Date(now.getTime() - 60_000)
+    const dawno = new Date(now.getTime() - SLEDZONA_GDY_SPRAWDZONA_MS - 1)
+    expect(sledzonaObslugi({ stan: 'PRZEKAZANA', sprawdzono: swiezo, statusZamowienia: 'WYSLANE' }, now)).toBe(true)
+    expect(sledzonaObslugi({ stan: 'UTWORZONA', sprawdzono: swiezo, statusZamowienia: 'SPAKOWANE' }, now)).toBe(true)
+    // próba odczytu podbija trackedAt także po błędzie u przewoźnika: bez zdarzenia stanu nie ma świeżego stanu
+    expect(sledzonaObslugi({ stan: null, sprawdzono: swiezo, statusZamowienia: 'SPAKOWANE' }, now)).toBe(false)
+    // zamówienie wysłane, a paczka dalej „przed nadaniem”: stan stary, nie pewny
+    for (const s of ['WYSLANE', 'ODEBRANE'] as const) expect(sledzonaObslugi({ stan: 'UTWORZONA', sprawdzono: swiezo, statusZamowienia: s }, now), s).toBe(false)
+    expect(sledzonaObslugi({ stan: 'PRZEKAZANA', sprawdzono: dawno, statusZamowienia: 'WYSLANE' }, now)).toBe(false)
+    expect(sledzonaObslugi({ stan: 'PRZEKAZANA', sprawdzono: null, statusZamowienia: 'WYSLANE' }, now)).toBe(false)
+    expect(sledzonaObslugi({ stan: 'DORECZONA', sprawdzono: swiezo, statusZamowienia: 'WYSLANE' }, now)).toBe(false)
   })
 })

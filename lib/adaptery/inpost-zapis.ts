@@ -63,6 +63,12 @@ const WYLACZONY = 'zapis wyłączony'
 
 /** Pola odbiorcy wymagane do przesyłki ShipX; brak = błąd z nazwą pola, nigdy z wartością. */
 const POLA_ODBIORCY = ['imieNazwisko', 'ulica', 'numerDomu', 'kodPocztowy', 'miasto', 'telefon', 'email'] as const
+/**
+ * paczkomat bez adresu domowego. FAQ integracji InPost: adres odbiorcy niepotrzebny przy przesyłce do
+ * paczkomatu, wymagany przy kurierskiej; e-mail i telefon wymagane (powiadomienie i kod odbioru). [NIEPEWNE] do
+ * potwierdzenia pierwszą przesyłką na sandboxie ShipX (docs/integracje/inpost.md).
+ */
+const POLA_ODBIORCY_PACZKOMAT = ['imieNazwisko', 'telefon', 'email'] as const
 
 const tekst = (v: unknown): string | null => (typeof v === 'string' && v.trim() ? v.trim() : null)
 
@@ -71,13 +77,13 @@ const tekst = (v: unknown): string | null => (typeof v === 'string' && v.trim() 
  * = błąd `kraj`, bo przesyłka poszłaby jako krajowa na adres zagraniczny. Brak kraju = kanał go nie
  * podał; host i tak odrzuca zagranicę wcześniej (lib/odbiorca/przejscia.ts).
  */
-function odbiorca(r0: Readonly<RecipientAddress>): (OdbiorcaPrzesylki & { kraj: string | null }) | { brak: string[] } {
+function odbiorca(r0: Readonly<RecipientAddress>, paczkomat: boolean): (OdbiorcaPrzesylki & { kraj: string | null }) | { brak: string[] } {
   const kraj = tekst(r0.kraj)
   const r = zRozdzielonymAdresem(r0)
   if (kraj && kraj.toUpperCase() !== 'PL') return { brak: ['kraj'] }
-  const brak = POLA_ODBIORCY.filter((k) => !tekst(r[k]))
+  const brak = (paczkomat ? POLA_ODBIORCY_PACZKOMAT : POLA_ODBIORCY).filter((k) => !tekst(r[k]))
   if (brak.length) return { brak: [...brak] }
-  return { imieNazwisko: tekst(r.imieNazwisko)!, firma: tekst(r.firma), ulica: tekst(r.ulica)!, numerDomu: tekst(r.numerDomu)!, numerLokalu: tekst(r.numerLokalu), kodPocztowy: tekst(r.kodPocztowy)!, miasto: tekst(r.miasto)!, telefon: tekst(r.telefon)!, email: tekst(r.email)!, kraj }
+  return { imieNazwisko: tekst(r.imieNazwisko)!, firma: tekst(r.firma), ulica: tekst(r.ulica), numerDomu: tekst(r.numerDomu), numerLokalu: tekst(r.numerLokalu), kodPocztowy: tekst(r.kodPocztowy), miasto: tekst(r.miasto), telefon: tekst(r.telefon)!, email: tekst(r.email)!, kraj }
 }
 
 /**
@@ -229,7 +235,7 @@ class InpostShipxZapisAdapter implements ChannelAdapter, ShipmentPreparer, Shipm
    */
   async createShipment(req: ShipmentCreateRequest, reference: string): Promise<WriteOutcome> {
     if (!this.zapis) return { kind: 'TRWALY', reference, message: WYLACZONY }
-    const r = odbiorca(req.recipient)
+    const r = odbiorca(req.recipient, req.parcel.courierCode === 'inpost_locker_standard' || req.carrier === 'PACZKOMATY')
     if ('brak' in r) return { kind: 'TRWALY', reference, message: r.brak.includes('kraj') ? 'odbiorca spoza Polski: moduł InPost ShipX jest krajowy (kraj)' : `brak danych odbiorcy: ${r.brak.join(', ')}` }
     let payload: Record<string, unknown>
     try {

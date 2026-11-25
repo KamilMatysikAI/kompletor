@@ -59,32 +59,41 @@ export class FakeAllegroWysylam {
   readonly proposals = new Map<string, Record<string, unknown>>()
   /** Kolejne odpowiedzi `/shipment-management` (status, Retry-After) zamiast normalnej, po jednej na żądanie. */
   failures: { status: number; retryAfter?: string; body?: string }[] = []
-  /**
-   * Historia śledzenia `GET /order/carriers/{carrierId}/tracking?waybill=…` po kluczu `carrierId/waybill`, w kształcie
-   * z poradnika Allegro (`waybills[].trackingDetails.statuses[]` z `code` i `occurredAt`); brak wpisu = `trackingDetails: null`.
-   */
-  readonly tracking = new Map<string, { code: string; occurredAt: string }[]>()
-  /** Kolejne odpowiedzi historii śledzenia (status) zamiast normalnej, po jednej na żądanie. */
-  trackingFailures: { status: number }[] = []
 
   get requests(): string[] {
     return this.base.requests
   }
 
+  /**
+   * historia statusów `GET /order/carriers/{carrierId}/tracking?waybill=…`, klucz `${carrierId}:${waybill}`.
+   * Brak wpisu = `trackingDetails: null` (Allegro nie zna numeru); wartość = lista `statuses`.
+   */
+  readonly tracking = new Map<string, Record<string, unknown>[]>()
+  /** Kolejne odpowiedzi śledzenia zamiast normalnej (status, treść), po jednej na żądanie. */
+  trackingFailures: { status: number; body?: unknown }[] = []
+
   fetch: FetchLike = async (url, init) => {
     const u = new URL(url)
-    const tr = u.origin === API ? /^\/order\/carriers\/([^/]+)\/tracking$/.exec(u.pathname) : null
-    if (tr) {
-      this.base.requests.push(`${(init?.method ?? 'GET').toUpperCase()} ${u.pathname}${u.search}`)
-      if (!this.base.authorized(new Headers(init?.headers))) return json(401, { error: 'invalid_token' })
-      if (!this.scopes.has(ORDERS_READ)) return json(403, { errors: [{ code: 'ACCESS_DENIED' }] })
-      const tf = this.trackingFailures.shift()
-      if (tf) return json(tf.status, { errors: [{ code: 'ATRAPA' }] })
-      const waybills = u.searchParams.getAll('waybill').map((w) => {
-        const st = this.tracking.get(`${tr[1]}/${w}`)
-        return { waybill: w, trackingDetails: st ? { statuses: st, createdAt: st[0]?.occurredAt ?? null, updatedAt: st.at(-1)?.occurredAt ?? null } : null }
+    const sledzenie = /^\/order\/carriers\/([^/]+)\/tracking$/.exec(u.pathname)
+    if (u.origin === API && sledzenie) {
+      const method = (init?.method ?? 'GET').toUpperCase()
+      this.base.requests.push(`${method} ${u.pathname}${u.search}`)
+      const headers = new Headers(init?.headers)
+      if (method !== 'GET') return json(405, {})
+      if (headers.get('accept') !== 'application/vnd.allegro.public.v1+json') return json(406, {})
+      if (!this.base.authorized(headers)) return json(401, { error: 'invalid_token' })
+      const f = this.trackingFailures.shift()
+      if (f) return json(f.status, (f.body ?? { errors: [{ code: 'ATRAPA' }] }) as Record<string, unknown>)
+      const carrierId = sledzenie[1]!
+      const waybills = u.searchParams.getAll('waybill')
+      if (!waybills.length || waybills.length > 20) return json(400, { errors: [{ code: 'VALIDATION_ERROR' }] })
+      return json(200, {
+        carrierId,
+        waybills: waybills.map((waybill) => {
+          const statuses = this.tracking.get(`${carrierId}:${waybill}`)
+          return { waybill, trackingDetails: statuses ? { statuses, createdAt: '2026-11-20T08:00:00.000Z', updatedAt: '2026-11-21T08:00:00.000Z' } : null }
+        }),
       })
-      return json(200, { carrierId: tr[1], waybills })
     }
     if (u.origin !== API || !u.pathname.startsWith('/shipment-management')) return this.base.fetch(url, init)
     const method = (init?.method ?? 'GET').toUpperCase()

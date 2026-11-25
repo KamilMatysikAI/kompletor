@@ -9,7 +9,7 @@ import { pickupSettings, saveCarrierPickup } from '@/lib/pakowanie/dane'
 import { requirePermission } from '@/lib/panel/kontekst'
 import { wzorzecZPola } from '@/lib/panel/slowa'
 import { kontaPrzewoznikow } from '@/lib/wysylka/konta'
-import { regulyPrzewoznikow, RegulyError, zapiszRegulyPrzewoznikow, type RegulaPanelu } from '@/lib/wysylka/reguly'
+import { opisPrzeniesienia, regulyPrzewoznikow, RegulyError, zapiszRegulyPrzewoznikow, type RegulaPanelu } from '@/lib/wysylka/reguly'
 
 const registry = defaultRegistry()
 
@@ -20,6 +20,8 @@ export interface StanPrzewoznikow {
   pole?: string
   /** reguły po zapisie (nowe dostają id) */
   reguly?: RegulaPanelu[]
+  /** reguły przeniesione na inne konto (stały baner nad formularzem, nie tylko toast) */
+  przeniesienie?: string[]
 }
 
 const str = (form: FormData, k: string) => String(form.get(k) ?? '')
@@ -58,14 +60,17 @@ export async function zapiszPrzewoznikow(_prev: StanPrzewoznikow, form: FormData
     revalidatePath('/ustawienia/przewoznicy')
     revalidatePath('/pakowanie')
     const co = [odbiory.length ? `odbiory (${odbiory.length})` : null, zmienione ? 'reguły przewoźników' : null].filter(Boolean).join(' i ')
-    // reguła przeniesiona na inne konto traci ustawienia poprzedniego konta i ma wyłączone nadawanie
-    let przypomnienie = ''
+    // reguła przeniesiona na inne konto (także na moduł innego przewoźnika) bierze
+    // ustawienia nowego konta i ma wyłączone nadawanie
+    // co przeszło z poprzedniego konta i czego nowe nie ma, w stałym banerze (toast znika po chwili)
+    let przeniesienie: string[] | undefined
     if (przeniesione.length) {
       const konta = await kontaPrzewoznikow(ctx.db, registry)
       const nazwa = (p: (typeof przeniesione)[number]) => konta.find((k) => k.sufiks === p.konto && (!p.adapterKey || k.moduly.includes(p.adapterKey)))?.nazwa ?? (p.konto ? `konto ${p.konto}` : 'konto główne')
-      przypomnienie = ` ${przeniesione.map((p) => `Reguła ${p.nr} przeniesiona na: ${nazwa(p)}.`).join(' ')} Uzupełnij ustawienia konta i włącz nadawanie na ekranie Konta przewoźników.`
+      przeniesienie = przeniesione.map((p) => opisPrzeniesienia(p, nazwa(p)))
     }
-    return { ok: true, komunikat: (co ? `Zapisano: ${co}.` : 'Nic się nie zmieniło.') + przypomnienie, reguly: await regulyPrzewoznikow(ctx.db, registry) }
+    const przypomnienie = przeniesienie ? ' Nadawanie przeniesionych reguł jest wyłączone: szczegóły nad formularzem.' : ''
+    return { ok: true, komunikat: (co ? `Zapisano: ${co}.` : 'Nic się nie zmieniło.') + przypomnienie, reguly: await regulyPrzewoznikow(ctx.db, registry), ...(przeniesienie ? { przeniesienie } : {}) }
   } catch (e) {
     if (e instanceof RegulyError) return { ok: false, komunikat: e.message, pole: e.pole }
     // komunikaty walidacji (zwykły Error) pokazujemy; błąd bazy — bez szczegółów

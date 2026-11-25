@@ -4,7 +4,9 @@ import { cenaZTekstu, KOMUNIKAT_ZBIERANE, powodBlokadyEdycji } from '@/lib/rdzen
 import { autor, opisZdarzenia, zlozHistorie } from './historia'
 import { dataWplaty, rozliczenie } from './platnosci'
 import { parseUstawieniaKarty } from './bramka'
-import { numerKarty, numeryKarty, sposobPlatnosci } from './opis'
+import { readFileSync } from 'node:fs'
+import { channelPrefix } from '@/lib/panel/format'
+import { numerKarty, numeryKarty, numerListy, numerListyZPrzedrostkiem, sposobPlatnosci } from './opis'
 
 const T = new Date('2026-11-05T10:00:00Z')
 
@@ -65,6 +67,11 @@ describe('historia zmian', () => {
     expect(opisZdarzenia('KWOTA_Z_KANALU', { z: '0.00', na: '105.10' })).toBe('Wartość zamówienia poprawiona ze sklepu: 0,00 zł → 105,10 zł')
     expect(opisZdarzenia('KWOTA_Z_KANALU', { z: '0.00', na: '117.60', kosztZ: '0.00', kosztNa: '12.50' })).toBe(
       'Wartość zamówienia poprawiona ze sklepu: 0,00 zł → 117,60 zł, wysyłka 0,00 zł → 12,50 zł',
+    )
+    // ceny pozycji ze sklepu
+    expect(opisZdarzenia('CENA_Z_KANALU', { pozycje: [{ pozycja: 'L1', z: '61.70', na: '71.70' }] })).toBe('Ceny pozycji poprawione ze sklepu: pozycja L1 61,70 zł → 71,70 zł')
+    expect(opisZdarzenia('CENA_W_KANALE_INNA', { pozycje: [{ pozycja: 'L2', z: '21.70', na: '19.90' }], otwarte: false })).toBe(
+      'Cena pozycji zmieniona w sklepie, w Kompletorze bez zmian: pozycja L2 21,70 zł → 19,90 zł',
     )
   })
   it('zmiana sposobu wysyłki: przewoźnik i moduł przed i po słowami, bez danych dostawy', () => {
@@ -143,11 +150,15 @@ describe('akcje serwera karty: właściwe uprawnienie w pierwszej linii', () => 
       stanNadania: 'pakowanie.stanowisko',
       szukajPunktowAkcja: 'klienci.dane', // wyszukiwarka punktów przy poprawce punktu odbioru
       utworzPrzesylkeAkcja: 'pakowanie.stanowisko',
+      etykietaOdbioruPoSpakowaniu: 'pakowanie.stanowisko',
       sprawdzPrzesylkeAkcja: 'pakowanie.stanowisko',
       rozstrzygnijPrzesylkeAkcja: 'przesylki.rozstrzyganie',
       pobierzEtykieteAkcja: 'pakowanie.stanowisko',
       daneDoPoprawkiAkcja: 'klienci.dane',
       poprawAdresAkcja: 'klienci.dane',
+      podpowiedzPodzialAkcja: 'klienci.dane', // propozycja podziału adresu przez asystenta AI
+      zatwierdzPodzialAkcja: 'klienci.dane', // „Zatwierdź” podział = poprawka adresu
+      zmienPlatnoscKarta: 'zamowienia.oznacz_oplacone',
       zmienSposobAkcja: 'klienci.dane', // drugie uprawnienie (pakowanie.stanowisko) sprawdza akcja zaraz po pierwszym
       // anulowanie przesyłki u przewoźnika (Wysyłam z Allegro)
       anulujPrzesylkeAkcja: 'pakowanie.stanowisko',
@@ -192,11 +203,13 @@ describe('opis karty', () => {
     expect(sposobPlatnosci('WOO', '')).toBe('—')
   })
 
-  it('numer karty: numer w kanale, potem numer BL, potem numer z kanału (długi ucięty)', () => {
+  it('numer karty: numer w kanale, potem identyfikator z kanału (UUID ucięty), numer BL nigdy w tytule', () => {
     expect(numerKarty({ externalId: '118438', channelNumber: '158546', blOrderId: 162868493 })).toEqual({ numer: '158546', zrodlo: 'KANAL' })
-    expect(numerKarty({ externalId: '22961540-d83a-11f1-a706-217671faee31', channelNumber: null, blOrderId: 162868493 })).toEqual({ numer: '162868493', zrodlo: 'BL' })
+    expect(numerKarty({ externalId: '22961540-d83a-11f1-a706-217671faee31', channelNumber: null, blOrderId: 162868493 })).toEqual({ numer: '22961540-…', zrodlo: 'ID' })
     expect(numerKarty({ externalId: '22961540-d83a-11f1-a706-217671faee31', channelNumber: null, blOrderId: null })).toEqual({ numer: '22961540-…', zrodlo: 'ID' })
     expect(numerKarty({ externalId: '48213', channelNumber: null, blOrderId: null })).toEqual({ numer: '48213', zrodlo: 'ID' })
+    // Empik (zgłoszenie 23.11, EMP 165103969): numer Empiku w całości, nie numer BL
+    expect(numerKarty({ externalId: '40102452771670-A', channelNumber: null, blOrderId: 165103969 })).toEqual({ numer: '40102452771670-A', zrodlo: 'ID' })
   })
 
   it('każdy numer raz (numer w sklepie tylko, gdy inny niż w tytule; link w tytule przy tym samym numerze)', () => {
@@ -205,9 +218,53 @@ describe('opis karty', () => {
     expect(numeryKarty({ externalId: '48073', channelNumber: null, blOrderId: null }, 'https://sklep.example/zam/48073')).toMatchObject({ wSklepie: null, linkWTytule: true })
     // długi identyfikator ucięty w tytule: pełny numer pod tytułem (z linkiem tam, nie w tytule)
     expect(numeryKarty({ externalId: '22961540-d83a-11f1-a706-217671faee31', channelNumber: null, blOrderId: null }, 'https://x.example')).toMatchObject({ numer: '22961540-…', wSklepie: '22961540-d83a-11f1-a706-217671faee31', linkWTytule: false })
-    // tytuł z BL: numer w sklepie pod tytułem, numer BL już nie (jest w tytule)
-    expect(numeryKarty({ externalId: '118438', channelNumber: null, blOrderId: 162868493 }, null)).toMatchObject({ numer: '162868493', wSklepie: '118438', bl: null })
-    // tytuł z kanału: numer BL pod tytułem, numer w sklepie nie
+    // numer BL tylko pomocniczo (pod tytułem), numer w sklepie jest w tytule
+    expect(numeryKarty({ externalId: '118438', channelNumber: null, blOrderId: 162868493 }, null)).toMatchObject({ numer: '118438', wSklepie: null, bl: 162868493 })
     expect(numeryKarty({ externalId: '118438', channelNumber: '158546', blOrderId: 162868493 }, null)).toMatchObject({ numer: '158546', wSklepie: null, bl: 162868493 })
+    expect(numeryKarty({ externalId: '40102452771670-A', channelNumber: null, blOrderId: 165103969 }, null)).toMatchObject({ numer: '40102452771670-A', wSklepie: null, bl: 165103969 })
+  })
+
+  it('numer na liście = numer w tytule karty, z kanału (Empik), nigdy numer BL', () => {
+    const przypadki = [
+      { externalId: '40102452771670-A', channelNumber: null, blOrderId: 165103969 },
+      { externalId: '118438', channelNumber: '158546', blOrderId: 162868493 },
+      { externalId: '48213', channelNumber: null, blOrderId: null },
+      { externalId: '118438', channelNumber: null, blOrderId: 162868493 },
+    ]
+    for (const o of przypadki) expect(numerListy(o).numer).toBe(numerKarty(o).numer)
+    expect(numerListy(przypadki[0]!)).toEqual({ numer: '40102452771670-A', zrodlo: 'ID' })
+    expect(numerListy(przypadki[1]!)).toEqual({ numer: '158546', zrodlo: 'KANAL' })
+    expect(numerListy(przypadki[3]!)).toEqual({ numer: '118438', zrodlo: 'ID' })
+  })
+
+  it('długi identyfikator z kanału na liście w całości', () => {
+    const o = { externalId: '22961540-d83a-11f1-a706-217671faee31', channelNumber: null, blOrderId: 162868493 }
+    expect(numerKarty(o).numer).toBe('22961540-…')
+    expect(numerListy(o)).toEqual({ numer: '22961540-d83a-11f1-a706-217671faee31', zrodlo: 'ID' })
+  })
+})
+
+describe('numer w kolejce Pakowania', () => {
+  const przypadki = [
+    { channel: 'EMPIK' as const, o: { externalId: '40102452771670-A', channelNumber: null, blOrderId: 165103969 } },
+    { channel: 'ALLEGRO' as const, o: { externalId: '22961540-d83a-11f1-a706-217671faee31', channelNumber: null, blOrderId: null } },
+    { channel: 'WOO' as const, o: { externalId: '118438', channelNumber: '158546', blOrderId: 162868493 } },
+  ]
+
+  it('numer kolejki = etykieta wiersza listy zamówień (przedrostek + numerListy), Empik w całości', () => {
+    for (const { channel, o } of przypadki) {
+      const p = channelPrefix(channel, 'SklepPrzyprawowy')
+      expect(numerListyZPrzedrostkiem(p, o)).toBe(`${p} ${numerListy(o).numer}`)
+    }
+    expect(numerListyZPrzedrostkiem(channelPrefix('EMPIK', null), przypadki[0]!.o)).toBe('EMP 40102452771670-A')
+    expect(numerListyZPrzedrostkiem('ALG', przypadki[1]!.o)).toBe('ALG 22961540-d83a-11f1-a706-217671faee31')
+    expect(numerListyZPrzedrostkiem('SP', przypadki[2]!.o)).toBe('SP 158546')
+  })
+
+  it('kolejka pakowania nie składa numeru ze skróconego externalId', () => {
+    const zrodlo = readFileSync(new URL('../pakowanie/dane.ts', import.meta.url), 'utf8')
+    expect(zrodlo).not.toMatch(/shortExternalId\(/)
+    expect(zrodlo.match(/numerListyZPrzedrostkiem\(/g)?.length).toBe(2)
+    expect(zrodlo).toMatch(/channelNumber: true/)
   })
 })

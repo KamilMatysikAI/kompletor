@@ -252,6 +252,29 @@ export function ZapisDoSklepu({ kod, e, now, aktywne, warunki, uprawnienie }: { 
           </ul>
         </details>
       )}
+      {e.stanZerowy && (
+        <>
+          <h4 id="stan-zero">Stan 0: zakończone oferty</h4>
+          <p className="small">
+            Teraz zakończonych przez Kompletor: <b>{int(e.stanZerowy.zakonczoneTeraz)}</b> · zakończone w 24 h: <b>{int(e.stanZerowy.zakonczone24h)}</b> z limitu <b>{int(e.stanZerowy.limit)}</b>
+          </p>
+          <p className="muted small">
+            Przy stanie 0 Kompletor kończy ofertę (sklep nie przyjmuje liczby 0 na aktywnej ofercie), a gdy towar wróci, wznawia ją z nową liczbą sztuk. Ofert zakończonych ręcznie albo przez sklep nie wznawia. Po przekroczeniu limitu na dobę przestaje kończyć oferty i wysyła alert. Zachowanie i limit zmienisz w karcie <a href="#ustawienia">„Ustawienia i klucze”</a> → „Zaawansowane”.
+          </p>
+          {e.stanZerowy.wpisy.length > 0 && (
+            <details>
+              <summary className="small">Ostatnie zakończenia i wznowienia ({e.stanZerowy.wpisy.length})</summary>
+              <ul className="small">
+                {e.stanZerowy.wpisy.map((w, i) => (
+                  <li key={`${w.oferta}-${i}`}>
+                    {when(w.kiedy, now)}: <span className="mono">{w.oferta}</span> {w.opis}
+                  </li>
+                ))}
+              </ul>
+            </details>
+          )}
+        </>
+      )}
 
       <h3>Statusy w sklepie</h3>
       <p className="muted small">

@@ -29,8 +29,9 @@ import { fetchWithTimeout, ReadOnlyViolation, SourceError, type FetchLike } from
  * Jedyne operacje klienta zapisu; reszta API (zbiorcze etykiety, wycena) = wyjątek przed wysyłką. `getWaybillTracking.json`
  * (od 19.11.2026) to odczyt historii statusów: odpowiedź niesie też adres, bierzemy z niej tylko kody statusów.
  * `getOrders.json` to odczyt listy (z danymi odbiorców): bierzemy z niej tylko id i numer listu.
+ * `getPickupDateOptions.json` to odczyt terminów podjazdu kuriera (dni i godziny), bez danych osobowych.
  */
-const ZAPIS = new Set(['createOrderV2.json', 'getWaybill.json', 'cancelOrder.json', 'getOrderDetails.json', 'getOrderDetailsByWaybillNo.json', 'getOrders.json', 'getWaybillTracking.json'])
+const ZAPIS = new Set(['createOrderV2.json', 'getWaybill.json', 'cancelOrder.json', 'getOrderDetails.json', 'getOrderDetailsByWaybillNo.json', 'getOrders.json', 'getWaybillTracking.json', 'getPickupDateOptions.json'])
 
 export function assertBaseCourierZapis(endpoint: string): void {
   if (!ZAPIS.has(endpoint)) throw new ReadOnlyViolation(`Base Courier (zapis): endpoint „${endpoint}” poza listą operacji zapisu`)
@@ -100,6 +101,8 @@ export const BASE_COURIER_TIMEOUT_MS = 60_000
 /** Lista zamówień przy szukaniu numeru listu: najwyżej tyle stron (po 20, najnowsze pierwsze), każda z krótszym limitem. */
 export const BASE_COURIER_LISTA_STRONY = 3
 export const BASE_COURIER_LISTA_TIMEOUT_MS = 20_000
+/** Limit czasu odczytu terminów podjazdu (przed każdą przesyłką z podjazdem). */
+export const BASE_COURIER_TERMINY_TIMEOUT_MS = 15_000
 
 const isRecord = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v)
 const EMAIL_RE = /[^\s@,;()]+@[^\s@,;()]+/g
@@ -331,6 +334,15 @@ export class BaseCourierZapis {
     const plik = Buffer.from(file, 'base64')
     if (plik.subarray(0, 4).toString('latin1') !== '%PDF') throw new AdapterError('Base Courier getWaybill.json: plik etykiety nie jest PDF', 'TRWALY')
     return { contentType: 'application/pdf', base64: plik.toString('base64') }
+  }
+
+  /**
+   * Terminy podjazdu kuriera (`getPickupDateOptions.json`): surowa odpowiedź `{success, data:{dates, hours, minutes,
+   * start_default_hour, end_default_hour}}` (czyta ją lib/wysylka/podjazd.ts). Krótki limit czasu: to tylko podpowiedź
+   * dnia, jej brak nie blokuje przesyłki.
+   */
+  async terminyPodjazdu(): Promise<Record<string, unknown>> {
+    return this.odczyt('getPickupDateOptions.json', {}, Math.min(this.timeoutMs, BASE_COURIER_TERMINY_TIMEOUT_MS))
   }
 
   /** Szczegóły zamówienia po id (`getOrderDetails.json`): tylko id, numer listu i zawartość, bez danych odbiorcy. */

@@ -102,7 +102,7 @@ describe('sprzedaż dnia z kopii kanału', () => {
     // wykres miesiąca: 25.10 = 1 (23:59:59 w Warszawie), 26.10 = 8; dalsze dni puste
     expect(d.month.find((m) => m.day === 25)).toMatchObject({ count: 1, gross: 77 })
     expect(d.month.find((m) => m.day === 26)).toMatchObject({ count: 8, gross: 842.61 })
-    expect(d.monthTotals).toEqual({ count: 9, gross: 919.61, outside: { beforeStart: 6, notIngested: 0, skipped: 0, cancelled: 0 } })
+    expect(d.monthTotals).toEqual({ count: 9, gross: 919.61, foreign: [], outside: { beforeStart: 6, notIngested: 0, skipped: 0, cancelled: 0 } })
 
     // powtórny odczyt bez zmian nie dubluje (deduplikacja po koncie + id zamówienia)
     await pollAccount(db, acc, { registry, secrets: SRC, now: () => new Date(NOW.getTime() + 60_000) })

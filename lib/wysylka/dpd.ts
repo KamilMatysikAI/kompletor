@@ -1,9 +1,10 @@
 // Parametry przesyłki DPD bezpośrednio (DPDServices) w trybie „przygotuj, nie wysyłaj”. Czyste funkcje, bez
 // bazy i sieci: kurier albo punkt DPD Pickup (także salon Empik), wymiary i waga z zakresami API, pobranie z limitem.
 // Wynik nie ma danych odbiorcy. Braki są problemem na liście, nigdy cichą wartością: nieznana kwota pobrania to nie 0.
-// Salon Empik: specyfikacja DPD nie wspomina Empiku; robocza hipoteza to `DPD_PICKUP` z kodem salonu (docs/integracje/dpd.md).
+// Salon Empik: specyfikacja DPD nie wspomina Empiku; `DPD_PICKUP` z kodem salonu, potwierdzone nadaniem 20.11.2026 (docs/integracje/dpd.md).
+// BL nadawał 7 salonów (08–12.11.2026) modułem DPD z konta „DPD Salony Empik”, punkt = kod salonu `PL49xxx`.
 import type { PreparedParcel, ShipmentInput, ShipmentProblem } from '../adaptery/kontrakt'
-import { kwotaPobrania, LIMIT_WAGI_DPD_PICKUP_G, ustawieniaPrzesylki, WBUDOWANE_USTAWIENIA, type UstawieniaPrzesylki } from './przesylka'
+import { kwotaPobrania, LIMIT_WAGI_DPD_PICKUP_G, ustawieniaPrzesylki, waga, WBUDOWANE_USTAWIENIA, type UstawieniaPrzesylki } from './przesylka'
 
 /** Kod wewnętrzny (nie kod usługi DPD): kurier do drzwi, bez usługi `DPD_PICKUP`. */
 export const DPD_KURIER = 'DPD_CLASSIC'
@@ -57,15 +58,6 @@ function wymiary(u: UstawieniaPrzesylki): { sides: readonly [number, number, num
   return { sides, problemy }
 }
 
-function waga(input: ShipmentInput, u: UstawieniaPrzesylki): { gramy: number; problemy: ShipmentProblem[] } {
-  if (input.weightComplete && input.weightG !== null && input.weightG > 0) return { gramy: input.weightG, problemy: [] }
-  const zaKg = u.weightKg ?? WBUDOWANE_USTAWIENIA.weightKg
-  const znane = input.weightG ?? 0
-  const gramy = Math.max(Math.round(zaKg * 1000), znane)
-  const tekst = znane > 0 && gramy === znane ? `Waga niepełna: ${gramy / 1000} kg znanych pozycji plus sztuki bez wagi.` : `Waga domyślna ${gramy / 1000} kg: produkty w zamówieniu nie mają wagi.`
-  return { gramy, problemy: [ostrzezenie('waga_domyslna', tekst)] }
-}
-
 /** Parametry przesyłki DPD z danych zamówienia. Bez efektów ubocznych; `problems` z poziomem BLAD = nie do nadania. */
 export function wyliczPrzesylkeDpd(input: ShipmentInput, u: UstawieniaDpd): PreparedParcel {
   const problems: ShipmentProblem[] = [...u.problemy]
@@ -74,10 +66,9 @@ export function wyliczPrzesylkeDpd(input: ShipmentInput, u: UstawieniaDpd): Prep
   const pickupPoint = input.pickupPoint?.trim() || null
   const empik = input.carrier === 'DPD_EMPIK'
   const pickup = empik || (input.carrier === 'DPD' && pickupPoint !== null)
-  if (empik) {
-    problems.push(ostrzezenie('empik_niepotwierdzone', 'Dostawa do salonu Empik bezpośrednio przez DPD nie jest potwierdzona z DPD (usługa DPD Pickup z kodem salonu): sprawdź przed nadaniem.'))
-    if (!pickupPoint) problems.push(blad('punkt', 'Brak kodu salonu Empik w danych zamówienia.'))
-  }
+  // ostrzeżenie `empik_niepotwierdzone` zdjęte (salony idą z Kompletora od 20.11.2026, FID po przewoźniku
+  // `DPD_EMPIK` w zlecenie-dpd.ts), więc salon nie wymaga już osobnego potwierdzenia przy nadaniu
+  if (empik && !pickupPoint) problems.push(blad('punkt', 'Brak kodu salonu Empik w danych zamówienia.'))
   const wym = wymiary(u)
   problems.push(...wym.problemy)
   const w = waga(input, u)

@@ -20,7 +20,7 @@ export interface StanKont {
 
 export async function zapiszKonta(_prev: StanKont, form: FormData): Promise<StanKont> {
   const ctx = await requirePermission('ustawienia')
-  const konta = await kontaPrzewoznikow(ctx.db, registry)
+  const konta = await kontaPrzewoznikow(ctx.db, registry, undefined, { zWysylamZAllegro: true })
   const zmiany: ZapisKonta[] = konta.map((k) => ({
     id: k.id,
     sekrety: Object.fromEntries(k.sekrety.map((s) => [s.name, String(form.get(`k-${k.id}-s-${s.name}`) ?? '')])),
@@ -31,7 +31,7 @@ export async function zapiszKonta(_prev: StanKont, form: FormData): Promise<Stan
     const r = await zapiszKontaPrzewoznikow(ctx.db, registry, zmiany, { actorId: ctx.user.id, env: process.env })
     // konto wyłączone po błędach, któremu właśnie wpisano klucze albo zmieniono
     // ustawienia, od razu dostaje „Włącz ponownie” (test połączenia w kolejce); błąd zlecenia nie psuje zapisu
-    if (r.klucze || r.reguly) {
+    if (r.klucze || r.reguly || r.konta) {
       try {
         const wyl = await wylaczoneKonta(ctx.db)
         for (const z of zmiany) {
@@ -43,8 +43,10 @@ export async function zapiszKonta(_prev: StanKont, form: FormData): Promise<Stan
       }
     }
     revalidatePath(PATH)
-    if (!r.klucze && !r.reguly) return { ok: true, komunikat: 'Nic się nie zmieniło.' }
-    return { ok: true, komunikat: `Zapisano${r.klucze ? `: klucze (${r.klucze})` : ''}${r.reguly ? `${r.klucze ? ',' : ':'} ustawienia (${r.reguly} reguł)` : ''}.` }
+    // ustawienia konta zapisują się przy koncie, także gdy żadna reguła go jeszcze nie używa
+    const co = [r.klucze ? `klucze (${r.klucze})` : null, r.konta ? `ustawienia kont (${r.konta})` : null, r.reguly ? `nadawanie (${r.reguly} reguł)` : null].filter(Boolean)
+    if (!co.length) return { ok: true, komunikat: 'Nic się nie zmieniło.' }
+    return { ok: true, komunikat: `Zapisano: ${co.join(', ')}.` }
   } catch (e) {
     if (e instanceof KontoPrzewoznikaError) return { ok: false, komunikat: e.message }
     if (e instanceof SecretError) return { ok: false, komunikat: 'Nie udało się zaszyfrować klucza: serwer nie ma klucza szyfrowania (administrator).' }

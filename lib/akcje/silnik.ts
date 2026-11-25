@@ -204,8 +204,9 @@ async function faktura(db: Db, k: Konta, now: Date): Promise<Kandydat[]> {
   ])
   const znane = new Set(poStatusie.map((o) => o.id))
   const brakujace = [...new Set(kopieFaktur.map((f) => f.orderId!))].filter((id) => !znane.has(id))
-  // zamówienia spoza okna `updatedAt` tylko z kont w cieniu: konto w pracy bez zmian
-  const zFaktur = brakujace.length ? (await db.order.findMany({ where: { id: { in: brakujace } }, select: ZAMOWIENIE_SEL })).filter((o) => k.cien(o.channel, o.channelAccountId)) : []
+  // zamówienia spoza okna `updatedAt` tylko z kont w cieniu: konto w pracy bez zmian; zamknięte punktem cięcia też nie
+  // (kopia faktury BL w oknie dawała plan zamówieniu zamkniętemu na koncie w podglądzie)
+  const zFaktur = brakujace.length ? (await db.order.findMany({ where: { id: { in: brakujace }, ...BEZ_ZAMKNIETYCH_PRZY_PRZEJSCIU }, select: ZAMOWIENIE_SEL })).filter((o) => k.cien(o.channel, o.channelAccountId)) : []
   const kandydaci = [...poStatusie, ...zFaktur]
   if (!kandydaci.length) return []
   const bl = await statusyBl(db, k, kandydaci)
@@ -298,7 +299,7 @@ async function gotoweDoOdbioru(db: Db, k: Konta, now: Date): Promise<Kandydat[]>
   const doOdbioru = statusyKopii.filter((s) => blStatusFamily(s.statusName!).family === 'DO_ODBIORU').map((s) => s.statusId)
   const kopie = doOdbioru.length ? await db.blOrderSnapshot.findMany({ where: { organizationId: organizationIdOf(db), statusId: { in: doOdbioru }, fetchedAt: { gte: od } }, select: { blOrderId: true } }) : []
   const zKopii = kopie.length
-    ? (await db.order.findMany({ where: { blOrderId: { in: kopie.map((s) => s.blOrderId) }, id: { notIn: poStatusie.map((o) => o.id) } }, select: ZAMOWIENIE_SEL })).filter((o) => k.cien(o.channel, o.channelAccountId))
+    ? (await db.order.findMany({ where: { blOrderId: { in: kopie.map((s) => s.blOrderId) }, id: { notIn: poStatusie.map((o) => o.id) }, ...BEZ_ZAMKNIETYCH_PRZY_PRZEJSCIU }, select: ZAMOWIENIE_SEL })).filter((o) => k.cien(o.channel, o.channelAccountId))
     : []
   const kandydaci = [...poStatusie, ...zKopii]
   if (!kandydaci.length) return []

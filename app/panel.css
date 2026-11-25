@@ -529,7 +529,11 @@ details.pk-msg[open] summary { margin-bottom: 4px; }
 @media (max-width: 760px) { .bars.bars4 { grid-template-columns: max-content minmax(30px, 1fr) 3ch; } .bars.bars4 .a { grid-column: 2 / -1; margin-top: -6px; text-align: left; font-size: 12px; } .mchart .ax { font-size: 16px; } .mchart .dl { font-size: 16px; } }
 @media (max-width: 760px) { .who-long { display: none; } }
 @media (max-width: 760px) { .mchart .ax, .mchart .dl { font-size: 24px; } }
-details > summary { min-height: 44px; display: flex; align-items: center; }
+details > summary { min-height: 44px; display: flex; align-items: center; cursor: pointer; }
+/* rozwijana sekcja jako przycisk ma szerokość przycisku, nie całego wiersza */
+details > summary.btn { display: inline-flex; list-style: none; }
+details > summary.btn::-webkit-details-marker { display: none; }
+details[open] > summary.btn { margin-bottom: var(--s2); }
 @media (max-width: 760px) { .pk-top .pk-notes { min-height: 44px; } }
 
 /* ---------- po przeglądzie pakowania ---------- */
@@ -544,6 +548,11 @@ details > summary { min-height: 44px; display: flex; align-items: center; }
 .pk-left { margin-top: 10px; font-size: 16px; }
 .checkrow.must + .checkrow.must { margin-top: 8px; }
 .checkrow.blue-must { background: var(--blue-bg); }
+/* krok „Sprawdź przed nadaniem” w bloku przesyłki (pola wyboru ostrzeżeń, ton ostrzegawczy, nie błąd) */
+.np-sprawdz { border: 0; padding: 0; margin: 16px 0 0; min-width: 0; }
+.np-sprawdz legend { padding: 0; margin-bottom: 4px; }
+.np-sprawdz .checkrow.must { font-size: 14px; align-items: flex-start; margin-top: 0; }
+.np-sprawdz .checkrow.must input[type="checkbox"] { margin-top: 0; }
 .rowflag:empty { display: none; }
 .rowflag { margin-top: 6px; }
 .only-diff { display: none !important; }
@@ -854,6 +863,15 @@ tr.removed td { color: var(--ink-2); text-decoration: line-through; }
 .sel-all { display: flex; align-items: center; margin: 0 0 8px; }
 .sel-all-l { display: inline-flex; align-items: center; gap: 8px; min-height: 36px; font-size: 14px; cursor: pointer; }
 .sel-all-l input { width: 20px; height: 20px; }
+/* zwijane sekcje kurierów (nazwa w pasku = przycisk) i zaznaczanie per kurier nad jego listą */
+.c-przel { display: inline-flex; align-items: center; gap: 6px; min-height: 36px; margin: -4px 0; padding: 0 6px 0 0; border: 0; background: none; color: inherit; font: inherit; cursor: pointer; border-radius: 6px; }
+.c-przel:hover b { text-decoration: underline; }
+.c-przel:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+.c-przel-ikona { display: inline-block; width: 1em; text-align: center; }
+.c-przel-napis { margin-left: 4px; padding: 2px 8px; border: 1px solid currentColor; border-radius: 999px; font-size: 12px; font-weight: 600; line-height: 1.4; opacity: .75; white-space: nowrap; }
+.c-przel:hover .c-przel-napis { opacity: 1; }
+.olist a.ord { overflow-wrap: anywhere; word-break: break-word; min-width: 0; max-width: 100%; } /* pełny numer z kanału łamie się jak na liście */
+.sel-kurier { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 18px; margin: 0 0 6px; padding-left: 2px; }
 .olist .ck-l { display: inline-flex; align-items: center; justify-content: center; min-width: 32px; min-height: 32px; cursor: pointer; }
 .zones .cnt { margin-left: 6px; font-size: 12px; }
 .zones .lbl { margin-right: 2px; }
@@ -869,7 +887,7 @@ tr.removed td { color: var(--ink-2); text-decoration: line-through; }
 .pickup-form { display: grid; grid-template-columns: minmax(120px, 1fr) minmax(0, 2.4fr) 110px 110px auto auto; gap: 10px 14px; align-items: center; padding: 10px 0; border-top: 1px solid var(--line); }
 .pickup-form:first-of-type { border-top: 0; }
 .pickup-form .input { width: 100%; font-family: var(--f-mono); }
-@media (max-width: 1024px) { .olist .ck-l, .sel-all-l { min-width: 44px; min-height: 44px; } .wk label { min-height: 44px; } }
+@media (max-width: 1024px) { .olist .ck-l, .sel-all-l { min-width: 44px; min-height: 44px; } .wk label { min-height: 44px; } .c-przel { min-height: 44px; } }
 @media (max-width: 760px) {
   .tbl.cards.olist tr.orow { position: relative; }
   /* z-index: następna komórka (position: relative) przykrywała checkbox i dotknięcie nie zaznaczało */
@@ -1077,6 +1095,7 @@ details.agent summary { cursor: pointer; font-weight: 600; min-height: 32px; dis
    klient obok numeru, strzałki do sąsiednich zamówień. Na 390 px jedna kolumna, strzałki obok siebie. */
 .kz-gora { margin-bottom: var(--s4); }
 .kz-klient { margin: 2px 0 0; font-size: 18px; color: var(--ink-2); overflow-wrap: anywhere; }
+.kz-nr-bl { margin: 2px 0 0; }
 .kz-strzalki { display: flex; gap: var(--s2); }
 .kz-strzalki .btn { min-width: 44px; justify-content: center; }
 .kz-strzalki [aria-disabled='true'] { opacity: 0.4; pointer-events: none; }
@@ -1131,6 +1150,8 @@ output.input { display: flex; align-items: center; }
 .linkbtn { background: none; border: 0; padding: 0; color: var(--kolor-link); text-decoration: underline; cursor: pointer; font: inherit; min-height: 24px; }
 .konto-przew + .konto-przew { margin-top: var(--odstep-4, 16px); }
 .konto-pola { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: var(--odstep-3, 12px) var(--odstep-4, 16px); }
+/* etykiety mają 1–3 linie: pole dosunięte do dołu komórki, żeby kontrolki w wierszu stały w jednej linii */
+.konto-pola > .ui-pole { justify-content: flex-end; }
 @media (max-width: 760px) { .przew-tbl .przew-godz { max-width: none; } }
 /* Braki towaru — decyzja w wierszu i masowa */
 .braki-decyzja, .ui-akcja-masowa { display: flex; flex-wrap: wrap; align-items: center; gap: var(--odstep-2, 8px); }
@@ -1144,6 +1165,17 @@ output.input { display: flex; align-items: center; }
 /* kolejka pakowania — akcje kuriera, „Pakuj” w wierszu, lokalizacja przy pozycji, większe pola wyboru
    w widoku „Wygodnie” (cel dotykowy ≥ 44 px, nie tylko na telefonie) */
 .c-group-akcje { display: flex; flex-wrap: wrap; align-items: center; gap: var(--odstep-2); }
+/* Zamówienie kuriera: osobny wiersz pod paskiem kuriera (numer zlecenia, godziny, przycisk z oknem) */
+.c-group-kurier { flex-basis: 100%; display: flex; flex-wrap: wrap; align-items: center; gap: var(--odstep-2); }
+.c-group-kurier .chip { white-space: normal; }
+.kurier-linia, .kurier-zlecenie { display: flex; flex-wrap: wrap; align-items: center; gap: var(--odstep-2); }
+.kurier-linia { flex-basis: 100%; }
+.kurier-proby { flex-basis: 100%; }
+.kurier-proby > summary, .kurier-szczegoly > summary { cursor: pointer; min-height: 44px; display: inline-flex; align-items: center; font-size: var(--tekst-sm, 13px); color: var(--kolor-tekst-2); }
+.kurier-proby > .kurier-zlecenie { margin-top: var(--odstep-2); }
+.kurier-okno { display: grid; gap: var(--odstep-3); }
+.kurier-godziny { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--odstep-3); }
+.kurier-podpowiedzi { display: flex; flex-wrap: wrap; align-items: center; gap: var(--odstep-2); }
 .olist .pakuj-kom { width: 1%; white-space: nowrap; text-align: right; }
 .pi .lok { display: inline-block; padding: 0 var(--odstep-1); border-radius: var(--promien-sm); background: var(--kolor-info-tlo); color: var(--kolor-info); font-size: 12px; font-weight: 600; }
 [data-gestosc='wygodnie'] .olist .ck-l, [data-gestosc='wygodnie'] .sel-all-l { min-width: 44px; min-height: 44px; }
@@ -1347,3 +1379,7 @@ html:has(.asystent-okno) .ui-toasty:not(.ui-toasty-bledy) { right: calc(var(--od
 @media print { .asystent { display: none; } }
 /* ostrzeżenie pod pozycjami opłaconego zamówienia z utworzoną przesyłką */
 .kz-ostrzezenie { margin: var(--s2) 0 0; padding: 8px 12px; border-left: 4px solid var(--amber-ink); background: var(--amber-bg); border-radius: 0 6px 6px 0; }
+/* ekran Produkty → Kategorie (tabela .tbl.cards jak lista produktów; wcięcie wg poziomu, węższe na telefonie) */
+.kat-nazwa { display: inline-block; padding-inline-start: calc(var(--kat-poziom, 0) * 20px); }
+.kat-akcje form.inline { display: contents; }
+@media (max-width: 760px) { .kat-nazwa { padding-inline-start: calc(var(--kat-poziom, 0) * 10px); } }

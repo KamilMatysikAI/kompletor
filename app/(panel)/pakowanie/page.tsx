@@ -11,7 +11,7 @@ import { automatyWysylki } from '@/lib/wysylka/automaty'
 import { ZONE_FILTER_ALL, zoneColor, zoneFilterButtons, zoneName, type ZoneDefT } from '@/lib/pakowanie/strefy'
 import { accounts } from '@/lib/panel/dane'
 import { money, qty, when } from '@/lib/panel/format'
-import { toWarsaw } from '@/lib/rdzen/kalendarz'
+import { isBusinessDay, toWarsaw } from '@/lib/rdzen/kalendarz'
 import { requireSession } from '@/lib/panel/kontekst'
 import { sesjaZamowien } from '@/lib/stanowisko/cwiczenie'
 import { ustawieniaStanowiska } from '@/lib/stanowisko/ustawienia'
@@ -21,8 +21,14 @@ import { StanDrukarek } from '../_komponenty/stan-drukarek'
 import { KlikalneWiersze } from '../_komponenty/wiersze'
 import { przyjechal } from './akcje'
 import { NakladkaPakowania } from './nakladka'
-import { PrzyjechalPrzycisk, Zaznaczanie } from './zaznaczanie'
+import { PrzyjechalPrzycisk, Zaznaczanie, ZaznaczKuriera, ZaznaczoneWKurierze } from './zaznaczanie'
+import { PanelKuriera, PrzelacznikKuriera, SekcjaKuriera } from './sekcja-kuriera'
+import { CIASTKO_ROZWINIETE, idDoPakowania, kluczKuriera, rozwinieteZ } from '@/lib/pakowanie/zaznaczenie'
+import { cookies } from 'next/headers'
 import { SkanKolejki } from './skan-kolejki'
+import { LinieKuriera, ZamowKuriera } from './kurier'
+import { opisZlecenia, stanZamawianiaKuriera, type StanKuriera } from '@/lib/wysylka/zamowienie-kuriera'
+import { AKTYWNE_ZLECENIA_KURIERA, domyslnyTerminKuriera, terminWzgledemZlecen } from '@/lib/wysylka/kurier-widok'
 import { Baner, NaglowekStrony, Odznaka, PrzyciskLink, PustyStan, StatusZamowienia, Zakladki } from '@/app/ui'
 import { SLOWNIK } from '@/lib/panel/slownik'
 
@@ -60,7 +66,41 @@ function ZoneChip({ z, zones }: { z: QueueRow['zone']; zones: readonly ZoneDefT[
 /** Adres okna pakowania nad kolejką dla podanych zamówień. */
 const pakujHref = (kolejka: string, ids: string[]) => `${kolejka}${kolejka.includes('?') ? '&' : '?'}pakuj=${encodeURIComponent(ids.join(','))}`
 
-function GroupBar({ g, now, canArrive, back, canSettings, canPack, wyslane }: { g: QueueGroup<QueueRow>; now: Date; canArrive: boolean; back: string; canSettings: boolean; canPack: boolean; wyslane: boolean }) {
+const hhmm = (m: number) => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`
+
+/**
+ * Zamówienie kuriera u przewoźnika z włączonym „Zamawianie kuriera z Kompletora” (konto przewoźnika, „Zaawansowane”):
+ * zamówione podjazdy od dziś (numer zlecenia, godziny) i przycisk z oknem. Bez włączenia pasek wygląda jak dotąd.
+ */
+function KurierWPasku({ k, label, carrier, dzis, terazMin }: { k: StanKuriera; label: string; carrier: string; dzis: string; terazMin: number }) {
+  // zamówiony już podjazd na dzień z harmonogramu (np. automat na jutro): okno podpowiada ten dzień i pyta „drugi raz?”
+  const t = terminWzgledemZlecen(domyslnyTerminKuriera(k.propozycja, dzis, terazMin, isBusinessDay(dzis) && k.dzisOdbior, k.regula), k.propozycja?.data ?? null, k.zlecenia)
+  const domyslne = { data: t.data, od: t.odMin !== null ? hhmm(t.odMin) : '', do: t.doMin !== null ? hhmm(t.doMin) : '', liczba: k.paczki.liczba, waga: k.paczki.wagaKg }
+  // tryb okna (zwykłe / „Ponów nieudany odbiór” / „Zamów drugi raz”) liczy okno dla wybranego dnia: trybOknaKuriera
+  // (lib/wysylka/kurier-widok.ts); „nie przyjął” zaznaczone ręcznie liczy się jak aktywne zlecenie
+  // w oknie: podjazdy już zamówione od dziś (gdy osoba wybierze w oknie inny dzień niż zamówiony)
+  const zamowione = k.zlecenia.filter((z) => z.dzien >= dzis && AKTYWNE_ZLECENIA_KURIERA.includes(z.stan)).map((z) => ({ dzien: z.dzien, opis: opisZlecenia(z, label, dzis) }))
+  return (
+    <div className="c-group-kurier">
+      {/* jedna linia na dzień odbioru, wcześniejsze próby zwinięte, rozstrzyganie niewiadomej */}
+      <LinieKuriera zlecenia={k.zlecenia} label={label} dzis={dzis} />
+      {/* „Zamawiaj kuriera automatycznie” w koncie przewoźnika: co automat zrobi albo dlaczego nie (przycisk ręczny zostaje) */}
+      {k.automat?.opis && <p className="muted small kurier-automat">{k.automat.opis}</p>}
+      <ZamowKuriera
+        carrier={carrier}
+        label={label}
+        powod={k.powod}
+        domyslne={domyslne}
+        zlecenia={k.zlecenia}
+        zamowione={zamowione}
+        kontekst={{ regula: k.regula, dzis, terazMin, godzinaOdbioruMin: k.propozycja?.odMin ?? null }}
+        poPrzesylkach={k.poPrzesylkach}
+      />
+    </div>
+  )
+}
+
+function GroupBar({ g, now, canArrive, back, canSettings, canPack, wyslane, kurier }: { g: QueueGroup<QueueRow>; now: Date; canArrive: boolean; back: string; canSettings: boolean; canPack: boolean; wyslane: boolean; kurier?: StanKuriera }) {
   const arrivedToday = !!g.lastArrival && toWarsaw(g.lastArrival.arrivedAt).day === toWarsaw(now).day
   const urgent = isUrgent(g)
   // „Pakuj wszystkie”: niespakowane tego kuriera z tej strony, w kolejności kolejki
@@ -68,7 +108,7 @@ function GroupBar({ g, now, canArrive, back, canSettings, canPack, wyslane }: { 
   return (
     <div className={`c-group${urgent ? ' urgent' : ''}`} id={`kurier-${g.carrier ?? 'brak'}`}>
       <div>
-        <b>{g.label}</b>
+        <PrzelacznikKuriera etykieta={g.label} ile={g.orders.filter((o) => o.status !== 'SPAKOWANE').length} />
         {g.pickup && g.schedule ? (
           <>
             {' '}
@@ -89,6 +129,7 @@ function GroupBar({ g, now, canArrive, back, canSettings, canPack, wyslane }: { 
         · zostało <b>{g.toPack}</b>
         {g.packed > 0 && <span className="muted"> · spakowane {g.packed}</span>}
         {g.handedOver > 0 && <span className="muted"> · pojechało {g.handedOver}</span>}
+        <ZaznaczoneWKurierze klucz={kluczKuriera(g.carrier)} />
       </div>
       <div className="c-group-akcje">
         {canPack && doPakowania.length > 0 && (
@@ -112,6 +153,7 @@ function GroupBar({ g, now, canArrive, back, canSettings, canPack, wyslane }: { 
           <span className="muted small">{arrivalText(g.label, g.lastArrival, g.pickup, g.schedule, now)}</span>
         ) : null}
       </div>
+      {kurier && g.carrier && <KurierWPasku k={kurier} label={CARRIER_SHORT[g.carrier]} carrier={g.carrier} dzis={toWarsaw(now).day} terazMin={Math.floor(toWarsaw(now).msOfDay / 60_000)} />}
     </div>
   )
 }
@@ -205,7 +247,7 @@ function Wiersze({ rows, now, canPack, back, zones }: { rows: QueueRow[]; now: D
                 </div>
               </td>
               <td data-label="Kwota" className="right num">
-                {money(o.totalGross)}
+                {money(o.totalGross, o.waluta)}
               </td>
               {canPack && (
                 <td className="nolabel pakuj-kom">
@@ -272,7 +314,12 @@ export default async function Pakowanie({ searchParams }: Props) {
   const canArrive = ctx.permissions.has('pakowanie.kurier')
   const canSettings = ctx.permissions.has('ustawienia')
   const canPack = ctx.permissions.has('pakowanie.stanowisko')
-  const onPage = q.groups.reduce((s, g) => s + g.orders.length, 0)
+  // zamawianie kuriera: tylko z uprawnieniem do „Przyjechał” i tylko u przewoźników z włączonym zamawianiem w koncie
+  const kurier = canArrive && tab !== 'na_sucho' ? await stanZamawianiaKuriera(ctx.db) : new Map<string, StanKuriera>()
+  // pola zaznaczenia mają tylko niespakowane (spakowane liczy pasek kuriera)
+  const onPage = q.groups.reduce((s, g) => s + idDoPakowania(g.orders).length, 0)
+  // rozwinięte sekcje kurierów z ciasteczka (domyślnie wszystkie zwinięte)
+  const rozwiniete = new Set(rozwinieteZ((await cookies()).get(CIASTKO_ROZWINIETE)?.value))
   // okno pakowania nad kolejką: bez uprawnienia stanowiska parametr nic nie otwiera
   const pakuj = canPack ? idZamowien(sp.pakuj) : []
   const [sesjaPakowania, ustawieniaPakowania] = pakuj.length ? await Promise.all([sesjaZamowien(ctx.db, pakuj), ustawieniaStanowiska(ctx.db)]) : [null, null]
@@ -362,21 +409,31 @@ export default async function Pakowanie({ searchParams }: Props) {
                 : 'Zamówienia do realizacji pojawią się tu same, pogrupowane po kurierach.'}
             </PustyStan>
           ) : (
-            <Zaznaczanie key={JSON.stringify(sp)} naStronie={onPage} canPack={canPack} tuKolejka={back}>
+            <Zaznaczanie key={JSON.stringify(sp)} naStronie={onPage} canPack={canPack} tuKolejka={back} idsKuriera={q.idsKuriera}>
               <KlikalneWiersze>
-                {q.groups.map((g) => (
-                  <section key={g.carrier ?? 'brak'} aria-label={`Kurier: ${g.label}`}>
-                    <GroupBar g={g} now={now} canArrive={canArrive} back={back} canSettings={canSettings} canPack={canPack} wyslane={automaty.wyslanePoPrzyjezdzie} />
-                    {/* 19.11.2026: spakowane naprawdę nie stoją na liście do pakowania; ich liczbę pokazuje pasek kuriera („spakowane N”) */}
-                    {g.orders.some((o) => o.status !== 'SPAKOWANE') ? (
-                      <Wiersze rows={g.orders.filter((o) => o.status !== 'SPAKOWANE')} now={now} canPack={canPack} back={back} zones={q.zones} />
-                    ) : g.orders.length > 0 ? (
-                      <p className="muted small">Wszystko spakowane: paczki czekają na kuriera.</p>
-                    ) : (
-                      <p className="muted small">{zone === ZONE_FILTER_ALL ? 'Brak zamówień do tego odbioru.' : 'Brak zamówień w tej strefie.'}</p>
-                    )}
-                  </section>
-                ))}
+                {q.groups.map((g) => {
+                  const klucz = kluczKuriera(g.carrier)
+                  const wszystkich = q.idsKuriera[klucz]?.length ?? null
+                  return (
+                    // sekcja kuriera domyślnie zwinięta; pasek z przyciskami kuriera widać zawsze
+                    <SekcjaKuriera key={klucz} klucz={klucz} etykieta={g.label} otwartaNaStart={rozwiniete.has(klucz)}>
+                      <GroupBar g={g} now={now} canArrive={canArrive} back={back} canSettings={canSettings} canPack={canPack} wyslane={automaty.wyslanePoPrzyjezdzie} kurier={g.carrier ? kurier.get(g.carrier) : undefined} />
+                      <PanelKuriera>
+                        {/* 19.11.2026: spakowane naprawdę nie stoją na liście do pakowania; ich liczbę pokazuje pasek kuriera („spakowane N”) */}
+                        {g.orders.some((o) => o.status !== 'SPAKOWANE') ? (
+                          <>
+                            <ZaznaczKuriera klucz={klucz} etykieta={g.label} wszystkich={wszystkich} />
+                            <Wiersze rows={g.orders.filter((o) => o.status !== 'SPAKOWANE')} now={now} canPack={canPack} back={back} zones={q.zones} />
+                          </>
+                        ) : g.orders.length > 0 ? (
+                          <p className="muted small">Wszystko spakowane: paczki czekają na kuriera.</p>
+                        ) : (
+                          <p className="muted small">{zone === ZONE_FILTER_ALL ? 'Brak zamówień do tego odbioru.' : 'Brak zamówień w tej strefie.'}</p>
+                        )}
+                      </PanelKuriera>
+                    </SekcjaKuriera>
+                  )
+                })}
               </KlikalneWiersze>
             </Zaznaczanie>
           )}

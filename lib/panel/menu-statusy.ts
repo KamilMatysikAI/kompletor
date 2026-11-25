@@ -25,7 +25,7 @@ export function adresWidoku(widok: KluczGrupy | 'po_terminie', przewoznik?: Carr
  * Podpozycje „Zamówienia”: najpierw „Wszystkie” i „Wymaga działania” (bez kropki), potem grupy statusów w kolejności
  * pracy magazynu, z kropką w kolorze statusu. `kolory` (klucz grupy → kolor CSS) to punkt podpięcia statusów własnych
  * firmy; bez niego kropka bierze ton etapu. Licznik zero zostaje widoczny (jak w dotychczasowym panelu),
- * żeby lista statusów nie skakała.
+ * żeby lista statusów nie skakała. „Wszystkie” jest bez licznika.
  */
 export function pozycjeStatusow(l: LicznikiPanelu, o: { kolory?: Partial<Record<KluczGrupy, string>>; ustawienia?: boolean } = {}): PozycjaMenu[] {
   if (l.firmy) return pozycjeStatusowFirmy(l, o)
@@ -48,9 +48,14 @@ export function pozycjeStatusow(l: LicznikiPanelu, o: { kolory?: Partial<Record<
     return {
       href: adresWidoku(klucz),
       etykieta: g.etykieta,
-      licznik: n,
-      // „Wymaga działania” > 0 to jedyny licznik w tonie ostrzeżenia (jak w panelu); reszta szara
-      licznikTon: klucz === 'wymaga' && n > 0 ? ('ostrzezenie' as const) : ('neutralny' as const),
+      // „Wszystkie” bez licznika (licznik nic nie mówi i przeszkadza); reszta z licznikiem
+      ...(klucz === 'wszystkie'
+        ? {}
+        : {
+            licznik: n,
+            // „Wymaga działania” > 0 to jedyny licznik w tonie ostrzeżenia (jak w panelu); reszta szara
+            licznikTon: klucz === 'wymaga' && n > 0 ? ('ostrzezenie' as const) : ('neutralny' as const),
+          }),
       widok: { widok: klucz },
       ...(kropka ? { kropka } : {}),
       ...(o.kolory?.[klucz] ? { kolor: o.kolory[klucz] } : {}),
@@ -174,7 +179,8 @@ function pozycjeStatusowFirmy(l: LicznikiPanelu, o: { ustawienia?: boolean }): P
     : []
   const wymaga = l.grupy.wymaga
   return [
-    { href: adresWidoku('wszystkie'), etykieta: 'Wszystkie', licznik: l.grupy.wszystkie, licznikTon: 'neutralny', widok: { widok: 'wszystkie' }, dzieci: [] },
+    // „Wszystkie” bez licznika (jak w `pozycjeStatusow`)
+    { href: adresWidoku('wszystkie'), etykieta: 'Wszystkie', widok: { widok: 'wszystkie' }, dzieci: [] },
     { href: adresWidoku('wymaga'), etykieta: 'Wymaga działania', licznik: wymaga, licznikTon: wymaga > 0 ? 'ostrzezenie' : 'neutralny', widok: { widok: 'wymaga' }, dzieci: [] },
     ...poTerminie(l),
     ...bezGrupy.map((s) => pozycja(s)),

@@ -5,6 +5,7 @@
 import type { PrismaClient, Shipment } from '@prisma/client'
 import { organizationIdOf } from '@/lib/db'
 import { atrapaEtykiety, type EtykietaDoDruku, type ZrodloEtykiety } from '@/lib/druk/etykieta'
+import { etykietaOdbioru } from '@/lib/druk/etykieta-odbioru'
 import { BladDruku } from '@/lib/druk/zlecenia'
 import { odszyfrujEtykiete } from '@/lib/klienci/etykieta'
 import { BladSzyfruKlienta, KOMUNIKAT_BRAK_KLUCZA } from '@/lib/klienci/szyfr'
@@ -47,10 +48,13 @@ async function etykietaZWiersza(db: PrismaClient, s: Shipment, env: Env): Promis
   return s.labelFormat === 'ZPL' ? { zpl: plik, opis } : { pdf: plik, opis }
 }
 
-/** Domyślne źródło etykiety panelu: przewoźnik, gdy jest przesyłka; inaczej atrapa próbna. */
+/**
+ * Domyślne źródło etykiety panelu: odbiór osobisty = etykieta odbioru do naklejenia na paczkę (przesyłka
+ * nie powstaje); inaczej przewoźnik, gdy jest przesyłka, a bez niej atrapa próbna.
+ */
 export const etykietaZamowienia: ZrodloEtykiety = {
   nazwa: 'przewoznik-albo-atrapa',
-  async etykieta(db, orderId, now) {
-    return (await etykietaPrzesylki(db, orderId)) ?? atrapaEtykiety.etykieta(db, orderId, now)
+  async etykieta(db, orderId, now, kto) {
+    return (await etykietaOdbioru(db, orderId, now, kto?.userId ?? null)) ?? (await etykietaPrzesylki(db, orderId)) ?? atrapaEtykiety.etykieta(db, orderId, now)
   },
 }

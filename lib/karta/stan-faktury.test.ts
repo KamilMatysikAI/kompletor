@@ -54,6 +54,25 @@ describe('stanFaktury', () => {
     expect(stanFaktury(zam({ flags: { fakturaPonowionaPo: 1 }, invoices: [proba(1, 'FAILED'), proba(2, 'FAILED')] }))).toMatchObject({ blad: true })
   })
 
+  it('obca waluta: powód faktury ręcznej zamiast „W kolejce” i bez ponowienia', () => {
+    const s = stanFaktury(zam(), 'x', PO_SPAKOWANIU, { obcaWaluta: 'CZK' })
+    expect(s).toEqual({ tekst: 'Zamówienie w CZK: wystaw fakturę ręcznie w programie do faktur. Jeśli Kompletor wystawił WZ przy wysyłce, wystaw fakturę do tego WZ, bez drugiego wydania towaru.', ton: 'ostrzezenie', numer: null, blad: false, wystawiona: false, wToku: false })
+    // błąd z wcześniejszej próby: nadal powód, bez czerwonego stanu z „Ponów fakturę”
+    expect(stanFaktury(zam({ flags: { fakturaBlad: true }, invoices: [proba(1, 'FAILED')] }), 'x', PO_SPAKOWANIU, { obcaWaluta: 'CZK' })).toMatchObject({ blad: false, ton: 'ostrzezenie', wToku: false })
+  })
+
+  it('obca waluta nie zasłania faktury wystawionej ani stanu zamówienia anulowanego', () => {
+    expect(stanFaktury(zam({ invoices: [proba(1, 'ISSUED', { number: 'FV 2/2026' })] }), 'x', PO_SPAKOWANIU, { obcaWaluta: 'CZK' })).toMatchObject({ tekst: 'Wystawiona', wystawiona: true, numer: 'FV 2/2026' })
+    const anul = { status: 'ANULOWANE' as const, flags: { fakturaBlad: true }, invoices: [proba(1, 'FAILED')] }
+    expect(stanFaktury(zam(anul), 'x', PO_SPAKOWANIU, { obcaWaluta: 'CZK' })).toEqual(stanFaktury(zam(anul)))
+  })
+
+  it('obca waluta z dokumentem spoza Kompletora (faktura BL, dokument po wysyłce): stan jak przed zmianą', () => {
+    for (const o of [zam(), zam({ status: 'WYSLANE' as const }), zam({ flags: { fakturaBlad: true }, invoices: [proba(1, 'FAILED')] })])
+      expect(stanFaktury(o, 'x', PO_SPAKOWANIU, { obcaWaluta: 'CZK', dokumentPoza: true })).toEqual(stanFaktury(o, 'x', PO_SPAKOWANIU))
+    expect(stanFaktury(zam(), 'x', PO_SPAKOWANIU, { obcaWaluta: 'CZK', dokumentPoza: false }).tekst).toMatch(/^Zamówienie w CZK/)
+  })
+
   it('spakowane w trybie pracy bez próby: W kolejce (bez zmian)', () => {
     expect(stanFaktury(zam())).toMatchObject({ tekst: 'W kolejce', ton: 'info', wToku: false })
   })

@@ -366,7 +366,9 @@ describe('zamiennik („Zamień produkt”)', () => {
   })
 })
 
-describe('wartość pozycji jak na dokumencie', () => {
+// Reguła wartości pozycji z dokumentu (grosze na pozycji, rodzina zamian) czeka na osobne wydanie: w tym wydaniu raport
+// liczy wartość pozycji jak dotąd (cena × sztuki / przelicznik oferty), żeby kwoty raportu się nie zmieniły.
+describe.skip('wartość pozycji jak na dokumencie', () => {
   async function zamowienieZ(id: string, linie: Omit<Prisma.OrderLineCreateManyInput, 'orderId'>[]) {
     await a.order.create({ data: { id, ...ACC.WOO_SD, externalId: `D3-${id}`, paymentState: 'PAID', paymentMethod: 'BLIK', totalGross: '99.99', createdAtChannel: fromWarsaw('2026-11-05', 3600_000) } })
     await a.orderLine.createMany({ data: linie.map((l) => ({ ...l, orderId: id })) })

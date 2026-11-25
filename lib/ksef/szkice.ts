@@ -13,6 +13,7 @@ import { organizationIdOf } from '../db'
 import { addDays, fromWarsaw, toWarsaw } from '../rdzen/kalendarz'
 import { STATUSY_KSEF_WYSYLKA } from '../rdzen/dokument-sprzedazy'
 import { zrodloStanu } from '../rdzen/zrodlo-stanu'
+import { blokadaFakturyWaluta } from '../rdzen/waluta'
 import { parseKonfiguracjaFaktur } from '../wfirma/konfiguracja'
 import { opisBledu, pozycjeZamowienia } from '../wfirma/podglad'
 import { kosztWysylkiZamowienia, kwotaPaczkiDodatkowej, type PozycjaZamowienia, rabatLiczonyNaDokumencie, type WejsciePozycji } from '../dokumenty/pozycje'
@@ -133,7 +134,8 @@ async function przygotuj(db: Db, settings: Prisma.JsonValue, o: OrderRow, sl: Aw
   const organizationId = organizationIdOf(db)
   const now = opts.now ?? new Date()
   const gdzie = { orderId: o.id, packageNo: o.packageNo, returnId: '' }
-  const powod = powodNieDotyczy({ status: o.status, carrier: o.carrier, liczbaPozycji: o.lines.filter((l) => !l.removed).length })
+  // zamówienie w obcej walucie (kwoty nie są w złotych) — bez szkicu, faktura ręcznie (lib/rdzen/waluta.ts)
+  const powod = powodNieDotyczy({ status: o.status, carrier: o.carrier, liczbaPozycji: o.lines.filter((l) => !l.removed).length }) ?? (await blokadaFakturyWaluta(db, o))?.powod ?? null
   if (powod) {
     // stary szkic by kłamał (zamówienie mogło zostać anulowane); szkic z numerem zostaje
     await db.ksefInvoiceDraft.deleteMany({ where: { ...gdzie, numer: null } })
@@ -340,6 +342,9 @@ export async function zlozFaktureDoWysylki(db: Db, orderId: string, packageNo: n
   const settings = org?.settings ?? null
   const o = await db.order.findUnique({ where: { id: orderId }, include: { lines: true } })
   if (!o) return { ok: false, problemy: [{ kod: 'brak-zamowienia', tekst: 'Nie ma takiego zamówienia.' }] }
+  // szkic sprzed bezpiecznika waluty nie wychodzi do KSeF jako faktura w złotych
+  const waluta = await blokadaFakturyWaluta(db, o)
+  if (waluta) return { ok: false, problemy: [{ kod: 'obca-waluta', tekst: waluta.powod }] }
   const sl = await slowniki(db, [o])
   const cfgK = parseKonfiguracjaKsef(settings)
   const pozycje = pozycjeZamowienia({ ...o, packageNo }, sl.products, sl.offers)

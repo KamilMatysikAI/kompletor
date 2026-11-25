@@ -172,6 +172,10 @@ komputerze (lista zamówień). `narzedzia` to elementy paska nad tabelą (np. ek
 Komórki to gotowe węzły (`ReactNode`), nie funkcje: komponent serwerowy nie może przekazać funkcji wyspie
 klienckiej. Na telefonie tabela zamienia się w karty z etykietą kolumny przy wartości (`data-label`).
 
+Tabela pisana ręcznie (np. lista produktów) bierze te same klocki nagłówka: `NaglowekSortu` (`<th>` z
+`aria-sort`, linkiem i strzałką ▲/▼/↕, jak w `Tabela`) i `SortNaTelefonie` (te same linki jako przyciski nad listą, widoczne
+tylko ≤ 760 px, bo karty chowają wiersz nagłówków). Adres linku liczy ekran, bo zna swoje parametry filtrów.
+
 ## Nawigacja
 
 Każdy ekran ma węzeł w `NAWIGACJA` (`lib/panel/nawigacja.ts`). Test `nawigacja.test.ts` sprawdza, że każdy

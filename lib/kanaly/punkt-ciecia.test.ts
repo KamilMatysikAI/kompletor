@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { klasyfikuj, MAKS_WIEK_KOPII_MS, opisPunktuCiecia, powodStarejKopii, stareZrodla, type SwiezoscKopii, type WynikPunktuCiecia } from './punkt-ciecia'
+import { klasyfikuj, MAKS_WIEK_KOPII_MS, opisPunktuCiecia, powodStarejKopii, stareZrodla, type PozycjaPunktuCiecia, type SwiezoscKopii, type WynikPunktuCiecia } from './punkt-ciecia'
 
 const baza = { statusBl: null as string | null, fakturaBl: null as string | null, aktywneRezerwacje: 0, pracaKompletora: null as string | null, pendingAction: null as string | null }
 
@@ -117,8 +117,32 @@ describe('klasyfikuj: konto w trybie pracy', () => {
       expect(k.powod, s).toMatch(/trybie pracy/)
     }
     expect(klasyfikuj({ ...praca, statusBl: 'Do odbioru', odbiorOsobisty: true })).toMatchObject({ grupa: 'DO_SPRAWDZENIA', na: null })
+    // e-book ma własny powód (bez „paczki”)
+    expect(klasyfikuj({ ...praca, statusBl: 'E-book' }).powod).toMatch(/e-book .*sprawdź, czy klient dostał plik/)
+    expect(klasyfikuj({ ...praca, statusBl: 'Spakowane' }).powod).toMatch(/sprawdź, czy paczka wyszła/)
   })
   it('konto w podglądzie bez zmian', () => {
     expect(klasyfikuj({ ...baza, statusBl: 'Spakowane', kontoWPracy: false })).toMatchObject({ grupa: 'DO_ZAMKNIECIA', na: 'WYSLANE' })
+  })
+
+  it('konto w trybie pracy: osobna linia z liczbą jego zamówień z fakturą BL według grup', () => {
+    const poz = (orderId: string, channelAccountId: string, grupa: PozycjaPunktuCiecia['grupa']): PozycjaPunktuCiecia => ({ orderId, channel: 'WOO', channelAccountId, externalId: orderId, blOrderId: 1, status: 'DO_REALIZACJI', statusBl: 'Wysłane', fakturaBl: 'FV/1', grupa, na: null, powod: '', towarCzekal: false })
+    const w: WynikPunktuCiecia = {
+      naSucho: true,
+      konta: [{ channel: 'WOO', channelAccountId: 'podglad' }],
+      kontaWPracy: 1,
+      pozycje: [poz('p1', 'podglad', 'DO_ZAMKNIECIA'), poz('w1', 'praca', 'DO_ZAMKNIECIA'), poz('w2', 'praca', 'DO_ZAMKNIECIA'), poz('w3', 'praca', 'DO_SPRAWDZENIA'), poz('w4', 'praca', 'NIESKONCZONE_Z_FAKTURA_BL')],
+      liczby: { DO_ZAMKNIECIA: 3, NIESKONCZONE_Z_FAKTURA_BL: 1, NIESKONCZONE_BEZ_FAKTURY: 0, CZEKA_NA_ROZLICZENIE: 0, DO_SPRAWDZENIA: 1, BEZ_PARY_W_BL: 0 },
+      zamkniete: 0,
+      bledy: [],
+      wKolejcePakowania: 0,
+      wKolejceZFakturaBl: 0,
+      towarCzekal: 0,
+      swiezosc: { zamowienia: null, dziennik: null, faktury: null, perKonto: [], maksWiekMs: MAKS_WIEK_KOPII_MS },
+      sprawdzonoO: new Date('2026-11-19T08:00:00Z'),
+      odmowa: null,
+    }
+    expect(opisPunktuCiecia(w)).toContain('Konta w trybie pracy, zamówienia z fakturą BaseLinkera: 4 (do zamknięcia 2, nieskończone w BaseLinkerze 1, do sprawdzenia 1)')
+    expect(opisPunktuCiecia({ ...w, kontaWPracy: 0 })).not.toContain('Konta w trybie pracy, zamówienia')
   })
 })

@@ -4,7 +4,9 @@
 //   1. konto wyłączone po błędach → żadnego żądania; wywołanie dostaje `IntegracjaWylaczonaError` (PRZEJSCIOWY z czasem
 //      ponowienia i znacznikiem „odłożone”), więc zadania czekają zamiast ginąć albo zużywać próby;
 //   2. limit tempa konta i zdolności (lib/integracje/limity.ts): zapis po odmowie odkładany (`LimitTempaError`), odczyt
-//      czeka na żeton do 30 s, potem też odłożony; zegar, który stoi, odkłada od razu (bez snu);
+//      czeka na żeton do 30 s, potem też odłożony; zegar, który stoi, odkłada od razu (bez snu). Wywołanie z panelu
+//      (`interaktywne`, czeka na nie człowiek): zapis czeka na żeton do 10 s, zanim zostanie odłożony, i bierze z całego
+//      kubełka; odczyt spoza panelu (worker, automaty) zostawia w kubełku konta rezerwę dla zapisów;
 //   3. zdrowie konta (lib/integracje/zdrowie.ts): test połączenia nie OK albo wynik TRWALY klasy uwierzytelnienia lub
 //      konfiguracji = porażka; udane wywołanie = sukces (licznik do zera). Po progu konto jest wyłączane i ta sama
 //      osłona od razu przestaje je wołać (zero kolejnych wywołań w tym przebiegu).
@@ -21,6 +23,12 @@ import { type KontoIntegracji, stanKonta, zapiszPorazke, zapiszSukces } from './
 export const ODLOZENIE_WYLACZONEGO_MS = 15 * 60_000
 /** Najdłuższe czekanie odczytu na żeton limitu, zanim odczyt też zostanie odłożony. */
 export const CZEKANIE_ODCZYTU_MS = 30_000
+/**
+ * Najdłuższe czekanie zapisu z panelu (`interaktywne`) na żeton, zanim dostanie komunikat „spróbuj za chwilę”. Czekanie
+ * jest przed żądaniem do platformy (nic jeszcze nie wyszło), więc nie może dać drugiej przesyłki; ten sam wiersz stoi w
+ * TWORZENIE, a próg „zawieszonego” tworzenia (minuty) jest daleko powyżej tych sekund.
+ */
+export const CZEKANIE_ZAPISU_MS = 10_000
 
 /** Zapis albo odczyt nie wyszedł, bo host go odłożył (limit, wyłączenie). Zawsze PRZEJSCIOWY z czasem ponowienia. */
 export class OdlozoneError extends AdapterError {
@@ -133,6 +141,12 @@ export interface OpcjeOslony {
   sleep?: (ms: number) => Promise<void>
   /** true = nie sprawdzaj wyłączenia (test połączenia przy „Włącz ponownie” musi przejść przez wyłączone konto). */
   pomijajWylaczenie?: boolean
+  /**
+   * true = wywołania z panelu, na które czeka człowiek (np. „Utwórz przesyłkę”): zapis po odmowie limitu czeka do
+   * `CZEKANIE_ZAPISU_MS`, odczyt bierze z całego kubełka. Brak = tło (worker, automaty): zapis odkładany od razu (zadanie
+   * ponowi), odczyt nie zjada rezerwy konta (`REZERWA_ZAPISOW`), tylko czeka na żeton ponad nią jak na pusty kubełek.
+   */
+  interaktywne?: boolean
 }
 
 const domyslnySleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
@@ -178,16 +192,21 @@ export async function oslonAdapter<A extends ChannelAdapter>(db: PrismaClient, a
   let zegarStoi = false
   const limit = async (cap: Capability | null, zapis: boolean, metoda: string) => {
     const start = Date.now()
+    // czas czekania: realny upływ albo suma snów (sen wstrzyknięty w testach nie przesuwa Date.now), większe z dwóch
+    let czekano = 0
     let poprzedni: number | null = null
     for (;;) {
       const t = now()
-      const r = await sprawdzLimit(db, konto.klucz, rate, cap, t)
+      const r = await sprawdzLimit(db, konto.klucz, rate, cap, t, { rezerwaKonta: !zapis && !opts.interaktywne })
       if (r.granted) return
       if (poprzedni !== null && t.getTime() <= poprzedni) zegarStoi = true
       const ktory = r.zakres === '*' ? `limit konta ${r.perMinute}/min` : `limit „${r.zakres}” ${r.perMinute}/min`
-      if (zapis || zegarStoi || Date.now() - start + r.retryAfterMs > CZEKANIE_ODCZYTU_MS)
+      // zapis z tła: odłożony od razu (zadanie ponowi bez kliknięcia); zapis z panelu i odczyt: krótkie czekanie
+      const maxCzekania = zapis ? (opts.interaktywne ? CZEKANIE_ZAPISU_MS : 0) : CZEKANIE_ODCZYTU_MS
+      if (zegarStoi || Math.max(Date.now() - start, czekano) + r.retryAfterMs > maxCzekania)
         throw new LimitTempaError(`${konto.nazwa}: ${ktory} wyczerpany (${metoda}); nic nie wysłano, ponowienie za ${Math.ceil(r.retryAfterMs / 1000)} s`, r.retryAfterMs)
       poprzedni = t.getTime()
+      czekano += r.retryAfterMs
       await sleep(r.retryAfterMs)
     }
   }

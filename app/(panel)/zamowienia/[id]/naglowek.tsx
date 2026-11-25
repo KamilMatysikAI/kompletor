@@ -14,10 +14,10 @@ import { DrukujKarte } from './drukuj-karte'
 import { KopiujDane } from './kopiuj'
 import { PrzyciskiCoDalej } from './praca'
 import { ZmianaStatusu } from './status-dowolny'
-import { GrupaMenu, klasyPrzycisku, MenuAkcji, POZYCJA_MENU, Przycisk, PrzyciskLink, StatusZamowienia } from '@/app/ui'
+import { GrupaMenu, klasyPrzycisku, MenuAkcji, Odznaka, POZYCJA_MENU, Przycisk, PrzyciskLink, StatusZamowienia } from '@/app/ui'
 import type { EtykietaStatusuFirmy } from '@/lib/panel/statusy'
 
-// numer jak w kanale albo w BL zamiast uciętego UUID, klient obok numeru (pełne imię i nazwisko z
+// numer z kanału (numer BL małą linią pod tytułem) zamiast uciętego UUID, klient obok numeru (pełne imię i nazwisko z
 // `klienci.dane`, skrót z `klienci.skrot`; tekst liczy page.tsx z jednego odczytu danych klienta) i strzałki do
 // sąsiednich zamówień w kolejności listy.
 export function Naglowek({ d, uprawnienia, klient, statusFirmy }: { d: DaneKarty; uprawnienia: ReadonlySet<string>; klient: string | null; statusFirmy?: EtykietaStatusuFirmy | null }) {
@@ -48,6 +48,8 @@ export function Naglowek({ d, uprawnienia, klient, statusFirmy }: { d: DaneKarty
           <StatusZamowienia status={o.status} firmy={statusFirmy} />
         </h1>
         {klient && <p className="kz-klient">{klient}</p>}
+        {/* numer BL tylko pomocniczo, pod tytułem (tytuł = numer z kanału) */}
+        {numer.bl !== null && <p className="kz-nr-bl muted small mono">nr BL {numer.bl}</p>}
       </div>
       <div className="kz-akcje">
         <nav className="kz-strzalki" aria-label="Sąsiednie zamówienia">
@@ -71,7 +73,8 @@ export function Naglowek({ d, uprawnienia, klient, statusFirmy }: { d: DaneKarty
           )}
         </nav>
         <div className="kz-kwota num">
-          <b>{money(o.totalGross)}</b> <span className="muted small">brutto</span>
+          <b>{money(o.totalGross, d.waluta)}</b> <span className="muted small">brutto</span>
+          {d.waluta !== 'PLN' && <Odznaka ton="ostrzezenie">waluta {d.waluta}</Odznaka>}
         </div>
         {d.coDalej && <PrzyciskiCoDalej orderId={o.id} stan={d.coDalej} filtr="glowne" />}
         {d.podglad?.coDalej && <PrzyciskiCoDalej orderId={o.id} stan={d.podglad.coDalej} filtr="glowne" wspolnyPowod={d.podglad.powody.status} />}
@@ -106,7 +109,7 @@ export function Naglowek({ d, uprawnienia, klient, statusFirmy }: { d: DaneKarty
                 </div>
               </GrupaMenu>
             )}
-            <KopiujDane orderId={o.id} numer={`${nr} (${o.externalId})`} daneKlienta={uprawnienia.has('klienci.dane')} />
+            <KopiujDane orderId={o.id} numer={nr.endsWith(` ${o.externalId}`) ? nr : `${nr} (${o.externalId})`} daneKlienta={uprawnienia.has('klienci.dane')} />
             {d.linkKanalu && (
               <GrupaMenu>
                 <a className={klasyPrzycisku('cichy', 'md', POZYCJA_MENU)} href={d.linkKanalu} target="_blank" rel="noopener noreferrer">

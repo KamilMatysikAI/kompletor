@@ -313,7 +313,7 @@ describe('planowanie zadań BL tylko dla firm z BL (krok 7)', () => {
       await planSchedule(deps, list, HARMONOGRAM_RDZENIA, new Map(), Date.now())
       const kinds = async (org: string) => (await sys.job.findMany({ where: { organizationId: org }, select: { kind: true } })).map((j) => j.kind).sort()
       const bl = HARMONOGRAM_RDZENIA.filter((h) => h.requires === 'baselinker').map((h) => h.kind)
-      expect(bl.sort()).toEqual(['cien-bl-faktury', 'cien-bl-porownanie', 'cien-raport-rozjazdow', 'cien-sprzedaz-dnia'])
+      expect(bl.sort()).toEqual(['cien-bl-faktury', 'cien-bl-porownanie', 'cien-raport-rozjazdow', 'cien-sprzedaz-dnia', 'kanaly-status-bl'])
       const a = await kinds(ORG_A)
       const b = await kinds(ORG_B)
       for (const k of bl) {

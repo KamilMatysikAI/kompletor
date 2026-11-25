@@ -17,6 +17,7 @@ import { Baner } from '@/app/ui'
 import { daneKarty } from '@/lib/karta/dane'
 import { komunikatZAdresu } from '@/lib/karta/komunikaty'
 import { szczegolyBledu } from '@/lib/karta/komunikaty-serwer'
+import { potrzebnyPodzialRekordu } from '@/lib/klienci/adres-ai'
 import { daneKlienta, powodBrakuKlienta, type DaneKlienta, type PowodBraku } from '@/lib/klienci/odczyt'
 import { imieNazwiskoMiasto, skrotTekst } from '@/lib/klienci/rekord'
 import { requireSession } from '@/lib/panel/kontekst'
@@ -132,7 +133,7 @@ export default async function Zamowienie({ params, searchParams }: Props) {
         <Szczegoly d={d} />
       </div>
       <div className="kz-dwie">
-        <Dostawa d={d} ctx={ctx} />
+        <Dostawa d={d} ctx={ctx} podzialAdresu={klient?.stan === 'PELNY' && potrzebnyPodzialRekordu(klient.rekord)} />
         <Platnosc d={d} uprawnienia={ctx.permissions} />
       </div>
       <div className="kz-dwie">

@@ -53,7 +53,7 @@ Self-host: zamiast panelu klucze mogą przyjść z env (`ORLEN_PARTNER_ID`, `ORL
 | PartnerID | konto przewoźnika (klucz) | login API Orlen Paczki |
 | PartnerKey | konto przewoźnika (klucz) | hasło API, szyfrowane, nie wraca na ekran |
 | Środowisko | konto przewoźnika, „Zaawansowane” | testowe (domyślnie) albo produkcyjne |
-| Waga domyślna | konto przewoźnika | waga paczki, gdy produkty nie mają wagi (wtedy ostrzeżenie do potwierdzenia) |
+| Waga domyślna | konto przewoźnika | waga paczki, gdy produkty nie mają wagi (wtedy niebieska informacja „Paczka pójdzie z wagą …”, bez potwierdzania; bez tego ustawienia paczka idzie z wbudowanym 1 kg i to trzeba zaznaczyć przed nadaniem) |
 | Nadawanie z Kompletora | Konta przewoźników, przełącznik przy koncie dla reguły z modułem nadawania | bez niego moduł nie wysyła do Orlen Paczki żadnego żądania nadania, etykiety ani anulowania |
 | Format etykiety | reguła przewoźnika (`formatEtykiety`, ustawia osoba techniczna) | PDF (domyślnie) albo ZPL |
 

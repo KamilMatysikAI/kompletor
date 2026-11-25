@@ -41,7 +41,7 @@ for (const key of [DPD_KEY, DPD_ZAPIS_KEY]) {
         corruptOrder: () => {},
         failNextList: () => {},
         requests: () => a.calls.map((c) => c.method),
-        readMethods: ['POST'],
+        readMethods: ['GET'],
       }
     },
   })
@@ -65,7 +65,7 @@ describe('strażnik tylko-do-odczytu', () => {
   it.each(ZAPISY)('„%s” = ReadOnlyViolation przed wysyłką', async (path) => {
     const a = dpdAtrapa()
     expect(() => assertDpdReadOnly(path)).toThrow(ReadOnlyViolation)
-    await expect(new DpdReadOnly(DPD_DEMO, AUTH, a.fetchImpl, 0, FAST.retry).post(path, {})).rejects.toBeInstanceOf(ReadOnlyViolation)
+    await expect(new DpdReadOnly(DPD_DEMO, AUTH, a.fetchImpl, 0, FAST.retry).get(path)).rejects.toBeInstanceOf(ReadOnlyViolation)
     expect(a.calls).toHaveLength(0)
   })
 
@@ -85,24 +85,24 @@ describe('strażnik tylko-do-odczytu', () => {
 })
 
 describe('klient HTTP odczytu', () => {
-  it('POST z Basic Auth i x-dpd-fid, bez przekierowań; hasło nie w treści', async () => {
+  it('GET z parametrami w adresie, Basic Auth i x-dpd-fid, bez przekierowań; hasło nie w adresie', async () => {
     const a = dpdAtrapa([json({ status: 'OK' })])
-    await new DpdReadOnly(`${DPD_DEMO}/`, AUTH, a.fetchImpl, 0, FAST.retry).post('/public/routing/v1/postalCode', { zipCode: '02274' })
-    expect(a.calls[0]).toMatchObject({ url: `${DPD_DEMO}/public/routing/v1/postalCode`, method: 'POST', redirect: 'error', body: { zipCode: '02274' } })
+    await new DpdReadOnly(`${DPD_DEMO}/`, AUTH, a.fetchImpl, 0, FAST.retry).get('/public/routing/v1/postalCode', { zipCode: '02274' })
+    expect(a.calls[0]).toMatchObject({ url: `${DPD_DEMO}/public/routing/v1/postalCode?zipCode=02274`, method: 'GET', redirect: 'error', body: null })
     expect(a.calls[0]!.headers).toMatchObject({ Authorization: `Basic ${BASIC}`, 'x-dpd-fid': DPD_FID })
-    expect(JSON.stringify(a.calls[0]!.body)).not.toContain(DPD_PASSWORD)
+    expect(a.calls[0]!.url).not.toContain(DPD_PASSWORD)
   })
 
   it('401 i 403 bez ponawiania; 429 i 5xx ponawiane, potem błąd przejściowy', async () => {
     for (const status of [401, 403]) {
       const a = dpdAtrapa([{ status, body: 'odmowa' }])
-      const e = await new DpdReadOnly(DPD_DEMO, AUTH, a.fetchImpl, 0, FAST.retry).post('/public/routing/v1/postalCode').catch((x: unknown) => x)
+      const e = await new DpdReadOnly(DPD_DEMO, AUTH, a.fetchImpl, 0, FAST.retry).get('/public/routing/v1/postalCode').catch((x: unknown) => x)
       expect((e as SourceError).retryable).toBe(false)
       expect(a.calls).toHaveLength(1)
     }
     for (const status of [429, 503]) {
       const a = dpdAtrapa([{ status, body: '' }, { status, body: '' }])
-      const e = await new DpdReadOnly(DPD_DEMO, AUTH, a.fetchImpl, 0, FAST.retry).post('/public/routing/v1/postalCode').catch((x: unknown) => x)
+      const e = await new DpdReadOnly(DPD_DEMO, AUTH, a.fetchImpl, 0, FAST.retry).get('/public/routing/v1/postalCode').catch((x: unknown) => x)
       expect((e as SourceError).retryable).toBe(true)
       expect(a.calls).toHaveLength(2)
     }
@@ -110,11 +110,11 @@ describe('klient HTTP odczytu', () => {
 
   it('hasło, login i nagłówek Basic nie trafiają do komunikatu błędu (wartownik)', async () => {
     const a = dpdAtrapa([{ error: new Error(`socket hang up ${DPD_PASSWORD} ${DPD_LOGIN} ${BASIC}`) }])
-    const e = await new DpdReadOnly(DPD_DEMO, AUTH, a.fetchImpl, 0, { attempts: 1, baseDelayMs: 0 }).post('/public/routing/v1/postalCode').catch((x: unknown) => x)
+    const e = await new DpdReadOnly(DPD_DEMO, AUTH, a.fetchImpl, 0, { attempts: 1, baseDelayMs: 0 }).get('/public/routing/v1/postalCode').catch((x: unknown) => x)
     expect(e).toBeInstanceOf(SourceError)
     for (const s of [DPD_PASSWORD, DPD_LOGIN, BASIC]) expect((e as Error).message).not.toContain(s)
     const n = dpdAtrapa([{ status: 200, body: `<html>${DPD_PASSWORD}</html>` }])
-    const e2 = await new DpdReadOnly(DPD_DEMO, AUTH, n.fetchImpl, 0, FAST.retry).post('/public/routing/v1/postalCode').catch((x: unknown) => x)
+    const e2 = await new DpdReadOnly(DPD_DEMO, AUTH, n.fetchImpl, 0, FAST.retry).get('/public/routing/v1/postalCode').catch((x: unknown) => x)
     expect((e2 as Error).message).toMatch(/nieczytelna odpowiedź/)
     expect((e2 as Error).message).not.toContain(DPD_PASSWORD)
   })
@@ -125,7 +125,9 @@ describe('adapter dpd.services.v1', () => {
     const { manifest } = DPD_DEFINITION
     expect(defaultRegistry().get(DPD_KEY)?.manifest).toBe(manifest)
     expect(manifest).toMatchObject({ kind: 'carrier', capabilities: ['shipment.prepare'], readOnly: true })
-    expect(manifest.secrets.map((s) => [s.name, s.required])).toEqual([['DPD_LOGIN', true], ['DPD_PASSWORD', true], ['DPD_MYPUDO_KEY', false]])
+    // dane DPDInfoServices opcjonalne i w obu modułach DPD: jeden zestaw kluczy = jedno konto przewoźnika w panelu
+    expect(manifest.secrets.map((s) => [s.name, s.required])).toEqual([['DPD_LOGIN', true], ['DPD_PASSWORD', true], ['DPD_MYPUDO_KEY', false], ['DPD_SLEDZENIE_LOGIN', false], ['DPD_SLEDZENIE_HASLO', false]])
+    expect(DPD_ZAPIS_DEFINITION.manifest.secrets.map((s) => s.name)).toEqual(manifest.secrets.map((s) => s.name))
     expect(manifest.config.map((c) => c.key)).toEqual(expect.arrayContaining(['baseUrl', 'masterFid', 'payerFid', 'empikPayerFid', 'labelFormat', 'defaultSideXCm', 'defaultSideYCm', 'defaultSideZCm', 'defaultWeightKg', 'limitWagiKuriera', 'codLimit', 'envPrefix']))
     // martwe ustawienie labelOutput usunięte (format etykiety przychodzi w argumencie getLabel)
     expect(manifest.config.map((c) => c.key)).not.toContain('labelOutput')
@@ -141,7 +143,7 @@ describe('adapter dpd.services.v1', () => {
   it('testConnection przez kod pocztowy: OK bez przepisywania odpowiedzi, nagłówek z masterFid', async () => {
     const a = dpdAtrapa()
     const r = await adapter(DPD_KEY, a.fetchImpl, { masterFid: '9999' }).testConnection()
-    expect(r).toEqual({ ok: true, message: 'zapytanie o kod pocztowy działa' })
+    expect(r).toEqual({ ok: true, message: 'zapytanie o kod pocztowy działa (środowisko demo)' })
     expect(a.calls.map((c) => c.path)).toEqual(['/public/routing/v1/postalCode'])
     expect(a.calls[0]!.headers['x-dpd-fid']).toBe('9999')
   })
@@ -182,7 +184,7 @@ describe('adapter dpd.services.zapis.v1: wyłącznik', () => {
   it('manifest: przewoźnik z zapisem, zdolność shipment.create, wyłącznik w konfiguracji', () => {
     const { manifest } = DPD_ZAPIS_DEFINITION
     // reference.find (tylko potwierdza paczkę)
-    expect(manifest).toMatchObject({ kind: 'carrier', capabilities: ['shipment.prepare', 'shipment.create', 'reference.find', 'shipment.track'], readOnly: false })
+    expect(manifest).toMatchObject({ kind: 'carrier', capabilities: ['shipment.prepare', 'shipment.create', 'reference.find', 'shipment.track', 'shipment.pickup'], readOnly: false })
     expect(manifest.config.find((c) => c.key === 'zapisWlaczony')).toMatchObject({ type: 'boolean', required: false })
     expect(hasShipmentCreator(adapter(DPD_ZAPIS_KEY, dpdAtrapa().fetchImpl))).toBe(true)
   })

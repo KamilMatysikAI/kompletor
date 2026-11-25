@@ -42,6 +42,9 @@ export const ALLEGRO_WYSYLAM_MANIFEST: AdapterManifest = {
 
 const UUID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/
 
+/** Ścieżka do komunikatów bez identyfikatorów (id przesyłki, przewoźnik). */
+const etykietaSciezki = (path: string) => path.replace(/[0-9a-fA-F-]{36}$/, '{id}').replace(/^\/order\/carriers\/[^/]+\/tracking$/, '/order/carriers/{id}/tracking')
+
 export class AllegroWysylamAdapter implements ChannelAdapter, ShipmentPreparer {
   readonly manifest: AdapterManifest
   protected readonly api: AllegroReadOnly
@@ -70,15 +73,20 @@ export class AllegroWysylamAdapter implements ChannelAdapter, ShipmentPreparer {
    * GET po strażniku: 401 → jedno odświeżenie i jedna powtórka (wzór `allegro.v1`); 401 po odświeżeniu = błąd konta;
    * 429 z `Retry-After`; 403 = brak zakresu przesyłek (nie `orders:read`). Reszta statusów do wołającego.
    */
-  protected async call<T>(path: string, brakujacyZakres: string): Promise<AllegroResponse<T>> {
-    return this.callWith<T>(path.replace(/[0-9a-fA-F-]{36}$/, '{id}'), (token) => getAllegroShipments<T>(this.api, path, token), brakujacyZakres)
+  protected async call<T>(path: string, brakujacyZakres: string, query: readonly [string, string][] = []): Promise<AllegroResponse<T>> {
+    const r = await this.odczyt<T>(path, query)
+    if (r.status === 403) throw new AllegroAccountError(`Allegro ${etykietaSciezki(path)}: HTTP 403 — token bez zakresu przesyłek (${brakujacyZakres}); zakres odczytu zamówień tu nie wystarcza`)
+    return r
   }
 
-  /** Jak `call`, dla odczytu spoza `/shipment-management` (śledzenie); `label` bez identyfikatorów, do komunikatów. */
-  protected async callWith<T>(label: string, fetcher: (token: string) => Promise<AllegroResponse<T>>, brakujacyZakres: string): Promise<AllegroResponse<T>> {
+  /**
+   * GET po strażniku bez rozstrzygania 403: 401 → jedno odświeżenie i powtórka, 401 po odświeżeniu = błąd
+   * konta, 429 = PRZEJSCIOWY. Reszta statusów (w tym 403) do wołającego.
+   */
+  protected async odczyt<T>(path: string, query: readonly [string, string][] = []): Promise<AllegroResponse<T>> {
     const get = async (token: string) => {
       try {
-        return await fetcher(token)
+        return await getAllegroShipments<T>(this.api, path, token, query)
       } catch (e) {
         throw toAdapterError(e)
       }
@@ -86,9 +94,9 @@ export class AllegroWysylamAdapter implements ChannelAdapter, ShipmentPreparer {
     const { token: used, refreshed } = await this.tokens.current()
     let r = await get(used)
     if (r.status === 401 && !refreshed) r = await get(await this.tokens.afterUnauthorized(used))
+    const label = etykietaSciezki(path)
     if (r.status === 401) throw new AllegroAccountError(`Allegro ${label}: HTTP 401 także po odświeżeniu tokena — konto wymaga sprawdzenia autoryzacji`)
     if (r.status === 429) throw new AdapterError(`Allegro ${label}: HTTP 429 (limit zapytań)`, 'PRZEJSCIOWY', r.retryAfterMs ?? 60_000)
-    if (r.status === 403) throw new AllegroAccountError(`Allegro ${label}: HTTP 403 — ${brakujacyZakres.startsWith('token') ? brakujacyZakres : `token bez zakresu przesyłek (${brakujacyZakres}); zakres odczytu zamówień tu nie wystarcza`}`)
     return r
   }
 

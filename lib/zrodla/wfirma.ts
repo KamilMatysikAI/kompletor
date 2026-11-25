@@ -37,7 +37,11 @@ export class WfirmaReadOnly {
     this.throttle = new Throttle(minIntervalMs)
   }
 
-  async call<T = Record<string, unknown>>(path: string, body: unknown = {}): Promise<T> {
+  /**
+   * `opcje`: odczyt kontrolny po zapisie faktury idzie jedną próbą z krótkim limitem czasu
+   * (`{ attempts: 1, timeoutMs: 15_000 }`), żeby nie przeciągnąć zapisu ponad okno sprzątacza prób. Domyślnie bez zmian.
+   */
+  async call<T = Record<string, unknown>>(path: string, body: unknown = {}, opcje: { attempts?: number; timeoutMs?: number } = {}): Promise<T> {
     assertWfirmaReadOnly(path)
     return withRetry(
       async () => {
@@ -56,7 +60,7 @@ export class WfirmaReadOnly {
             },
             body: JSON.stringify(body),
           },
-          90_000,
+          opcje.timeoutMs ?? 90_000,
         )
         if (res.status === 429) throw new SourceError(`wFirma ${path}: HTTP 429 (limit) — bez ponawiania`, false)
         if (res.status >= 500) throw new SourceError(`wFirma ${path}: HTTP ${res.status}`, true)
@@ -69,7 +73,7 @@ export class WfirmaReadOnly {
         }
         return json as T
       },
-      { attempts: 4, baseDelayMs: 5_000 },
+      { attempts: opcje.attempts ?? 4, baseDelayMs: 5_000 },
     )
   }
 }

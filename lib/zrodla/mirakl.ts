@@ -112,12 +112,47 @@ export interface MiraklWriteResult {
   status: number
   /** Kod błędu Mirakla z treści odpowiedzi (np. ORDER_INVALID_STATE), bez reszty treści. */
   errorCode: string | null
+  /** komunikat odmowy z treści odpowiedzi (pole `message` albo `errors[].message`), oczyszczony; null = brak. */
+  errorMessage?: string | null
   /** Treść JSON odpowiedzi 2xx (np. `import_id` z STO01); null = pusta albo nie-JSON. */
   body: Record<string, unknown> | null
   retryAfterMs?: number
 }
 
 const ERROR_CODE_RE = /\b(ORDER_[A-Z_]+|OFFER_[A-Z_]+|VALIDATION_ERROR|SHOP_[A-Z_]+)\b/
+
+/**
+ * komunikat odmowy Mirakla do alertu, bez danych klienta. Tylko pole `message` (albo `errors[].message`
+ * z nazwą pola) z treści JSON, nigdy cała treść (odpowiedź może zawierać dane zamówienia): e-maile i numery telefonów
+ * zamaskowane, białe znaki zwinięte, najwyżej 200 znaków. Treść nie-JSON (strona bramki, HTML) = null.
+ */
+export function komunikatBleduMirakl(text: string): string | null {
+  if (!text) return null
+  let v: unknown
+  try {
+    v = JSON.parse(text)
+  } catch {
+    return null
+  }
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return null
+  const o = v as Record<string, unknown>
+  let m: string | null = typeof o['message'] === 'string' ? o['message'] : null
+  if (!m && Array.isArray(o['errors'])) {
+    const parts = (o['errors'] as unknown[])
+      .filter((e): e is Record<string, unknown> => !!e && typeof e === 'object' && typeof (e as Record<string, unknown>)['message'] === 'string')
+      .slice(0, 3)
+      .map((e) => (typeof e['field'] === 'string' && e['field'] ? `${e['field']}: ${String(e['message'])}` : String(e['message'])))
+    m = parts.length ? parts.join('; ') : null
+  }
+  if (!m) return null
+  const clean = m
+    .replace(/[\u0000-\u001f\u007f]+/g, ' ')
+    .replace(/[^\s@<>"',;]+@[^\s@<>"',;]+\.[A-Za-z]{2,}/g, '[e-mail]')
+    .replace(/(?:\+\d{2}[\s-]?)?\b\d{3}[\s-]\d{3}[\s-]\d{3}\b/g, '[telefon]')
+    .replace(/\s+/g, ' ')
+    .trim()
+  return clean ? clean.slice(0, 200) : null
+}
 
 /**
  * Klient zapisu Mirakla: jedno żądanie bez ponawiania (wynik, także 4xx/5xx, wraca do adaptera, który decyduje o
@@ -162,7 +197,13 @@ export class MiraklWriter {
       }
     }
     const ra = res.status === 429 ? retryAfterMsOf(res.headers.get('retry-after')) : undefined
-    return { status: res.status, errorCode: res.ok ? null : (ERROR_CODE_RE.exec(text)?.[1] ?? null), body: json, ...(ra !== undefined ? { retryAfterMs: ra } : {}) }
+    return {
+      status: res.status,
+      errorCode: res.ok ? null : (ERROR_CODE_RE.exec(text)?.[1] ?? null),
+      ...(res.ok ? {} : { errorMessage: komunikatBleduMirakl(text) }),
+      body: json,
+      ...(ra !== undefined ? { retryAfterMs: ra } : {}),
+    }
   }
 }
 

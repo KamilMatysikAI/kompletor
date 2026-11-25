@@ -52,6 +52,11 @@ export default async function ProduktyCsv() {
           </li>
           <li>„Stan” ustawia stan początkowy tylko nowego produktu; stan istniejącego zmienia korekta na karcie produktu.</li>
           <li>„Grupa wariantów”: ten sam tekst w kilku produktach (np. „KUBEK-2026”) łączy je w warianty (rozmiary, kolory); karta produktu pokazuje pozostałe warianty.</li>
+          <li>
+            „Kategoria”: ścieżka w drzewie kategorii firmy, poziomy rozdzielone znakiem „&gt;” (np. „Napoje &gt; Soki”). „(brak)” usuwa kategorię produktu. Drzewo:{' '}
+            <Link href="/produkty/kategorie">Kategorie</Link>.
+          </li>
+          <li>„Aktywny” (ostatnia kolumna eksportu): „nie” wyłącza produkt, „tak” go włącza; pusta komórka nic nie zmienia. Produktu z aktywną ofertą, rezerwacją, otwartym zamówieniem albo w aktywnym zestawie import nie wyłączy (uwaga w raporcie).</li>
           {hasWfirma && <li>Firma prowadzi stany w wFirmie: nowe produkty ze stanem zakładasz w wFirmie, a import zmienia tylko pola, które nie przychodzą z wFirmy.</li>}
         </ul>
         <ImportCsv />

@@ -46,6 +46,10 @@ export function buildShipmentPayload(parcel: PreparedParcel, recipient: Odbiorca
   const szablon = isGabaryt(parcel.gabaryt) ? SZABLON_INPOST[parcel.gabaryt] : undefined
   if (paczkomat && !szablon) throw new Error('Przesyłka nie jest gotowa: gabaryt')
   if (!paczkomat && (parcel.sideXCm === null || parcel.sideYCm === null || parcel.sideZCm === null || parcel.weightKg === null)) throw new Error('Przesyłka nie jest gotowa: wymiary')
+  // pełny adres idzie zawsze, gdy jest; przy paczkomacie niepełny adres domowy pomijamy (FAQ integracji InPost:
+  // adres niepotrzebny przy paczkomacie), zamiast wysyłać ulicę bez numeru albo zgadywać numer. Kurier: adres wymagany.
+  const adresPelny = !!(recipient.ulica && recipient.numerDomu && recipient.kodPocztowy && recipient.miasto)
+  if (!paczkomat && !adresPelny) throw new Error('Przesyłka nie jest gotowa: adres odbiorcy')
   const pln = (amount: number) => ({ amount, currency: 'PLN' })
   return {
     service: parcel.courierCode,
@@ -54,13 +58,17 @@ export function buildShipmentPayload(parcel: PreparedParcel, recipient: Odbiorca
       ...(recipient.firma ? { company_name: recipient.firma } : {}),
       email: recipient.email,
       phone, // 9 cyfr bez +48 [NIEPEWNE: do potwierdzenia na sandboxie]
-      address: {
-        street: recipient.ulica,
-        building_number: recipient.numerLokalu ? `${recipient.numerDomu}/${recipient.numerLokalu}` : recipient.numerDomu,
-        city: recipient.miasto,
-        post_code: recipient.kodPocztowy,
-        country_code: 'PL',
-      },
+      ...(adresPelny
+        ? {
+            address: {
+              street: recipient.ulica,
+              building_number: recipient.numerLokalu ? `${recipient.numerDomu}/${recipient.numerLokalu}` : recipient.numerDomu,
+              city: recipient.miasto,
+              post_code: recipient.kodPocztowy,
+              country_code: 'PL',
+            },
+          }
+        : {}),
     },
     // [NIEPEWNE: dokładny kształt parcels; paczkomat szablonem, kurier wymiarami w mm i wagą w kg]
     parcels: paczkomat

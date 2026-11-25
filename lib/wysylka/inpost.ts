@@ -4,7 +4,7 @@
 // wartością (te same kody co Base Courier: panel po nich pokazuje wartości robocze).
 import type { PreparedParcel, ShipmentInput, ShipmentProblem } from '../adaptery/kontrakt'
 import { GABARYTY, isGabaryt, type Gabaryt } from '../stanowisko/gabaryty'
-import { kwotaPobrania, LIMIT_WAGI_G, ustawieniaPrzesylki, WBUDOWANE_USTAWIENIA, WYMIARY_INPOST, type UstawieniaPrzesylki } from './przesylka'
+import { kwotaPobrania, LIMIT_WAGI_G, ustawieniaPrzesylki, waga, WBUDOWANE_USTAWIENIA, WYMIARY_INPOST, type UstawieniaPrzesylki } from './przesylka'
 
 /** Kody usług ShipX (`service`), potwierdzone w dokumentacji InPost. */
 export const USLUGI_SHIPX = ['inpost_locker_standard', 'inpost_courier_standard'] as const
@@ -51,15 +51,6 @@ function wymiary(input: ShipmentInput, u: UstawieniaPrzesylki, usluga: UslugaShi
   if (u.sideXCm !== null && u.sideYCm !== null && u.sideZCm !== null) return { sides: [u.sideXCm, u.sideYCm, u.sideZCm], problemy: [] }
   const w = WBUDOWANE_USTAWIENIA
   return { sides: [w.sideXCm, w.sideYCm, w.sideZCm], problemy: [ostrzezenie('wymiary_domyslne', `Wymiary robocze ${w.sideXCm}×${w.sideYCm}×${w.sideZCm} cm: firma nie ustawiła domyślnych wymiarów paczki kurierskiej InPost.`)] }
-}
-
-function waga(input: ShipmentInput, u: UstawieniaPrzesylki): { gramy: number; problemy: ShipmentProblem[] } {
-  if (input.weightComplete && input.weightG !== null && input.weightG > 0) return { gramy: input.weightG, problemy: [] }
-  const zaKg = u.weightKg ?? WBUDOWANE_USTAWIENIA.weightKg
-  const znane = input.weightG ?? 0
-  const gramy = Math.max(Math.round(zaKg * 1000), znane)
-  const tekst = znane > 0 && gramy === znane ? `Waga niepełna: ${gramy / 1000} kg znanych pozycji plus sztuki bez wagi.` : `Waga domyślna ${gramy / 1000} kg: produkty w zamówieniu nie mają wagi.`
-  return { gramy, problemy: [ostrzezenie('waga_domyslna', tekst)] }
 }
 
 /** Parametry przesyłki ShipX z danych zamówienia. Bez efektów ubocznych; problem z poziomem BLAD = nie do nadania. */

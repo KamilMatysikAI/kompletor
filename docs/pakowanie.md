@@ -27,6 +27,64 @@ Na kolejce (`/pakowanie`) i na liście zbierania nie trzeba klikać „Pakuj”:
 - Gdy okno pakowania jest już otwarte, skan obsługuje samo okno (opis w części „Stanowisko”).
 - Czytnik ma wysyłać Enter po kodzie. Tak jest ustawiona większość czytników fabrycznie; jeśli Twój tego nie robi, włącz w jego instrukcji „Enter” (CR) jako znak po kodzie. Ekran odróżnia czytnik od pisania na klawiaturze po tempie: czytnik wpisuje cały kod w ułamku sekundy, a zwykłe pisanie i skróty klawiszowe skanu nie uruchamiają.
 
+## Zamów kuriera
+
+Gdzie: menu **Pakowanie** → pasek kuriera DPD → przycisk **„Zamów kuriera DPD”** (pod paskiem). Pokazuje się tylko,
+gdy konto przewoźnika ma włączone „Zamawianie kuriera z Kompletora” (Ustawienia → Wysyłka i druk → Przewoźnicy →
+„Konta przewoźników” → konto → „Zaawansowane”), i tylko osobom z uprawnieniem „kurier”. Dziś umie to DPD bezpośrednio
+i Wysyłam z Allegro (karta „Wysyłam z Allegro” → „Zaawansowane”, opis niżej); Base Courier zamawia podjazd razem z każdą
+przesyłką (ustawienie „Zamawiaj podjazd kuriera”), więc przycisku nie ma.
+
+- Okno: dzień odbioru, godziny od–do, liczba paczek i waga łączna. Podpowiedź z harmonogramu odbiorów i paczek z
+  numerem nadania, które czekają na kuriera.
+- Po zamówieniu pod paskiem: „DPD zamówiony na 2026-11-23 13:00–15:00, zlecenie nr …”. Drugie kliknięcie tego dnia nic
+  nie zamawia; drugi podjazd tylko przez „Zamów drugi raz” z ostrzeżeniem.
+- Odmowa przewoźnika pokazuje powód i nic nie zamawia. Gdy przewoźnik nie odpowie, pasek mówi „nie wiadomo, czy
+  zamówienie dotarło”: sprawdź w panelu przewoźnika albo telefonicznie, zanim zamówisz drugi raz.
+- Godziny wpisujesz w pola „od” i „do”; przedziały od przewoźnika to tylko podpowiedź (kliknięcie wpisuje godziny).
+  Okno nie podpowiada dziś, gdy kurier już był („Przyjechał”) albo dziś nie ma odbiorów w harmonogramie.
+- Kurier DPD może zamawiać się sam: w koncie przewoźnika „Zaawansowane” → „Zamawiaj kuriera automatycznie”. Wtedy
+  Kompletor zamawia jeden podjazd na dzień odbioru kilka minut po pierwszej paczce, która czeka na kuriera, a pod
+  paskiem pisze, co zrobił albo dlaczego nie. Nigdy nie zamawia drugiego podjazdu na ten sam dzień; przy odmowie albo
+  niejasnym wyniku daje alert i trzeba zamówić przyciskiem. Automat ma sens, gdy podjazdy zamawia Kompletor albo
+  magazyn klika „Przyjechał”: bez takiego śladu paczek sprzed dzisiejszego dnia nie liczy. Szczegóły:
+  `docs/integracje/dpd.md`, „Kurier zamawia się sam”.
+- Czego okno nie robi: nie odwołuje zamówionego kuriera (panel przewoźnika albo telefon; Allegro nie ma odwołania
+  odbioru w API). Automat „Zamawiaj kuriera automatycznie” dotyczy tylko DPD; kuriera Allegro zamawiasz przyciskiem.
+
+### Wysyłam z Allegro (Allegro One Kurier)
+
+Gdzie: menu **Pakowanie** → pasek kuriera Allegro → przycisk **„Zamów kuriera Allegro”**. Włącznik: Ustawienia →
+Wysyłka i druk → Przewoźnicy → „Konta przewoźników” → karta „Wysyłam z Allegro” → „Zaawansowane” → „Zamawianie kuriera
+z Kompletora” (domyślnie wyłączone).
+
+- Okno ma tylko dzień i godziny. Liczby paczek i wagi nie ma: Allegro zamawia odbiór konkretnych przesyłek, więc okno
+  pisze, ile przesyłek z numerem nadania zabierze kurier (także paczki do automatów Allegro One Box, bo jadą tym samym
+  przewoźnikiem). Paczki innych przewoźników (InPost, DPD przez Allegro) zostają poza zamówieniem.
+- Terminy proponowane przez Allegro są podpowiedzią przy polach godzin (kliknięcie wpisuje godziny), nie blokadą. Gdy termin Allegro obejmuje wpisane
+  godziny, Kompletor zamawia termin Allegro i zapisuje przy pasku godziny, które Allegro przyjęło.
+- Jedno zamówienie na dzień i konto Allegro. Przesyłki z już zamówionego odbioru nie wchodzą do kolejnego: „Zamów drugi
+  raz” obejmuje tylko przesyłki nadane po pierwszym zamówieniu.
+- Osobne odbiory: Allegro bywa, że odbiera przesyłki różnych przewoźników (np. One Kurier i Orlen Paczka) osobnymi
+  podjazdami. Okno pisze wtedy jednym zdaniem, ile będzie odbiorów i ilu przesyłek dotyczy każdy. Po kliknięciu okno
+  się zamyka, a nad przyciskiem zostaje jedno podsumowanie (do kliknięcia „Zamknij”): co zamówione (przewoźnik, termin,
+  liczba przesyłek, numer zlecenia) i co się nie udało, z tym, co zrobić. Pod paskiem Allegro jest jedna linia na
+  przewoźnika; przesyłki, które przewoźnik dopiął do tego samego zlecenia, są w jednej linii z sumą.
+- Gdy Allegro odrzuci połączony odbiór przesyłek jednego przewoźnika („osobne odbiory”), Kompletor w tym samym kliknięciu
+  dzieli je drobniej (tak, jak podaje Allegro przy terminach) i zamawia każdą część osobno. Inna odmowa niczego nie dzieli.
+- Część odbiorów przyjęta, część odrzucona: przy pasku są dwa przyciski. „Ponów nieudany odbiór (N przesyłek)” zamawia
+  tylko przesyłki z odrzuconego odbioru; przyjęte odbiory zostają bez zmian i nie są zamawiane drugi raz. Obok jest
+  cichszy „Zamów drugi raz”: obejmuje nieudany odbiór i przesyłki nadane po ostatnim zamówieniu (okno ostrzega, że każdy
+  nowy odbiór to osobny podjazd). Przesyłki nadane między odmową a udanym ponowieniem nie przepadają: po ponowieniu
+  dalej liczą się na pasku jako czekające i wchodzą do „Zamów drugi raz”.
+- „Ponów” działa na dzień nieudanego odbioru. Gdy w oknie wybierzesz inny dzień, okno zmienia się w zwykłe zamówienie
+  na ten dzień (obejmie nieudaną przesyłkę i wszystkie inne czekające, każdego przewoźnika osobnym odbiorem).
+  Powód odmowy jest w linii pod paskiem, kod przewoźnika w „szczegóły”. Przy odrzuceniu zapisany jest termin, który
+  faktycznie poszedł do Allegro (nie godziny wpisane w oknie). „Nie zostało wysłane do przewoźnika” znaczy, że Kompletor
+  nie wysłał zamówienia (przewoźnik nic nie dostał), a nie że przewoźnik je odrzucił.
+- Przesyłki na kilku kontach Allegro naraz: przycisk jest wyłączony z powodem (Kompletor zamawia odbiór dla jednego konta,
+  a okno nie ma wyboru konta); zamów wtedy odbiór w Allegro.
+
 ## Przyjechał kurier = „Wysłane”
 
 Gdzie: menu **Pakowanie** → pasek kuriera (np. „DPD · odbiór dziś 13:00”) → przycisk **„Przyjechał DPD”**. Widzi go osoba z uprawnieniem „kurier” (domyślnie role Właściciel, Biuro i Magazyn). Przełącznik: Ustawienia → Wysyłka i druk → Przewoźnicy → karta „Automatyczne statusy wysyłki” → „Po przyjeździe kuriera oznaczaj jako wysłane” (domyślnie włączony).
@@ -38,7 +96,7 @@ Gdzie: menu **Pakowanie** → pasek kuriera (np. „DPD · odbiór dziś 13:00�
 - Drugie kliknięcie tego dnia nic nie zmienia. Paczki spakowane po przyjeździe kuriera czekają na następny odbiór.
 - Firma bez sklepów internetowych (zamówienia ręczne, przez API) działa tak samo, tylko bez zapisu do sklepu.
 
-**Siatka bezpieczeństwa:** gdy nikt nie kliknie „Przyjechał”, Kompletor co 15 minut pyta przewoźnika o paczki spakowane ponad pół godziny temu. Paczka odebrana przez kuriera przechodzi do „Wysłane” sama. Umie to InPost (paczkomaty i kurier InPost) i Poczta Polska, a po włączeniu także DPD bezpośrednio (usługa śledzenia DPDInfoServices z osobnym loginem od DPD) i Wysyłam z Allegro. Base Courier (InPost i DPD zamawiane przez Base Courier) od 19.11.2026: paczka odebrana przez kuriera przechodzi do „Wysłane”, a po wysyłce Kompletor co 2 godziny zapisuje stan paczki u przewoźnika na karcie zamówienia, aż do doręczenia. Przełącznik: „Sprawdzaj u przewoźnika, czy paczka pojechała” w tej samej karcie, a pod nim lista „Których przewoźników pytać o paczki”: InPost, Poczta Polska i Base Courier są włączone od początku, przewoźnik dodany później jest wyłączony, dopóki go nie zaznaczysz. Ze sprawdzania wypadają: przesyłka anulowana u przewoźnika, przesyłka, której przewoźnik nie zna (zły numer listu; w Wysyłam z Allegro brak przesyłki), i przesyłka, o której przewoźnik od 5 dni podaje tylko nieznany stan; zostaje kliknięcie „Przyjechał kurier”. 5 dni przeżywa długi weekend przed odbiorem (etykieta w środę 23.12, kurier w poniedziałek 28.12). Odpowiedź InPostu „nie ma takiej przesyłki” (404) to też tylko nieznany stan, bo ten sam kod daje zły adres usługi w regule albo token innej organizacji: po poprawie reguły paczka wraca do sprawdzania sama. Błąd konta (wyłączony zapis, brak danych śledzenia, zły login, konto wyłączone po błędach) nie wyrzuca paczek: to konto czeka do następnego przebiegu, a w dzienniku zadania jest jedna linia na konto; po poprawie ustawień paczki wracają same. Po 3 błędach sieci z rzędu reszta paczek tego konta też czeka do następnego przebiegu. Paczka z błędem staje w kolejce następnego przebiegu za paczkami, o które w tym przebiegu nie zdążyliśmy zapytać, więc jedna zła paczka nie zatrzymuje reszty konta, a konto z błędem nie zabiera miejsca paczkom innych kont.
+**Siatka bezpieczeństwa:** gdy nikt nie kliknie „Przyjechał”, Kompletor co 15 minut pyta przewoźnika o paczki spakowane ponad 30 minut temu. Paczka odebrana przez kuriera przechodzi do „Wysłane” sama. Umieją to InPost (paczkomaty i kurier InPost), Base Courier, DPD i Wysyłam z Allegro (historia statusów Allegro: „w drodze”, „wydana do doręczenia”, „czeka w punkcie” albo „awizo” = paczka u przewoźnika; samo „przygotowana, czeka na nadanie” nic nie zmienia). Paczki DPD (także nadane przez Base Courier) Kompletor sprawdza prosto w DPD, gdy firma ma konto DPD z loginem, hasłem i FID w środowisku produkcyjnym (Ustawienia → Wysyłka i druk → Przewoźnicy → „Konta przewoźników” → DPD Polska): Base Courier podaje stan paczek DPD z opóźnieniem nawet kilku godzin. Bez konta DPD albo gdy DPD nie odpowie, pyta jak dotąd Base Courier ([DPD](integracje/dpd.md), „Śledzenie paczek”). Przełącznik: „Sprawdzaj u przewoźnika, czy paczka pojechała” w tej samej karcie. Pod przełącznikiem lista „Których przewoźników pytać o paczki”: InPost, Poczta Polska, Base Courier i Wysyłam z Allegro są włączone od początku, przewoźnik dodany później (także moduł DPD z osobnym śledzeniem DPDInfoServices) jest wyłączony, dopóki go nie zaznaczysz; paczki DPD przy koncie DPD firmy Kompletor pyta niezależnie od listy.
 
 **Śledzenie aż do doręczenia (domyślnie wyłączone):** przełącznik „Śledź paczki aż do doręczenia” w tej samej karcie (działa razem z „Sprawdzaj u przewoźnika, czy paczka pojechała” i listą przewoźników). Po „Wysłane” Kompletor dalej pyta przewoźnika o paczkę, aż dojdzie do stanu końcowego (doręczona, zwrot do nadawcy, anulowana), najdłużej 30 dni od utworzenia przesyłki. Pyta rzadziej niż przed odbiorem: wydana do doręczenia co godzinę, w drodze i po nieudanym doręczeniu co 3 godziny, w punkcie odbioru i przy problemie co 6 godzin, nieznany stan co 2 godziny. Każdy przewoźnik ma swoje kody, Kompletor sprowadza je do jednej osi: utworzona, przekazana przewoźnikowi, w drodze, wydana do doręczenia, czeka w punkcie, doręczona, nieudane doręczenie (awizo), zwrot do nadawcy, problem z przesyłką (zaginięcie, reklamacja), anulowana, nieznany. Każda zmiana trafia do historii przesyłki (kiedy u przewoźnika, kod przewoźnika, stan na osi; opis stanu po polsku Kompletor dopisuje przy wyświetlaniu). Kilka zasad chroni oś przed fałszywym stanem: nieznany kod przewoźnika nie zmienia znanego stanu (zmienia się tylko kod w historii); zwrot do nadawcy zostaje zwrotem, także gdy przewoźnik pokaże potem doręczenie (to doręczenie do nas); InPost „minął czas odbioru” i „odmowa odbiorcy” to już zwrot; po odbiorze przez kuriera paczka nie wraca do „utworzona” ani „anulowana”; doręczenie albo zwrot ze zdarzeń sprzed utworzenia przesyłki (numer listu użyty drugi raz) Kompletor pomija i zapisuje ostrzeżenie w dzienniku zadania. Data przekazania przewoźnikowi to pierwsze zdarzenie po odbiorze u przewoźnika (DPD, Wysyłam z Allegro, Poczta Polska), a u InPostu chwila pierwszego odczytu po odbiorze. Po „Wysłane” nieznany stan nie kończy śledzenia po 5 dniach (granicą jest 30 dni). Paczka, której odczyt się nie udaje (błąd tej paczki, nie konta), jest pytana coraz rzadziej: po pół godzinie, godzinie, dwóch, czterech, ośmiu, potem co 12 godzin, a po 20 nieudanych odczytach z rzędu śledzenie tej paczki się kończy; udany odczyt zeruje licznik. Pierwszy przebieg po włączeniu bierze tylko przesyłki utworzone w ostatnich 30 dniach, ale wszystkie naraz są zaległe, więc schodzą partiami po 100 na przebieg (co 15 minut, przy kilku tysiącach paczek to kilka godzin); paczki przed „Wysłane” mają w każdym przebiegu pierwszeństwo (do 50), więc przeniesienie do „Wysłane” nie czeka na zaległości. Sam ten przełącznik statusu zamówienia po „Wysłane” nie zmienia („Odebrane” i powiadomienia o zwrocie mają własne przełączniki, niżej), a automatyczne akcje „Zmieniono status przesyłki u kuriera” widzą paczkę jak dotąd, tylko do „Wysłane”. Poczta Polska: znane są tylko nadanie, doręczenie i awizo, reszta kodów to nieznany stan.
 

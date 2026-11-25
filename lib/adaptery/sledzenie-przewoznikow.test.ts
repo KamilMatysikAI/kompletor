@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest'
 import { DPD_DEMO, DPD_FID, DPD_LOGIN, DPD_PASSWORD } from '@/tests/dpd-atrapa'
 import { DPD_INFO_HASLO, DPD_INFO_LOGIN, DPD_INFO_URL, dpdSledzenieAtrapa, FAULT } from '@/tests/dpd-sledzenie-atrapa'
 import { API, AUTH, FAKE_CLIENT_ID, FAKE_CLIENT_SECRET, FakeAllegroZapis, UA } from '@/tests/allegro-zapis-atrapa'
-import { kluczeSledzenia, SLEDZENIE_DOMYSLNIE_WLACZONE, sledzenieModulu } from '../pakowanie/wyslane-po-przyjezdzie'
+import { bladKontaSledzenia, kluczeSledzenia, SLEDZENIE_DOMYSLNIE_WLACZONE, sledzenieModulu } from '../pakowanie/wyslane-po-przyjezdzie'
 import { czytajTresc, DPD_INFO_URL_RE, MAKS_ODPOWIEDZI, zdarzeniaZOdpowiedzi } from '../zrodla/dpd-sledzenie'
 import type { FetchLike } from '../zrodla/http'
 import { klasaBledu } from '../integracje/oslona'
@@ -225,56 +225,55 @@ describe('Wysyłam z Allegro: śledzenie przesyłki', () => {
     )
   }
 
-  it('IN_TRANSIT = PRZEKAZANA; PENDING i brak historii = przed nadaniem; samo ISSUE = NIEZNANY; brak przesyłki = ANULOWANA; tylko GET', async () => {
+  // Implementacja śledzenia Allegro z produkcji (pełne testy: allegro-wysylam-zapis.test.ts); tu zachowanie widziane
+  // przez przebieg śledzenia: stan, oś i klasa błędu (błąd jednej przesyłki nie przerywa konta)
+  it('IN_TRANSIT = PRZEKAZANA; PENDING i brak historii = przed nadaniem; samo ISSUE = NIEZNANY; brak przesyłki = błąd tej przesyłki; tylko GET', async () => {
     const f = new FakeAllegroZapis()
     f.wys.shipments.set(SHIP, { id: SHIP, carrier: 'ALLEGRO', packages: [{ waybill: 'ALE0000000E5D200' }] })
     const a = make(f)
-    expect(await a.trackShipment(SHIP)).toEqual({ stan: 'PRZED_NADANIEM', status: null, stanDrogi: 'UTWORZONA', czas: null, kod: null, przekazanaO: null })
-    f.wys.tracking.set('ALLEGRO/ALE0000000E5D200', [{ code: 'PENDING', occurredAt: '2026-11-12T08:00:00Z' }])
+    expect(await a.trackShipment(SHIP)).toMatchObject({ stan: 'PRZED_NADANIEM', status: null, stanDrogi: 'UTWORZONA' })
+    f.wys.tracking.set('ALLEGRO:ALE0000000E5D200', [{ code: 'PENDING', occurredAt: '2026-11-12T08:00:00Z' }])
     expect((await a.trackShipment(SHIP)).stan).toBe('PRZED_NADANIEM')
-    f.wys.tracking.set('ALLEGRO/ALE0000000E5D200', [{ code: 'ISSUE', occurredAt: '2026-11-12T09:00:00Z' }])
+    f.wys.tracking.set('ALLEGRO:ALE0000000E5D200', [{ code: 'ISSUE', occurredAt: '2026-11-12T09:00:00Z' }])
     expect((await a.trackShipment(SHIP)).stan).toBe('NIEZNANY')
     expect((await a.trackShipment(SHIP)).stanDrogi).toBe('PROBLEM')
-    f.wys.tracking.set('ALLEGRO/ALE0000000E5D200', [
+    f.wys.tracking.set('ALLEGRO:ALE0000000E5D200', [
       { code: 'PENDING', occurredAt: '2026-11-12T08:00:00Z' },
       { code: 'IN_TRANSIT', occurredAt: '2026-11-12T14:00:00Z' },
     ])
     expect(await a.trackShipment(SHIP)).toMatchObject({ stan: 'PRZEKAZANA', status: 'IN_TRANSIT', stanDrogi: 'PRZEKAZANA' })
-    expect(await a.trackShipment('0d2a0c6e-1111-4222-8333-444455556666')).toEqual({ stan: 'ANULOWANA', status: 'BRAK', stanDrogi: 'ANULOWANA' })
+    const brak = await blad(a.trackShipment('0d2a0c6e-1111-4222-8333-444455556666'))
+    expect((brak as AdapterError).kind).toBe('TRWALY')
+    expect(bladKontaSledzenia(brak)).toBe(false)
     expect(f.wys.nonGet()).toEqual([])
     expect(f.wys.requests.some((r) => r.startsWith('GET /order/carriers/ALLEGRO/tracking?waybill=ALE0000000E5D200'))).toBe(true)
   })
 
-  it('bez numeru nadania: przed nadaniem bez pytania o historię; zapis wyłączony = TRWALY bez żądania', async () => {
+  it('bez numeru nadania: przed nadaniem bez pytania o historię; bez wyłącznika nadawania odczyt działa', async () => {
     const f = new FakeAllegroZapis()
     f.wys.shipments.set(SHIP, { id: SHIP, carrier: 'ALLEGRO', packages: [{}] })
     expect((await make(f).trackShipment(SHIP)).stan).toBe('PRZED_NADANIEM')
     expect(f.wys.requests.some((r) => r.includes('/tracking'))).toBe(false)
-    const n = f.wys.requests.length
-    expect(((await blad(make(f, {}).trackShipment(SHIP))) as AdapterError).kind).toBe('TRWALY')
-    expect(f.wys.requests).toHaveLength(n)
+    expect((await make(f, {}).trackShipment(SHIP)).stan).toBe('PRZED_NADANIEM')
   })
 
-  it('404 historii = NIEZNANY (nie koniec); 429 i 5xx = przejściowe; zły numer = błąd przesyłki; zapis wyłączony = błąd konta', async () => {
+  it('404 historii i zły numer: błąd tej przesyłki, nie konta', async () => {
     const f = new FakeAllegroZapis()
     f.wys.shipments.set(SHIP, { id: SHIP, carrier: 'ALLEGRO', packages: [{ waybill: 'ALE0000000E5D200' }] })
     const a = make(f)
     f.wys.trackingFailures.push({ status: 404 })
-    expect(await a.trackShipment(SHIP)).toEqual({ stan: 'NIEZNANY', status: null, stanDrogi: 'NIEZNANY' })
-    for (const status of [429, 503]) {
-      f.wys.trackingFailures.push({ status })
-      const e = await blad(a.trackShipment(SHIP))
-      expect((e as AdapterError).kind, String(status)).toBe('PRZEJSCIOWY')
-      f.wys.failures.push({ status })
-      const e2 = await blad(a.trackShipment(SHIP))
-      expect((e2 as AdapterError).kind, `przesyłka ${status}`).toBe('PRZEJSCIOWY')
-    }
-    expect(await blad(a.trackShipment('nie-uuid'))).toBeInstanceOf(BladPrzesylkiSledzenia)
-    expect(await blad(make(f, {}).trackShipment(SHIP))).toBeInstanceOf(BladKontaSledzenia)
+    const e404 = await blad(a.trackShipment(SHIP))
+    expect(e404).toBeInstanceOf(AdapterError)
+    expect(bladKontaSledzenia(e404)).toBe(false)
+    const zly = await blad(a.trackShipment('nie-uuid'))
+    expect(zly).toBeInstanceOf(AdapterError)
+    expect(bladKontaSledzenia(zly)).toBe(false)
   })
 
-  it('mapowanie statusów z poradnika Allegro', () => {
-    for (const k of ['IN_TRANSIT', 'RELEASED_FOR_DELIVERY', 'AVAILABLE_FOR_PICKUP', 'NOTICE_LEFT', 'DELIVERED', 'RETURNED']) expect(stanAllegro([{ kod: k, czas: null }]).stan).toBe('PRZEKAZANA')
+  it('mapowanie statusów Allegro', () => {
+    for (const k of ['IN_TRANSIT', 'RELEASED_FOR_DELIVERY', 'AVAILABLE_FOR_PICKUP', 'NOTICE_LEFT']) expect(stanAllegro([{ code: k, occurredAt: null }]).stan, k).toBe('PRZEKAZANA')
+    expect(stanAllegro([{ code: 'DELIVERED', occurredAt: null }]).stan).toBe('DORECZONA')
+    expect(stanAllegro([{ code: 'RETURNED', occurredAt: null }]).stan).toBe('NIEZNANY')
     expect(stanAllegro([]).stan).toBe('PRZED_NADANIEM')
   })
 })
@@ -288,13 +287,14 @@ describe('InPost: statusy po przekazaniu i anulowanie', () => {
 })
 
 describe('moduły śledzenia automatu', () => {
-  it('bez wyborów firmy: dokładnie InPost, Poczta Polska i Base Courier (śledzony od 19.11.2026); nowe tylko po włączeniu', () => {
+  it('bez wyborów firmy: dokładnie InPost, Poczta Polska, Base Courier (śledzony od 19.11.2026) i Wysyłam z Allegro (od 22.11.2026); nowe tylko po włączeniu', () => {
     const reg = defaultRegistry()
-    expect(new Set(kluczeSledzenia(reg))).toEqual(new Set([INPOST_SHIPX_ZAPIS_MANIFEST.adapterKey, PP_ZAPIS_MANIFEST.adapterKey, BASE_COURIER_ZAPIS_KEY]))
-    expect([...SLEDZENIE_DOMYSLNIE_WLACZONE].sort()).toEqual([INPOST_SHIPX_ZAPIS_MANIFEST.adapterKey, PP_ZAPIS_MANIFEST.adapterKey, BASE_COURIER_ZAPIS_KEY].sort())
-    const wlaczone = kluczeSledzenia(reg, { [DPD_ZAPIS_KEY]: true, [ALLEGRO_WYSYLAM_ZAPIS_KEY]: true, [INPOST_SHIPX_ZAPIS_MANIFEST.adapterKey]: false })
+    const domyslne = [INPOST_SHIPX_ZAPIS_MANIFEST.adapterKey, PP_ZAPIS_MANIFEST.adapterKey, BASE_COURIER_ZAPIS_KEY, ALLEGRO_WYSYLAM_ZAPIS_KEY]
+    expect(new Set(kluczeSledzenia(reg))).toEqual(new Set(domyslne))
+    expect([...SLEDZENIE_DOMYSLNIE_WLACZONE].sort()).toEqual([...domyslne].sort())
+    const wlaczone = kluczeSledzenia(reg, { [DPD_ZAPIS_KEY]: true, [ALLEGRO_WYSYLAM_ZAPIS_KEY]: false, [INPOST_SHIPX_ZAPIS_MANIFEST.adapterKey]: false })
     expect(wlaczone).toContain(DPD_ZAPIS_KEY)
-    expect(wlaczone).toContain(ALLEGRO_WYSYLAM_ZAPIS_KEY)
+    expect(wlaczone).not.toContain(ALLEGRO_WYSYLAM_ZAPIS_KEY)
     expect(wlaczone).not.toContain(INPOST_SHIPX_ZAPIS_MANIFEST.adapterKey)
     expect(sledzenieModulu(DPD_ZAPIS_KEY)).toBe(false)
   })

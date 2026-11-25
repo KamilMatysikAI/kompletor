@@ -99,6 +99,30 @@ describe('strażnik tylko-do-odczytu', () => {
     expect(() => assertAllegroWysylamReadOnly(path)).not.toThrow()
   })
 
+  it('historia statusów tylko z parametrem waybill (1–20 numerów, litery, cyfry, myślnik)', async () => {
+    const T = '/order/carriers/ALLEGRO/tracking'
+    expect(() => assertAllegroWysylamReadOnly(T, 'GET', [['waybill', 'AL000111222PL']])).not.toThrow()
+    expect(() => assertAllegroWysylamReadOnly(T, 'GET', Array.from({ length: 20 }, (_, i) => ['waybill', `AL00011122${String(i).padStart(2, '0')}`] as [string, string]))).not.toThrow()
+    const zle: [string, readonly [string, string][]][] = [
+      [T, []],
+      [T, Array.from({ length: 21 }, (_, i) => ['waybill', `AL00011122${String(i).padStart(2, '0')}`] as [string, string])],
+      [T, [['waybill', 'AL0001&x=1']]],
+      [T, [['waybill', 'AL000111222PL'], ['limit', '1']]],
+      ['/order/carriers/ALL%2F/tracking', [['waybill', 'AL000111222PL']]],
+      ['/order/carriers/ALLEGRO/points', [['waybill', 'AL000111222PL']]],
+      ['/order/carriers', []],
+      [`/shipment-management/shipments/${U}`, [['waybill', 'AL000111222PL']]],
+    ]
+    const fake = fakeNow()
+    const api = new AllegroReadOnly(API, UA, fake.fetch, 0, { attempts: 1, baseDelayMs: 0 })
+    for (const [path, q] of zle) {
+      expect(() => assertAllegroWysylamReadOnly(path, 'GET', q), path).toThrow(ReadOnlyViolation)
+      await expect(getAllegroShipments(api, path, 'token', q)).rejects.toBeInstanceOf(ReadOnlyViolation)
+    }
+    expect(fake.requests).toEqual([])
+    expect(() => assertAllegroWysylamReadOnly(T, 'POST', [['waybill', 'AL000111222PL']])).toThrow(ReadOnlyViolation)
+  })
+
   it('komunikat odmowy bez ścieżki (identyfikatory nie idą do logów)', () => {
     expect(() => assertAllegroWysylamReadOnly(`/shipment-management/label/${ORDER}`)).toThrow(expect.objectContaining({ message: expect.not.stringContaining(ORDER) }))
   })

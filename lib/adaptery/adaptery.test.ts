@@ -419,7 +419,8 @@ describe('rejestr adapterów', () => {
     // zdolności, które ma tylko wersja z zapisem (zapis, odszukanie zapisu, wynik zapisu); reszta identyczna w obu wersjach
     // shipment.track tylko w wersji z zapisem (śledzi przesyłki, które utworzyła ta wersja; sam odczyt)
     // offers.publish (wystawienie oferty) tylko w wersji z zapisem; offers.prepare (sam odczyt) w obu
-    const tylkoZapis = new Set(['stock.write', 'order.status.write', 'order.accept', 'order.tracking.write', 'shipment.create', 'shipment.cancel', 'invoice.issue', 'invoice.correct', 'stock.import.status', 'reference.find', 'shipment.track', 'offers.publish'])
+    // shipment.pickup (zamówienie kuriera) tylko w wersji z zapisem
+    const tylkoZapis = new Set(['stock.write', 'order.status.write', 'order.accept', 'order.tracking.write', 'shipment.create', 'shipment.cancel', 'invoice.issue', 'invoice.correct', 'stock.import.status', 'reference.find', 'shipment.track', 'offers.publish', 'shipment.pickup'])
     const zapisowe = r.list().filter((m) => /\.zapis\.v\d+$/.test(m.adapterKey))
     expect(zapisowe.length).toBeGreaterThan(0)
     for (const m of zapisowe) {

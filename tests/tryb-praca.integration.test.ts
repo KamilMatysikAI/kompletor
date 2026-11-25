@@ -396,7 +396,8 @@ describe('podgląd przesyłki nieaktualny, nadanie liczy od nowa', () => {
     const tea = await product(db, 'HERB-D9B', 50)
     const r = await ingestOrder(db, order([{ productId: tea, qty: 2 }]), { now: T0 })
     const id = r.orderId!
-    const swiezy = await prepareForOrder(db, id, 'INPOST_B')
+    // nadanie podaje punkt z odczytu odbiorcy (tu: brak = null), więc porównanie z liczeniem przy tym samym punkcie
+    const swiezy = await prepareForOrder(db, id, 'INPOST_B', { punktOdbioru: null })
     await db.preparedShipment.updateMany({ where: { orderId: id }, data: { sideXCm: 999, weightKg: '99.000', codAmount: '1234.00', courierCode: 'podmieniony' } })
     const doNadania = await przesylkaDoNadania(db, id, 'INPOST_B')
     expect(doNadania).toEqual(swiezy)

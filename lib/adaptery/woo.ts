@@ -507,7 +507,23 @@ export class WooAdapter implements ChannelAdapter, OrderFeed, RecipientReader, O
     return this.api.get<T>(path, query)
   }
 
-  /** runda 3: limit rabatu z ustawień firmy (host: `ctx.ustawieniaFirmy`), to samo źródło co dokument. */
+  /**
+   * lista zamówień do archiwum (lib/archiwum/czytnik-woo.ts), tylko GET /orders. Wymagane `_fields` bez pól
+   * z danymi klienta: zapytanie bez listy pól albo z takim polem jest odrzucane przed wysłaniem.
+   */
+  odczytListyZamowienArchiwum<T>(query: Record<string, string | number | boolean>): Promise<WooResponse<T>> {
+    const pola = typeof query['_fields'] === 'string' ? query['_fields'].split(',').map((x) => x.trim()) : []
+    if (!pola.length || pola.some((p) => !p || /^(billing|shipping|meta_data|payment_method_title|transaction_id)(\.|$)|^customer_/.test(p)))
+      return Promise.reject(new ReadOnlyViolation('Woo: lista zamówień do archiwum wymaga `_fields` bez danych klienta'))
+    return this.api.get<T>('/orders', query)
+  }
+
+  /** opcje normalizacji zamówień (sufit rabatu firmy) dla importu archiwum, to samo źródło co bieżące zamówienia. */
+  opcjeZamowienArchiwum(): OpcjeZamowieniaWoo {
+    return this.opcjeZamowien()
+  }
+
+  /** limit rabatu z ustawień firmy (host: `ctx.ustawieniaFirmy`), to samo źródło co dokument. */
   private opcjeZamowien(): OpcjeZamowieniaWoo {
     return { rabatMaksProcent: sufitRabatuProc(this.ctx.ustawieniaFirmy?.rabatMaksProcent) }
   }

@@ -20,6 +20,7 @@ import { NonRetryableError } from '../bledy'
 import type { ChannelT } from './normalizacja'
 import { createInitialStock, dec, MAIN_WAREHOUSE_ID, upsertProduct } from './zapis-produktu'
 import { przeliczZalegle } from '../kanaly/przeliczenie'
+import { powodOfertaWylaczony, wylaczoneProdukty } from '../produkty/aktywnosc'
 
 // zapis jednego produktu (upsertProduct, createInitialStock) w osobnym module bez zależności od
 // lib/import/katalog.ts — „Dodaj produkt” w panelu używa tego samego kodu, a katalog (plik nadpisań z dysku) nie
@@ -57,6 +58,8 @@ export interface PersistStats {
   channelOffersManualKept: number
   channelOffersMassOffRefused: number
   channelOffersMassOffAllowed: number
+  /** oferty z pewnym powiązaniem do wyłączonego produktu, już nieaktywne — bez pozycji, nie zmienia statusu. */
+  channelOffersOnDisabledProduct: number
   staleRemoved: number
   /** zamówienia, którym przebieg dopisał produkt do pozycji bez powiązania. */
   ordersRemapped: number
@@ -149,6 +152,7 @@ export async function persistImport(
     channelOffersManualKept: 0,
     channelOffersMassOffRefused: 0,
     channelOffersMassOffAllowed: 0,
+    channelOffersOnDisabledProduct: 0,
     staleRemoved: 0,
     ordersRemapped: 0,
     ordersRemapFailed: 0,
@@ -298,6 +302,9 @@ export async function persistImport(
       }
     }
 
+    // produkty wyłączone w Kompletorze (import flagi nie zmienia). Pewne powiązanie nie aktywuje, nie wznawia
+    // i nie przepina na nie oferty: oferta zostaje nieaktywna z pozycją w raporcie importu.
+    const wylaczone = await wylaczoneProdukty(db, [...keyToId.values()])
     // Oferty kanałów: wynik mapowania (wszystkie) + ChannelOffer dla jednoznacznych z produktem
     for (const o of a.offers) {
       const ref = `${o.channel}|${o.accountId}|${o.externalId}`
@@ -341,6 +348,27 @@ export async function persistImport(
           // Oferta sprzedaje 1 jednostkę BL: przy towarze w kg to 1 kg = 1000 g (stan BL = kg z wFirmy).
           const qtyBasePerOffer = unitOf.get(key) === 'KG' ? 1000 : 1
           const intent = offerIntent(o)
+          const skuWylaczonego = intent === 'ACTIVE' ? wylaczone.get(productId) : undefined
+          // Aktywna oferta już przy tym produkcie (np. wyścig z wyłączeniem) idzie zwykłą ścieżką: nic jej nie wznawia.
+          if (skuWylaczonego !== undefined && !(existing?.active && existing.productId === productId)) {
+            // Pozycja w raporcie tylko przy zmianie stanu w tym przebiegu (nowa oferta albo gaszenie aktywnej). Oferta już
+            // nieaktywna = sam licznik w stats: inaczej każdy kolejny import byłby PARTIAL bez końca.
+            if (existing && !existing.active) {
+              stats.channelOffersOnDisabledProduct++
+              continue
+            }
+            await issue('oferta-produkt-wylaczony', ref, powodOfertaWylaczony(skuWylaczonego))
+            if (!existing) {
+              // jak wyłączona przez import: po włączeniu produktu następny import ją wznowi
+              await db.channelOffer.create({
+                data: { channel: o.channel, channelAccountId: o.accountId, externalId: o.externalId, productId, qtyBasePerOffer, mappingSource: o.source, active: false, deactivatedByImportAt: now },
+              })
+            } else if (existing.active) {
+              // aktywna przy innym produkcie, a powiązanie wskazuje wyłączony: bez przepięcia, stara nie może dalej rezerwować
+              pendingOff.push({ channelKey: `${o.channel}|${o.accountId}`, offerId: existing.id, data: { active: false, deactivatedByImportAt: now }, ref })
+            }
+            continue
+          }
           if (!existing) {
             await db.channelOffer.create({
               data: {

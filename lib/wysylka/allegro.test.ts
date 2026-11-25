@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest'
 import { deliveryProposal, defaultOption } from '@/tests/allegro-wysylam-atrapa'
 import { PII_SENTINELS } from '../adaptery/suita-kontraktowa'
 import { UnreadableDataError, type ShipmentInput } from '../adaptery/kontrakt'
-import { parseDeliveryOptions, wyliczPrzesylkeAllegro } from './allegro'
+import { dopasujWymiaryDoLimitu, parseDeliveryOptions, wyliczPrzesylkeAllegro } from './allegro'
 import { ustawieniaPrzesylki } from './przesylka'
 import { buildCreateCommandPayload } from './zlecenie-allegro'
 
@@ -147,5 +147,64 @@ describe('buildCreateCommandPayload (dane fikcyjne)', () => {
     })()
     expect(e?.message).toMatch(/odbiorcy/)
     for (const p of PII_SENTINELS) expect(e?.message).not.toContain(p)
+  })
+
+  it('wymiary dopasowane z zerem albo NaN = błąd, komenda nie powstaje', () => {
+    const ok = wyliczPrzesylkeAllegro(baza, u)
+    for (const wymiary of [{ length: 0, width: 38, height: 19 }, { length: 64, width: Number.NaN, height: 19 }]) {
+      expect(() => buildCreateCommandPayload(ok, sugg, { ...opcje, wymiary }, ['wymiary_domyslne'])).toThrow(/wymiarem/)
+    }
+  })
+})
+
+describe('dopasujWymiaryDoLimitu', () => {
+  const opcja = (lengthCm: number | null, widthCm: number | null, heightCm: number | null, packageType: 'PACKAGE' | 'DOX' = 'PACKAGE') => ({ deliveryType: null, packageType, limits: { cashOnDelivery: null, insurance: null, dimensions: { lengthCm, widthCm, heightCm }, weightKg: null } })
+  const gabarytB = { length: 64, width: 38, height: 19 }
+
+  it('paczka w limicie zostaje bez zmian', () => {
+    expect(dopasujWymiaryDoLimitu(gabarytB, [opcja(64, 38, 41)])).toEqual({ wymiary: gabarytB, limit: { length: 64, width: 38, height: 41 }, przyciete: false })
+  })
+
+  it('mniejsza skrytka: każdy bok przycięty do limitu', () => {
+    const r = dopasujWymiaryDoLimitu(gabarytB, [opcja(50, 30, 45)])
+    expect(r.wymiary).toEqual({ length: 50, width: 19, height: 38 })
+    expect(r.przyciete).toBe(true)
+  })
+
+  it('największy bok trafia do pola z największym limitem', () => {
+    expect(dopasujWymiaryDoLimitu(gabarytB, [opcja(20, 40, 70)]).wymiary).toEqual({ length: 19, width: 38, height: 64 })
+  })
+
+  it('mieści się dopiero po obrocie: pola przestawione, bez przycięcia', () => {
+    const r = dopasujWymiaryDoLimitu(gabarytB, [opcja(41, 38, 64)])
+    expect(r.wymiary).toEqual({ length: 38, width: 19, height: 64 })
+    expect(r.przyciete).toBe(false)
+  })
+
+  it('równe limity: kolejność pól length, width, height (sześcian 30 cm)', () => {
+    expect(dopasujWymiaryDoLimitu(gabarytB, [opcja(30, 30, 30)])).toEqual({ wymiary: { length: 30, width: 30, height: 19 }, limit: { length: 30, width: 30, height: 30 }, przyciete: true })
+  })
+
+  it('opcja z niepełnym limitem nie zasłania kolejnej pełnej', () => {
+    const r = dopasujWymiaryDoLimitu(gabarytB, [opcja(50, null, null), opcja(50, 30, 45)])
+    expect(r.limit).toEqual({ length: 50, width: 30, height: 45 })
+    expect(r.przyciete).toBe(true)
+  })
+
+  it('kilka opcji z różnymi skrytkami: limit niejednoznaczny, bez przycięcia', () => {
+    expect(dopasujWymiaryDoLimitu(gabarytB, [opcja(64, 38, 41), opcja(50, 30, 45)])).toEqual({ wymiary: gabarytB, limit: null, przyciete: false, niejednoznaczny: true })
+  })
+
+  it('kilka opcji z tą samą skrytką w innym układzie pól: jeden limit, przycięcie działa', () => {
+    const r = dopasujWymiaryDoLimitu(gabarytB, [opcja(50, 30, 45), opcja(45, 50, 30), opcja(10, 10, 10, 'DOX')])
+    expect(r.limit).toEqual({ length: 50, width: 30, height: 45 })
+    expect(r.niejednoznaczny).toBeUndefined()
+    expect(r.wymiary).toEqual({ length: 50, width: 19, height: 38 })
+  })
+
+  it('brak pełnego limitu albo brak opcji PACKAGE = bez zmian', () => {
+    for (const o of [[], [opcja(50, null, 30)], [opcja(0, 30, 30)], [opcja(10, 10, 10, 'DOX')]]) {
+      expect(dopasujWymiaryDoLimitu(gabarytB, o)).toEqual({ wymiary: gabarytB, limit: null, przyciete: false })
+    }
   })
 })

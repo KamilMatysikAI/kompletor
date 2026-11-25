@@ -21,6 +21,7 @@ import { alert, type Db, DEFAULT_WAREHOUSE, type Tx } from './stan'
 import { TransitionError } from './statusy'
 import { fakturaZBl, FAKTURA_BL_POMINIETA, oznaczPominietaFaktureBl } from './faktura-bl'
 import { zrodloZMagazynu } from './zrodlo-stanu'
+import { zamowieniaZatrzymaneWaluta } from './waluta'
 import { recordOrderError } from './zamowienia'
 import { correctionPrefix, issueCorrection, type KorektyWfirma, resolveUnknownCorrections } from './zwroty'
 
@@ -289,6 +290,17 @@ export async function runWfirmaQueueExclusive(db: Db, api: WfirmaApi, ctx: Param
 }
 
 /**
+ * ×: zamówienie zatrzymane bezpiecznikiem waluty (najnowszy ślad `FAKTURA_OBCA_WALUTA`) nie
+ * wraca do kolejki samo, także po włączeniu „Faktury w walucie zamówienia” (biuro mogło wystawić fakturę ręcznie). Wraca
+ * po „Ponów fakturę” (ślad `FAKTURA_WALUTA_PONOWIONA`). Zamówienie sprzed włączenia bez śladu zatrzymuje bezpiecznik
+ * (`blokadaFakturyWaluta`, raz, ze śladem), więc i ono wypada z kolejnych przebiegów.
+ */
+async function bezZatrzymanychWaluta(db: Db): Promise<Prisma.OrderWhereInput[]> {
+  const ids = await zamowieniaZatrzymaneWaluta(db)
+  return ids.length ? [{ id: { notIn: ids } }] : []
+}
+
+/**
  * Spakowane zamówienia bez faktury w toku ani wystawionej, bez flagi błędu (po błędzie decyduje obsługa). Bez
  * rezerwacji ACTIVE także zamówienie z pozycją bez stanu (e-book jako usługa, zamówienie bez wysyłki).
  */
@@ -302,8 +314,10 @@ async function pendingInvoices(db: Db, take: number, konta: { channel: Channel; 
       AND: [
         ...(konta ? [{ OR: konta }] : []),
         ...(od ? [{ events: { some: { kind: 'SPAKOWANE', createdAt: { gte: od } } } }] : []),
-        // zamówienie z fakturą BL raz odrzucone przez rdzeń (faktura-bl.ts) nie zajmuje miejsca w kolejnych przebiegach
+        // zamówienie z fakturą BL raz odrzucone przez rdzeń (faktura-bl.ts) nie zajmuje miejsca w kolejnych przebiegach;
+        // tak samo zamówienie w obcej walucie (waluta.ts): faktura ręcznie, bez pętli ponowień
         { events: { none: { kind: FAKTURA_BL_POMINIETA } } },
+        ...(await bezZatrzymanychWaluta(db)),
       ],
       invoices: { none: { state: { in: ['SENDING', 'UNKNOWN', 'ISSUED'] } } },
       OR: [
@@ -356,6 +370,7 @@ async function pendingDocuments(db: Db, t: TorDokumentow, take: number, konta: {
       AND: [
         ...(konta ? [{ OR: konta }] : []),
         { events: { none: { kind: FAKTURA_BL_POMINIETA } } },
+        ...(await bezZatrzymanychWaluta(db)),
         // paczka dodatkowa (podział, „dośle później”) nie ma własnej prośby o fakturę: liczy się zamówienie główne
         ...(t.tylkoNaZadanie ? [{ OR: [{ wantInvoiceNip: true }, { parentOrderId: { not: null } }] }] : []),
       ],

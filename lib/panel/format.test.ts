@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { channelPrefix, eventLabel, money, outsideCoreNote, qty, shortExternalId, when } from './format'
+import { channelPrefix, eventLabel, jednostkaWaluty, money, outsideCoreNote, qty, shortExternalId, when } from './format'
 
 const N = ' '
 
@@ -9,6 +9,17 @@ describe('formatowanie panelu', () => {
     expect(money(29865.05)).toBe(`29${N}865,05${N}zł`)
     expect(money('47')).toBe(`47,00${N}zł`)
     expect(money(null)).toBe('—')
+  })
+
+  it('kwota w walucie zamówienia: PLN i brak = zł, inna = kod waluty', () => {
+    expect(money(957, 'CZK')).toBe(`957,00${N}CZK`)
+    expect(money(1863.5, 'czk ')).toBe(`1${N}863,50${N}CZK`)
+    expect(money(47, 'PLN')).toBe(`47,00${N}zł`)
+    expect(money(47, null)).toBe(`47,00${N}zł`)
+    expect(money(47, '')).toBe(`47,00${N}zł`)
+    expect(money(null, 'CZK')).toBe('—')
+    expect(jednostkaWaluty('eur')).toBe('EUR')
+    expect(jednostkaWaluty(undefined)).toBe('zł')
   })
 
   it('ilości w jednostce bazowej: sztuki, gramy, kilogramy', () => {

@@ -50,7 +50,7 @@ export async function wierszeEksportu(db: PrismaClient, f: FiltryListy): Promise
     w.carrier ? CARRIER_LABEL[w.carrier] : '',
     w.deliveryMethod,
     PAYMENT_LABEL[w.paymentState],
-    w.paymentMethod,
+    w.paymentState === 'COD' ? 'Za pobraniem' : w.paymentMethod, // pobranie mogło zostać ustawione na karcie
     Number(w.totalGross.toFixed(2)),
     w.wantInvoice ? 'tak' : 'nie',
     w.invoice ? INVOICE_LABEL[w.invoice] : '',

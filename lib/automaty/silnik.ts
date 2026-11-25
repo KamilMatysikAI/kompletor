@@ -95,7 +95,7 @@ export function dniOd(od: Date, teraz: Date): { kalendarzowe: number; robocze: n
 }
 
 /** Rodzaje zdarzeń dziennika, które zmieniają status zamówienia (wejście w status dla zdarzeń czasowych). */
-export const ZMIANY_STATUSU = ['PRZYJETE', 'OPLACONE', 'ZBIERANIE', 'ZEBRANE', 'SPAKOWANE', 'DO_WYSLANIA', 'DO_ODBIORU', 'WYSLANE', 'ODEBRANE', 'ZBIERANIE_COFNIETE', 'ANULOWANE', 'DO_WYJASNIENIA', 'WYJASNIONE', 'STATUS_RECZNIE', 'PRZYWROCONE_W_KANALE', ZDARZENIE_AUTOMATU] as const
+export const ZMIANY_STATUSU = ['PRZYJETE', 'OPLACONE', 'ZBIERANIE', 'ZEBRANE', 'SPAKOWANE', 'DO_WYSLANIA', 'DO_ODBIORU', 'WYSLANE', 'ODEBRANE', 'ZBIERANIE_COFNIETE', 'ANULOWANE', 'DO_WYJASNIENIA', 'WYJASNIONE', 'STATUS_RECZNIE', 'PRZYWROCONE_W_KANALE', 'PLATNOSC_NA_POBRANIE', 'PLATNOSC_POBRANIE_COFNIETE', ZDARZENIE_AUTOMATU] as const
 
 const MAPA: Record<string, Zdarzenie[]> = {
   PRZYJETE: ['POBRANO', 'USTAWIONO_STATUS'],
@@ -116,6 +116,9 @@ const MAPA: Record<string, Zdarzenie[]> = {
   WYJASNIONE: ['USTAWIONO_STATUS'],
   STATUS_RECZNIE: ['USTAWIONO_STATUS'],
   PRZYWROCONE_W_KANALE: ['USTAWIONO_STATUS'],
+  // zmiana płatności na karcie: status się zmienia, ale pobranie nie jest wpłatą, więc bez „opłacono”
+  PLATNOSC_NA_POBRANIE: ['USTAWIONO_STATUS'],
+  PLATNOSC_POBRANIE_COFNIETE: ['USTAWIONO_STATUS'],
 }
 
 /**

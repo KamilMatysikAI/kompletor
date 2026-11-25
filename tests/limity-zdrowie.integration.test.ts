@@ -145,6 +145,17 @@ describe('limit zdolności shipment.create 120/min (osłona hosta)', () => {
     expect(b.tokens).toBeCloseTo(10, 5)
   })
 
+  it('rezerwa konta w zapytaniu: odczyt w tle zostawia 1/3 kubełka, zapis bierze resztę; czas do żetonu do progu rezerwy', async () => {
+    const rate = { requestsPerMinute: 30, maxConcurrent: 1, minPollIntervalMs: 0 }
+    const T = at(0)
+    for (let i = 0; i < 20; i++) expect((await sprawdzLimit(db, 'k2', rate, 'shipment.track', T, { rezerwaKonta: true })).granted).toBe(true)
+    expect(await sprawdzLimit(db, 'k2', rate, 'shipment.track', T, { rezerwaKonta: true })).toMatchObject({ granted: false, retryAfterMs: 2_000, zakres: '*' })
+    for (let i = 0; i < 10; i++) expect((await sprawdzLimit(db, 'k2', rate, 'shipment.create', T)).granted).toBe(true)
+    expect((await sprawdzLimit(db, 'k2', rate, 'shipment.create', T)).granted).toBe(false)
+    // po 22 s: 11 żetonów, odczyt w tle znowu przechodzi (bez zagłodzenia)
+    expect((await sprawdzLimit(db, 'k2', rate, 'shipment.track', at(22_000), { rezerwaKonta: true })).granted).toBe(true)
+  })
+
   it('zapis statusów odłożony przez limit zdolności: wiersz czeka bez liczenia próby i wychodzi po czasie', async () => {
     registry = new AdapterRegistry([zLimitem(state, { 'order.status.write': { requestsPerMinute: 2 } })])
     await konto({ statusMode: 'PRACA', config: { zapisWlaczony: true } })

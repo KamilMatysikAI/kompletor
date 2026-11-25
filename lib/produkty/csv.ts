@@ -9,9 +9,15 @@
 // Pusta komórka = pole bez zmian (import nie czyści danych). Każdy wiersz osobno: zły wiersz trafia do raportu
 // z numerem linii, reszta idzie dalej. Ponowny import tego samego pliku nic nie zmienia. Kolumny „stan” (tylko nowe
 // produkty: stan początkowy) i „grupa wariantów”.
+// kolumna „Kategoria” = ścieżka w drzewie kategorii firmy („Napoje > Soki”). Pusta komórka nic nie zmienia,
+// „(brak)” usuwa kategorię, brakujące kategorie powstają (opcja „Twórz brakujące kategorie”, domyślnie tak).
+// kolumna „Aktywny” (tak / nie, jak w eksporcie) wyłącza albo włącza produkt po zapisie wiersza
+// przez `ustawAktywnosc` (te same przeszkody co karta: odmowa = uwaga przy wierszu); pusta komórka nic nie zmienia.
 import type { PrismaClient } from '@prisma/client'
 import { poleCsv } from '../zamowienia/eksport-csv'
 import { checkGrupa, edytujProdukt, skuEdytowalne, VAT_LABEL, zalozProduktReczny } from './karta'
+import { opisOdmow, parsujAktywny, ustawAktywnosc } from './aktywnosc'
+import { BEZ_KATEGORII, kategoriaZeSciezki, parsujSciezke, przypiszKategorie, sprawdzSciezke } from './kategorie'
 
 export const CSV_MAKS_WIERSZY = 5000
 
@@ -30,11 +36,12 @@ export const KOLUMNY = [
   { naglowek: 'Próg niskiego stanu', pole: 'prog' },
   { naglowek: 'Lokalizacja', pole: 'lokalizacja' },
   { naglowek: 'Grupa wariantów', pole: 'grupa' },
+  { naglowek: 'Kategoria', pole: 'kategoria' },
   { naglowek: 'Stan', pole: 'stan' },
   { naglowek: 'Opis', pole: 'opis' },
 ] as const
 
-/** Tylko w eksporcie (import je pomija). */
+/** Na końcu eksportu; import pomija „Rodzaj” i „Źródło danych”, a „Aktywny” czyta (pole `aktywny`). */
 const TYLKO_EKSPORT = ['Rodzaj', 'Źródło danych', 'Aktywny'] as const
 
 const norm = (s: string) =>
@@ -45,6 +52,7 @@ const norm = (s: string) =>
     .replace(/ł/g, 'l')
     .replace(/[^a-z0-9]/g, '')
 const PO_NAGLOWKU = new Map<string, string>(KOLUMNY.map((k) => [norm(k.naglowek), k.pole]))
+PO_NAGLOWKU.set(norm('Aktywny'), 'aktywny')
 // nazwy zastępcze z innych programów (np. eksport z BaseLinkera albo arkusz pisany ręcznie)
 for (const [alias, pole] of [
   ['kod', 'sku'],
@@ -60,6 +68,9 @@ for (const [alias, pole] of [
   ['grupa', 'grupa'],
   ['ilosc', 'stan'],
   ['description', 'opis'],
+  ['category', 'kategoria'],
+  ['kategoriaproduktu', 'kategoria'],
+  ['active', 'aktywny'],
 ] as const)
   PO_NAGLOWKU.set(alias, pole)
 
@@ -129,6 +140,7 @@ export async function eksportCsv(db: PrismaClient): Promise<{ tekst: string; wie
       select: {
         id: true, sku: true, title: true, ean: true, priceGross: true, vatRate: true, purchasePriceNet: true, weightG: true, lengthCm: true, widthCm: true, heightCm: true,
         lowStockThreshold: true, groupId: true, description: true, kind: true, dataSource: true, active: true, stocks: { select: { location: true, physical: true } },
+        category: { select: { path: true } },
       },
     })
     if (!partia.length) break
@@ -137,7 +149,7 @@ export async function eksportCsv(db: PrismaClient): Promise<{ tekst: string; wie
       const stan = p.kind === 'STOCKED' ? p.stocks.reduce((s, x) => s + x.physical, 0) : null
       const wiersz: Record<string, string | number | null> = {
         sku: p.sku, nazwa: p.title, ean: p.ean, cena: dec(p.priceGross, 2), vat: p.vatRate, cenaZakupu: dec(p.purchasePriceNet), waga: p.weightG, dlugosc: dec(p.lengthCm),
-        szerokosc: dec(p.widthCm), wysokosc: dec(p.heightCm), prog: p.lowStockThreshold, lokalizacja: p.stocks.find((s) => s.location)?.location ?? null, grupa: p.groupId, stan, opis: p.description,
+        szerokosc: dec(p.widthCm), wysokosc: dec(p.heightCm), prog: p.lowStockThreshold, lokalizacja: p.stocks.find((s) => s.location)?.location ?? null, grupa: p.groupId, kategoria: p.category?.path ?? null, stan, opis: p.description,
       }
       out.push([...KOLUMNY.map((k) => poleCsv(wiersz[k.pole])), poleCsv(RODZAJ[p.kind]), poleCsv(ZRODLO[p.dataSource]), poleCsv(p.active ? 'tak' : 'nie')].join(';'))
       n++
@@ -158,7 +170,7 @@ export interface WynikImportuCsv {
 
 
 /** Import pliku (tekst po osłonie uploadu). Każdy wiersz osobno: błąd jednego nie cofa pozostałych. */
-export async function importCsv(db: PrismaClient, tekst: string, userId: string, opts: { hasWfirma: boolean }): Promise<WynikImportuCsv | { blad: string }> {
+export async function importCsv(db: PrismaClient, tekst: string, userId: string, opts: { hasWfirma: boolean; tworzKategorie?: boolean }): Promise<WynikImportuCsv | { blad: string }> {
   const wiersze = parsujCsv(tekst)
   if (wiersze.length < 2) return { blad: 'Plik nie ma wierszy z produktami (pierwsza linia to nagłówki, np. SKU;Nazwa;Cena brutto).' }
   if (wiersze.length - 1 > CSV_MAKS_WIERSZY) return { blad: `Plik ma ${wiersze.length - 1} wierszy, a na raz najwyżej ${CSV_MAKS_WIERSZY}: podziel go na części.` }
@@ -171,6 +183,7 @@ export async function importCsv(db: PrismaClient, tekst: string, userId: string,
   {
     const w: WynikImportuCsv = { nowe: 0, zmienione: 0, bezZmian: 0, bledy: [], uwagi: [] }
     const widziane = new Set<string>()
+    const kategorie = new Map<string, string>() // ścieżka → id w obrębie importu
     for (let i = 1; i < wiersze.length; i++) {
       const linia = i + 1
       const r = wiersze[i]!
@@ -197,8 +210,46 @@ export async function importCsv(db: PrismaClient, tekst: string, userId: string,
           w.bledy.push({ linia, sku, komunikat: g.error })
           continue
         }
-        const { sku: _s, stan, ...form } = pola
+        // kategoria sprawdzona przed zapisem wiersza, ale BEZ zapisu (zła ścieżka, brak kategorii przy
+        // wyłączonym tworzeniu albo limit = wiersz z błędem, nic nie zapisane). Brakujące poziomy powstają dopiero po
+        // zapisie wiersza (`kategoriaWiersza`), więc odrzucony wiersz nie zostawia pustych kategorii (przegląd E1, uwaga 1).
+        // undefined = bez zmian, null = „(brak)”: usuń kategorię, string = istniejąca, string[] = do założenia.
+        let kat: string | null | string[] | undefined
+        const katTekst = pola['kategoria']
+        if (katTekst !== undefined && katTekst.toLowerCase() === BEZ_KATEGORII) kat = null
+        else if (katTekst !== undefined) {
+          const k = parsujSciezke(katTekst)
+          const kz = k.ok && k.value ? await sprawdzSciezke(tx, k.value, { tworz: opts.tworzKategorie ?? true, pamiec: kategorie }) : null
+          if (!k.ok || !kz?.ok) {
+            w.bledy.push({ linia, sku, komunikat: !k.ok ? k.error : kz && !kz.ok ? kz.error : 'Zła ścieżka kategorii.' })
+            continue
+          }
+          kat = kz.value.id ?? k.value!
+        }
+        const akt = parsujAktywny(pola['aktywny'])
+        if (!akt.ok) {
+          w.bledy.push({ linia, sku, komunikat: akt.error })
+          continue
+        }
+        /** Flaga „Aktywny” po zapisie wiersza; odmowa (np. aktywna oferta) = uwaga, wiersz już zapisany. */
+        const aktywnoscWiersza = async (productId: string): Promise<boolean> => {
+          if (akt.value === undefined) return false
+          const a = await ustawAktywnosc(tx, [productId], akt.value, userId)
+          if (!a.ok) w.uwagi.push({ linia, sku, komunikat: `„Aktywny” bez zmian: ${a.error}` })
+          else if (a.value.odmowy.length) w.uwagi.push({ linia, sku, komunikat: opisOdmow(a.value.odmowy) })
+          for (const u of a.ok ? a.value.uwagi : []) w.uwagi.push({ linia, sku, komunikat: `${akt.value ? 'Włączony' : 'Wyłączony'}: ${u.komunikat}` })
+          return a.ok && a.value.zmienione > 0
+        }
+        /** Id kategorii po zapisie wiersza (zakłada brakujące poziomy); błąd = uwaga, wiersz już zapisany. */
+        const kategoriaWiersza = async (): Promise<{ ok: true; id: string | null } | { ok: false; error: string }> => {
+          if (kat === null || typeof kat === 'string') return { ok: true, id: kat }
+          const kz = await kategoriaZeSciezki(tx, kat!, { tworz: opts.tworzKategorie ?? true, userId, pamiec: kategorie })
+          return kz.ok ? { ok: true, id: kz.value.id } : kz
+        }
+        const { sku: _s, stan, kategoria: _k, aktywny: _a, ...form } = pola
         void _s
+        void _k
+        void _a
         const jest = await tx.product.findFirst({ where: { sku: { equals: sku, mode: 'insensitive' } }, select: { id: true, dataSource: true } })
         if (!jest) {
           if (!form['nazwa']) {
@@ -214,6 +265,12 @@ export async function importCsv(db: PrismaClient, tekst: string, userId: string,
           }
           await tx.product.update({ where: { id: z.productId }, data: { dataSource: 'CSV', ...(g.value ? { groupId: g.value } : {}) } })
           for (const u of z.warnings) w.uwagi.push({ linia, sku, komunikat: u })
+          if (kat) {
+            const id = await kategoriaWiersza()
+            const kz = id.ok ? await przypiszKategorie(tx, [z.productId], id.id, 'CSV', userId) : id
+            if (!kz.ok) w.uwagi.push({ linia, sku, komunikat: `Produkt dodany bez kategorii: ${kz.error}` })
+          }
+          await aktywnoscWiersza(z.productId)
           w.nowe++
           continue
         }
@@ -225,7 +282,15 @@ export async function importCsv(db: PrismaClient, tekst: string, userId: string,
         }
         if (grupa !== undefined && !skuEdytowalne(jest.dataSource)) w.uwagi.push({ linia, sku, komunikat: 'Grupa wariantów tego produktu przychodzi z BaseLinkera albo wFirmy: pominięta.' })
         for (const u of e.warnings ?? []) w.uwagi.push({ linia, sku, komunikat: u })
-        if (e.zmiany.length) w.zmienione++
+        let katZmieniona = false
+        if (kat !== undefined) {
+          const id = await kategoriaWiersza()
+          const kz = id.ok ? await przypiszKategorie(tx, [jest.id], id.id, 'CSV', userId) : id
+          if (!kz.ok) w.uwagi.push({ linia, sku, komunikat: `Kategoria bez zmian: ${kz.error}` })
+          else katZmieniona = kz.value.zmienione > 0
+        }
+        const aktZmieniona = await aktywnoscWiersza(jest.id)
+        if (e.zmiany.length || katZmieniona || aktZmieniona) w.zmienione++
         else w.bezZmian++
       } catch (err) {
         w.bledy.push({ linia, sku, komunikat: err instanceof Error ? `Nie udało się zapisać wiersza (${err.message.slice(0, 120)}).` : 'Nie udało się zapisać wiersza.' })

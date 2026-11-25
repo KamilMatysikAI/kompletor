@@ -24,6 +24,7 @@ import {
   POWOD_WZ_NIEDOSTEPNE,
   wzBezFaktury,
   korektyWlaczone,
+  walutaZamowieniaWlaczona,
   ZAPIS_WZ_DOSTEPNY,
 } from './ustawienia'
 
@@ -81,6 +82,8 @@ export interface WidokDokumentow {
   wzBezFakturyNiedostepne: string | null
   /** „Korekty faktur przy zwrotach z Kompletora”. */
   korektyWlaczone: boolean
+  /** „Faktury w walucie zamówienia” (wFirma). */
+  walutaZamowienia: boolean
   /**
    * spakowane zamówienia sklepów w pracy bez faktury, przy stanie z wFirmy i wyłączonym
    * wystawianiu. Po włączeniu Kompletor ich nie zafakturuje (bierze tylko spakowane po włączeniu); null = nie dotyczy.
@@ -150,6 +153,7 @@ export async function widokDokumentow(db: PrismaClient, warehouseId = DEFAULT_WA
     wzBezFaktury: wzBezFaktury(settings),
     wzBezFakturyNiedostepne: ZAPIS_WZ_DOSTEPNY ? null : POWOD_WZ_NIEDOSTEPNE,
     korektyWlaczone: korektyWlaczone(settings),
+    walutaZamowienia: walutaZamowieniaWlaczona(settings),
     spakowaneBezFaktury: zrodlo === 'WFIRMA' && f['fakturyWlaczone'] !== true ? await spakowaneBezFaktury(db) : null,
   }
 }
@@ -178,6 +182,8 @@ export interface FormularzDokumentow {
   wzBezFaktury?: boolean
   /** brak pola w formularzu = bez zmian. */
   korektyWlaczone?: boolean
+  /** „Faktury w walucie zamówienia”; brak pola w formularzu = bez zmian. */
+  walutaZamowienia?: boolean
 }
 
 export function dokumentyZFormularza(form: FormData): FormularzDokumentow {
@@ -201,6 +207,7 @@ export function dokumentyZFormularza(form: FormData): FormularzDokumentow {
     podstawaZwolnienia: s('podstawaZwolnienia'),
     wzBezFaktury: b('wzBezFaktury'),
     ...(form.has('korektyWlaczonePole') ? { korektyWlaczone: b('korektyWlaczone') } : {}),
+    ...(form.has('walutaZamowieniaPole') ? { walutaZamowienia: b('walutaZamowienia') } : {}),
   }
 }
 
@@ -229,6 +236,7 @@ function planDokumentow(db: PrismaClient, input: FormularzDokumentow, actorId: s
   if (program === 'brak' && input.przedWysylka) throw new UstawieniaDokumentowError('„Dokument przed wysyłką” wymaga programu do faktur')
   if (input.wzBezFaktury && program !== 'wfirma') throw new UstawieniaDokumentowError('„WZ przy wysyłce bez faktury” działa tylko z programem wFirma')
   if (input.korektyWlaczone && program !== 'wfirma') throw new UstawieniaDokumentowError('„Korekty faktur przy zwrotach z Kompletora” działają dziś tylko z programem wFirma')
+  if (input.walutaZamowienia && program !== 'wfirma') throw new UstawieniaDokumentowError('„Faktury w walucie zamówienia” działają dziś tylko z programem wFirma (KSeF bezpośrednio wystawia tylko w PLN)')
   if (input.wzBezFaktury && !ZAPIS_WZ_DOSTEPNY) throw new UstawieniaDokumentowError(`„WZ przy wysyłce bez faktury”: ${POWOD_WZ_NIEDOSTEPNE}`)
   // wystawianie z Kompletora działa dziś z wFirmą; inne programy dostaną je razem z adapterem zapisu
   // także z programem KSeF bezpośrednio (wysyłka do KSeF z numerem z serii)
@@ -275,6 +283,7 @@ function planDokumentow(db: PrismaClient, input: FormularzDokumentow, actorId: s
     // faktury”), idzie tym samym torem zapisu (kolejka wFirmy), więc wymaga też „Wystawiaj faktury z Kompletora”
     if (input.korektyWlaczone && !wlaczone) throw new UstawieniaDokumentowError('„Korekty faktur przy zwrotach z Kompletora” wymagają włączonego „Wystawiaj faktury z Kompletora”')
     if (input.wzBezFaktury && !wlaczone) throw new UstawieniaDokumentowError('„WZ przy wysyłce bez faktury” wymaga włączonego „Wystawiaj faktury z Kompletora”')
+    if (input.walutaZamowienia && !wlaczone) throw new UstawieniaDokumentowError('„Faktury w walucie zamówienia” wymagają włączonego „Wystawiaj faktury z Kompletora”')
     // chwila z zegara bazy — bramka porównuje ją z `OrderEvent.createdAt` (`now()` bazy)
     const teraz = async () => ctx.now ?? (await tx.$queryRaw<{ n: Date }[]>`SELECT now() AS n`)[0]!.n
     const wlaczoneOd = wlaczone ? (f['fakturyWlaczone'] === true && typeof f['fakturyWlaczoneOd'] === 'string' ? f['fakturyWlaczoneOd'] : (await teraz()).toISOString()) : null
@@ -297,6 +306,16 @@ function planDokumentow(db: PrismaClient, input: FormularzDokumentow, actorId: s
     // pole tylko, gdy przyszło z formularza; wyłączenie faktur wyłącza też korekty
     if (input.korektyWlaczone !== undefined) faktury['korektyWlaczone'] = input.korektyWlaczone && wlaczone
     else if (!wlaczone && f['korektyWlaczone'] === true) faktury['korektyWlaczone'] = false
+    // pole tylko, gdy przyszło z formularza albo już było; inny program niż wFirma albo wyłączenie faktur je zdejmuje
+    if (input.walutaZamowienia !== undefined) {
+      if (input.walutaZamowienia || 'walutaZamowienia' in f) faktury['walutaZamowienia'] = input.walutaZamowienia && wlaczone && program === 'wfirma'
+    } else if (f['walutaZamowienia'] === true && (!wlaczone || program !== 'wfirma')) faktury['walutaZamowienia'] = false
+    // chwila włączenia (przejście z wyłączonego na włączony, zegar bazy); zostaje przy kolejnych
+    // zapisach z włączonym, znika przy wyłączeniu. Automat bierze tylko zamówienia, które weszły w status wystawiania od niej.
+    const walutaOd =
+      faktury['walutaZamowienia'] === true ? (f['walutaZamowienia'] === true && typeof f['walutaZamowieniaOd'] === 'string' ? f['walutaZamowieniaOd'] : (await teraz()).toISOString()) : null
+    if (walutaOd) faktury['walutaZamowieniaOd'] = walutaOd
+    else delete faktury['walutaZamowieniaOd']
     // chwila włączenia WZ; zostaje przy kolejnych zapisach z włączonym WZ, znika przy
     // wyłączeniu. WZ dostają tylko wysyłki od tej chwili (zaległe biuro udokumentowało ręcznie).
     const wzOd = input.wzBezFaktury ? (f['wzBezFaktury'] === true && typeof f['wzBezFakturyOd'] === 'string' ? f['wzBezFakturyOd'] : (await teraz()).toISOString()) : null

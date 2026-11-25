@@ -6,6 +6,7 @@
 // sprzedawca na ekranie „Dziś”. Braki: otwarte `Shortage` (ta sama definicja co menu i ekran braków, OPEN_SHORTAGE).
 import type { Channel, OrderStatus, PaymentState, PrismaClient, Unit } from '@prisma/client'
 import { dashboard, OPEN_SHORTAGE, warsawRanges } from '@/lib/panel/dane'
+import { obceDoApi, type WalutaApi } from '@/lib/panel/sumy-walut'
 import { toWarsaw } from '@/lib/rdzen/kalendarz'
 import { availableOf, DEFAULT_WAREHOUSE } from '@/lib/rdzen/stan'
 import { ApiInputError } from './odpowiedzi'
@@ -20,8 +21,13 @@ export interface DayReportOut {
   stanNa: string
   sprzedaz: {
     zamowien: number
+    /**
+     * zamówienia w PLN plus obce waluty przeliczone po kursie średnim NBP (informacyjnie); `inneWaluty` =
+     * rozbicie (kwota w walucie, kurs, data kursu, kwota w złotych; waluta bez kursu ma `bruttoPln: null` i nie wchodzi do `brutto`)
+     */
     brutto: number
-    konta: { konto: string; nazwa: string; zamowien: number; brutto: number }[]
+    inneWaluty: WalutaApi[]
+    konta: { konto: string; nazwa: string; zamowien: number; brutto: number; inneWaluty: WalutaApi[] }[]
     pozaRealizacja: { przedStartem: number; nieprzyjete: number; pominiete: number; anulowane: number }
   }
   praca: {
@@ -53,7 +59,8 @@ export async function dayReport(db: PrismaClient, now = new Date()): Promise<Day
     sprzedaz: {
       zamowien: d.today.count,
       brutto: d.today.gross,
-      konta: d.today.perAccount.map((a) => ({ konto: a.key, nazwa: a.name, zamowien: a.count, brutto: a.gross })),
+      inneWaluty: obceDoApi(d.today.foreign),
+      konta: d.today.perAccount.map((a) => ({ konto: a.key, nazwa: a.name, zamowien: a.count, brutto: a.gross, inneWaluty: obceDoApi(a.foreign) })),
       pozaRealizacja: { przedStartem: d.today.outside.beforeStart, nieprzyjete: d.today.outside.notIngested, pominiete: d.today.outside.skipped, anulowane: d.today.outside.cancelled },
     },
     praca: {

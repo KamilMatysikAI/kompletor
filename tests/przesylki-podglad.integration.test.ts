@@ -1,7 +1,9 @@
 // podgląd przesyłki (także Wysyłam z Allegro). Idempotencja, izolacja dwóch firm, „nie dotyczy”, kolejność źródeł gabarytu, brak danych
 // osobowych w wierszu, brak skutków w zamówieniu. Dane fikcyjne, zero połączeń zewnętrznych.
-import { afterAll, beforeEach, describe, expect, it } from 'vitest'
-import { BladPrzesylki, podgladPrzesylki, powodNieDotyczy, prepareForOrder } from '@/lib/wysylka/podglad'
+import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { rekordZOdbiorcy } from '@/lib/klienci/rekord'
+import { zapiszRekordKlienta } from '@/lib/klienci/zapis'
+import { BladPrzesylki, podgladPrzesylki, powodNieDotyczy, prepareForOrder, PUNKT_PRZY_NADANIU } from '@/lib/wysylka/podglad'
 import { rejectShortagesAtAcceptance, shipLater } from '@/lib/rdzen/brakuje'
 import { powodDokumentuLubPrzesylki, splitOrder } from '@/lib/rdzen/edycja'
 import { allocate } from '@/lib/rdzen/przydzial'
@@ -18,6 +20,7 @@ afterAll(async () => {
 })
 
 const PACZKOMAT = 'Paczkomaty InPost'
+const KLUCZE = `1:${'4'.repeat(64)}`
 const DPD = 'Kurier DPD'
 
 async function zamowienie(deliveryMethod: string, opts: { qty?: number; paymentState?: 'PAID' | 'COD'; paymentMethod?: string; channel?: 'ALLEGRO' } = {}, klient = db): Promise<string> {
@@ -37,14 +40,15 @@ beforeEach(async () => {
 })
 
 describe('prepareForOrder', () => {
-  it('zapisuje podgląd paczkomatu z problemem braku punktu i nie zmienia zamówienia ani rezerwacji', async () => {
+  it('zapisuje podgląd paczkomatu bez danych klienta (punkt sprawdzi nadanie) i nie zmienia zamówienia ani rezerwacji', async () => {
     const id = await zamowienie(PACZKOMAT)
     const przed = await db.order.findUniqueOrThrow({ where: { id }, include: { reservations: true, events: true, lines: true } })
     const r = await prepareForOrder(db, id, 'INPOST_B')
     expect(r.wynik).toBe('przygotowane')
     const w = await db.preparedShipment.findFirstOrThrow({ where: { orderId: id } })
     expect(w).toMatchObject({ organizationId: ORG_A, packageNo: 1, adapterKey: 'basecourier.v1', carrier: 'PACZKOMATY', courierCode: 'paczkomaty', parcelSize: 'INPOST_B', sideXCm: 19, sideYCm: 38, sideZCm: 64, codAmount: null })
-    expect((w.problems as { kod: string }[]).map((p) => p.kod)).toEqual(expect.arrayContaining(['punkt', 'waga_domyslna']))
+    expect((w.problems as { kod: string }[]).map((p) => p.kod)).toEqual(expect.arrayContaining(['punkt_przy_nadaniu', 'waga_domyslna']))
+    expect((w.problems as { kod: string; poziom: string }[]).filter((p) => p.poziom === 'BLAD')).toEqual([])
     expect(await db.order.findUniqueOrThrow({ where: { id }, include: { reservations: true, events: true, lines: true } })).toEqual(przed)
   })
 
@@ -370,7 +374,33 @@ describe('podgladPrzesylki', () => {
     await prepareForOrder(db, id, 'INPOST_A')
     const po = await podgladPrzesylki(db, id)
     expect(po!.zapisana).toMatchObject({ przewoznik: 'PACZKOMATY', gabaryt: 'InPost A', wymiary: '8 × 38 × 64 cm', pobranie: null })
-    expect(po!.zapisana!.problemy.map((p) => p.tekst)).toContain('Brak punktu odbioru w danych zamówienia.')
+    expect(po!.zapisana!.problemy.map((p) => p.tekst)).toContain(PUNKT_PRZY_NADANIU)
+  })
+
+  it('paczkomat z kodem w zapisanych danych klienta = bez problemu punktu; dane bez punktu = BLAD jak przy nadaniu; tylko baza, kod nie trafia do wiersza', async () => {
+    vi.stubEnv('CUSTOMER_DATA_KEYS', KLUCZE)
+    try {
+      const zKodem = await zamowienie(PACZKOMAT)
+      await zapiszRekordKlienta(db, zKodem, rekordZOdbiorcy({ dostawa: null, punktOdbioru: { kod: 'TST01M', nazwa: null }, faktura: null, problemy: [] }), { source: 'RECZNE', fetchedAt: T0, env: { CUSTOMER_DATA_KEYS: KLUCZE, CUSTOMER_LOOKUP_KEY: 'c'.repeat(64) } })
+      const r = await prepareForOrder(db, zKodem, 'INPOST_A')
+      expect(r).toMatchObject({ wynik: 'przygotowane', parcel: { pickupPoint: 'TST01M' } })
+      const kody = r.wynik === 'przygotowane' ? r.parcel.problems.map((p) => p.kod) : []
+      expect(kody).not.toContain('punkt')
+      expect(kody).not.toContain('punkt_przy_nadaniu')
+      expect(JSON.stringify(await db.preparedShipment.findFirstOrThrow({ where: { orderId: zKodem } }))).not.toContain('TST01M')
+
+      const bezKodu = await zamowienie(PACZKOMAT)
+      await zapiszRekordKlienta(db, bezKodu, rekordZOdbiorcy({ dostawa: null, punktOdbioru: null, faktura: null, problemy: [] }), { source: 'RECZNE', fetchedAt: T0, env: { CUSTOMER_DATA_KEYS: KLUCZE, CUSTOMER_LOOKUP_KEY: 'c'.repeat(64) } })
+      const b = await prepareForOrder(db, bezKodu, 'INPOST_A')
+      expect(b.wynik === 'przygotowane' && b.parcel.problems.filter((p) => p.poziom === 'BLAD').map((p) => p.kod)).toEqual(['punkt'])
+
+      // kurier DPD (moduł nie wymaga punktu): podgląd w ogóle nie czyta danych klienta
+      const kurier = await zamowienie(DPD)
+      await prepareForOrder(db, kurier, null)
+      expect(await db.auditLog.count({ where: { entity: 'KLIENT_PODGLAD', entityId: kurier } })).toBe(0)
+    } finally {
+      vi.unstubAllEnvs()
+    }
   })
 
   it('wartości robocze są oznaczone, a z konfiguracji nie', async () => {

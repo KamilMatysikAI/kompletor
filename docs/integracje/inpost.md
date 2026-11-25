@@ -24,8 +24,10 @@ Dla sprzedawcy, który ma **własną umowę z InPost** i chce obsługiwać przes
   wyśle. Każde utworzenie przesyłki w ShipX kosztuje, dlatego zapis jest osobno (niżej) i dziś nikt go nie woła.
 - **Nie przechowuje adresów klientów.** Podgląd przesyłki ma tylko parametry paczki (wymiary, waga, usługa, kwota
   pobrania, problemy). Imię, adres, telefon i e-mail odbiorcy nie trafiają do bazy, logów ani alertów.
-- Kodu paczkomatu wybranego przez klienta jeszcze nie zna: kanały nie dają go do cienia (osobne zadanie dokłada dane
-  dostawy). Do tego czasu podgląd paczkomatu ma błąd „Brak punktu odbioru”.
+- Kod paczkomatu wybranego przez klienta podgląd bierze z zapisanych danych klienta. Gdy tych danych nie ma
+  (albo usunięto je po okresie przechowywania, albo nie dało się ich odczytać), podgląd pokazuje niebieską informację,
+  że punkt zostanie sprawdzony przy tworzeniu przesyłki. Czerwony „Brak punktu odbioru” znaczy, że dane klienta są,
+  ale kodu paczkomatu w nich nie ma.
 
 ## Skąd token i id organizacji [do potwierdzenia]
 
@@ -80,6 +82,12 @@ Inne zasady zapisu: kraj odbiorcy inny niż PL = odmowa (moduł jest krajowy); t
 zaczynających się od 0 też jest odmową, bo żaden polski numer krajowy nie zaczyna się od 0); ostrzeżenia przesyłki przechodzą tylko potwierdzone przez człowieka
 (`potwierdzoneOstrzezenia`); odmowa ShipX 4xx podaje kod błędu i nazwy pól z `details`, bez wartości. Pobranie do
 paczkomatu ma ostrzeżenie `pobranie_punkt`: przed potwierdzeniem sprawdź, czy paczkomat przyjmuje pobranie.
+
+Adres odbiorcy przy paczkomacie: wymagane są imię i nazwisko, e-mail i telefon. Pełny adres (ulica, numer domu, kod,
+miasto) idzie w `receiver.address`, gdy jest; niepełny (np. ulica bez numeru) jest pomijany w całości, bez zgadywania
+numeru. Podstawa: FAQ integracji InPost (adres niepotrzebny przy paczkomacie, wymagany przy kurierze). Kurier InPost
+bez pełnego adresu = odmowa bez żądania. [NIEPEWNE] do potwierdzenia pierwszą przesyłką paczkomatową bez adresu na
+sandboxie ShipX (bezpłatnie).
 
 ### Lista przed włączeniem zapisu
 

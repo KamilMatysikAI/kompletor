@@ -101,7 +101,7 @@ export const KROKI: Record<TypKroku, { nazwa: string; czasownik: string; opis: s
   wystawFakture: { nazwa: 'Wystaw fakturę', czasownik: 'Stwórz', opis: 'Faktura przez kolejkę faktur (gdy wystawianie faktur jest włączone).' },
   anulujFakture: { nazwa: 'Anuluj fakturę', czasownik: 'Anuluj', opis: 'Nieudana faktura wraca do poprawienia; wystawionej faktury reguła nie cofa.' },
   utworzPrzesylke: { nazwa: 'Utwórz przesyłkę', czasownik: 'Stwórz', opis: 'Przesyłka u przewoźnika zamówienia (gdy nadawanie jest włączone w ustawieniach przewoźnika).' },
-  drukujEtykiete: { nazwa: 'Wydrukuj etykietę', czasownik: 'Wydrukuj', opis: 'Najnowsza etykieta przesyłki na stanowisku druku.' },
+  drukujEtykiete: { nazwa: 'Wydrukuj etykietę', czasownik: 'Wydrukuj', opis: 'Najnowsza etykieta przesyłki na stanowisku druku; przy odbiorze osobistym etykieta odbioru do naklejenia na paczkę.' },
   oznacz: { nazwa: 'Oznacz zamówienie', czasownik: 'Ustaw', opis: 'Gwiazdka na liście zamówień.' },
   anulujZamowienie: { nazwa: 'Anuluj zamówienie', czasownik: 'Anuluj', opis: 'Anulowanie przez system (bez anulowania po fakturze).' },
 }

@@ -2,7 +2,13 @@
 // Konta przewoźników: klucze (puste pole = bez zmiany), ustawienia konta z manifestu adaptera
 // i wyłączniki nadawania reguł — jeden formularz, jeden PasekZapisu. „Sprawdź połączenie” to osobny formularz
 // poza tym (atrybut `form` przycisku), więc test nie wysyła niezapisanych zmian.
-import { useActionState } from 'react'
+// zapis przez `onSubmit`, nie `<form action={fn}>`: React 19 po akcji funkcyjnej sam resetuje formularz do
+// wartości domyślnych z chwili przed odświeżeniem danych, więc po „Zapisz zmiany” pola wracały puste (nowe konto) albo
+// stare, a zapisane wartości było widać dopiero po F5; po błędzie ginęły wpisane dane. Teraz pola zostają, karta konta
+// montuje się od nowa, gdy przyjdą zapisane wartości z serwera (klucz = odcisk danych konta), a wpisane klucze znikają
+// z pól po udanym zapisie (wartość kluczy nigdy nie wraca do panelu).
+import { startTransition, useActionState, useEffect, useRef } from 'react'
+import { useRouter } from 'next/navigation'
 import { Karta, Odznaka, PasekZapisu, PoleHasla, PoleTekstowe, Przelacznik, Przycisk, ToastPoAkcji, Wybor, Zaawansowane } from '@/app/ui'
 import type { KontoPrzewoznika } from '@/lib/wysylka/konta'
 import { dodajKonto, zapiszKonta, type StanKont } from './akcje'
@@ -11,10 +17,45 @@ const kiedy = (iso: string) => new Date(iso).toLocaleString('pl-PL', { timeZone:
 const etykietaPola = (opis: string) => opis.charAt(0).toUpperCase() + opis.slice(1)
 const nrReguly = (priority: number, wszystkie: number[]) => wszystkie.indexOf(priority) + 1
 
+/**
+ * Odcisk danych karty konta z serwera: zmienia się, gdy po zapisie przyjdą nowe wartości pól, stan kluczy
+ * albo wyłączników nadawania. Służy za klucz karty, bo pola są niekontrolowane (`defaultValue` działa tylko przy montażu).
+ */
+export function odciskKonta(k: KontoPrzewoznika): string {
+  return JSON.stringify([k.id, k.sekrety.map((s) => [s.name, s.zrodlo]), k.pola.map((p) => [p.key, p.wartosc]), k.reguly.map((r) => [r.id, r.nadawanie])])
+}
+
+/** Pola kluczy w formularzu kont (`k-<konto>-s-<nazwa>`): po udanym zapisie czyszczone, wartość nie wraca do panelu. */
+export const POLE_KLUCZA_RE = /^k-.+-s-/
+
 export function FormularzKont({ konta, przewoznicy, priorytety }: { konta: KontoPrzewoznika[]; przewoznicy: Record<string, string>; priorytety: number[] }) {
   const [stan, akcja, trwa] = useActionState<StanKont, FormData>(zapiszKonta, {})
+  const ref = useRef<HTMLFormElement>(null)
+  const router = useRouter()
+  const zapisz = (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault()
+    const form = new FormData(e.currentTarget)
+    startTransition(() => akcja(form))
+  }
+  // po udanym zapisie: wpisane klucze znikają z pól, a strona dociąga zapisane wartości (gdyby odpowiedź akcji ich nie
+  // niosła); zdarzenie `reset` (bez resetu pól) mówi paskowi zapisu, że bieżące wartości są stanem zapisanym
+  const poprzedni = useRef(stan)
+  useEffect(() => {
+    if (stan === poprzedni.current) return
+    poprzedni.current = stan
+    if (!stan.ok) return
+    const f = ref.current
+    if (f) for (const el of f.querySelectorAll<HTMLInputElement>('input')) if (POLE_KLUCZA_RE.test(el.name)) el.value = ''
+    f?.dispatchEvent(new Event('reset'))
+    router.refresh()
+  }, [stan, router])
+  // karta zamontowana od nowa z zapisanymi wartościami: nowy stan zapisany dla paska
+  const odciski = konta.map(odciskKonta).join('|')
+  useEffect(() => {
+    ref.current?.dispatchEvent(new Event('reset'))
+  }, [odciski])
   return (
-    <form action={akcja} aria-label="Konta przewoźników">
+    <form ref={ref} onSubmit={zapisz} aria-label="Konta przewoźników">
       <ToastPoAkcji stan={stan} />
       {konta.map((k) => {
         const komplet = k.sekrety.filter((s) => s.wymagany).every((s) => s.ustawiony)
@@ -45,23 +86,26 @@ export function FormularzKont({ konta, przewoznicy, priorytety }: { konta: Konto
         }
         return (
           <Karta
-            key={k.id}
+            key={`${k.id}|${odciskKonta(k)}`}
             className="konto-przew"
             tytul={k.nazwa}
             opis={
               k.reguly.length
                 ? `Używane w regułach: ${k.reguly.map((r) => `nr ${nrReguly(r.priority, priorytety)} (${przewoznicy[r.carrier] ?? r.carrier})`).join(', ')}`
-                : 'Żadna reguła jeszcze go nie używa: wybierz ten moduł wysyłki w regule na ekranie Przewoźnicy.'
+                : 'Żadna reguła jeszcze go nie używa. Klucze i ustawienia konta zapiszesz już teraz; nadawać zacznie, gdy wybierzesz ten moduł wysyłki w regule na ekranie Przewoźnicy.'
             }
             akcje={
-              <>
-                <Odznaka ton={komplet ? (zSerwera ? 'info' : 'sukces') : 'neutralny'} title={zSerwera ? 'Klucze ustawił administrator w konfiguracji serwera; klucz wpisany tutaj ma pierwszeństwo.' : undefined}>
-                  {komplet ? (zSerwera ? 'klucze z konfiguracji serwera' : 'klucze ustawione') : 'brak kluczy'}
-                </Odznaka>
-                <Przycisk type="submit" form={`test-${k.id}`} rozmiar="sm" powodWylaczenia={komplet ? undefined : 'Najpierw wpisz i zapisz klucze'}>
-                  Sprawdź połączenie
-                </Przycisk>
-              </>
+              // Wysyłam z Allegro: bez kluczy i bez testu połączenia (konto Allegro z Kanałów sprzedaży)
+              k.bezKluczy ? undefined : (
+                <>
+                  <Odznaka ton={komplet ? (zSerwera ? 'info' : 'sukces') : 'neutralny'} title={zSerwera ? 'Klucze ustawił administrator w konfiguracji serwera; klucz wpisany tutaj ma pierwszeństwo.' : undefined}>
+                    {komplet ? (zSerwera ? 'klucze z konfiguracji serwera' : 'klucze ustawione') : 'brak kluczy'}
+                  </Odznaka>
+                  <Przycisk type="submit" form={`test-${k.id}`} rozmiar="sm" powodWylaczenia={komplet ? undefined : 'Najpierw wpisz i zapisz klucze'}>
+                    Sprawdź połączenie
+                  </Przycisk>
+                </>
+              )
             }
           >
             {k.test && (
@@ -73,6 +117,7 @@ export function FormularzKont({ konta, przewoznicy, priorytety }: { konta: Konto
                 {k.test.message}
               </p>
             )}
+            {k.bezKluczy && <p className="small">Korzysta z konta Allegro w Kanałach sprzedaży, więc nie ma tu osobnych kluczy.</p>}
             <div className="konto-pola">
               {k.sekrety.map((s) => (
                 <PoleHasla

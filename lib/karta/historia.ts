@@ -115,6 +115,19 @@ export function opisZdarzenia(kind: string, data: unknown): string {
     const koszt = t('kosztZ') && t('kosztNa') ? `, wysyłka ${zl(t('kosztZ')!)} → ${zl(t('kosztNa')!)}` : ''
     return `${eventLabel(kind)}: ${zl(t('z')!)} → ${zl(t('na')!)}${koszt}`
   }
+  // ceny pozycji ze sklepu (numer pozycji w sklepie i ceny, bez danych klienta)
+  if ((kind === 'CENA_Z_KANALU' || kind === 'CENA_W_KANALE_INNA') && Array.isArray(d['pozycje'])) {
+    const zl = (v: unknown) => (typeof v === 'string' ? `${v.replace('.', ',')} zł` : '?')
+    const p = (d['pozycje'] as Record<string, unknown>[]).slice(0, 10).map((x) => `pozycja ${String(x?.['pozycja'] ?? '?').slice(0, 40)} ${zl(x?.['z'])} → ${zl(x?.['na'])}`)
+    if (p.length) return `${eventLabel(kind)}: ${p.join(', ')}`
+  }
+  // sposób dostawy z kanału (nazwa metody ze sklepu, bez adresu i punktu) i dobrany przewoźnik
+  if (kind === 'DOSTAWA_Z_KANALU' && t('sposob')) {
+    const c = t('przewoznik')
+    const przewoznik = !c || c === 'BRAK' ? 'przewoźnika brak w regułach firmy' : `przewoźnik ${CARRIER_LABEL[c as Carrier] ?? c}`
+    const st = t('status')
+    return `${eventLabel(kind)}: ${t('sposob')!.slice(0, 120)}, ${przewoznik}${st ? `, status ${STATUS_LABEL[st as OrderStatus] ?? st}` : ''}`
+  }
   if (kind === 'KOSZT_WYSYLKI_ZE_SKLEPU' && t('kosztWysylki')) return `${eventLabel(kind)}: ${t('kosztWysylki')!.replace('.', ',')} zł`
   if ((kind === 'POZYCJA_DODANA' || kind === 'POZYCJA_USUNIETA') && n('qty') !== null) return `${eventLabel(kind)} (${n('qty')})`
   if ((kind === 'PODZIAL' || kind === 'PODZIAL_NOWA_PACZKA') && n('packageNo') !== null) return `${eventLabel(kind)}: paczka ${n('packageNo')}`

@@ -75,6 +75,36 @@ export async function odbiorcaPrzesylki(
   return { zrodlo: r.zrodlo, recipient: r.odbiorca.dostawa, punktOdbioru: r.odbiorca.punktOdbioru, przejscie: naOdbiorcePrzesylki(r.odbiorca) }
 }
 
+/**
+ * punkt odbioru do PODGLĄDU przesyłki, tylko z bazy (bez odczytu kanału, bez zapisu). Ten sam automat
+ * i cel co nadanie (`system:wysylka`, PRZESYLKA, ślad KLIENT_PODGLAD), ale z rekordu wychodzi wyłącznie kod punktu,
+ * który podgląd przekazuje do liczenia w pamięci (PreparedShipment nie ma kolumny punktu, problemy nie niosą kodu).
+ *  - JEST: rekord ma kod punktu;
+ *  - BRAK_PUNKTU: rekord jest, ale bez punktu (nadanie też odmówi, więc podgląd słusznie pokazuje błąd);
+ *  - NIEZNANY: punktu nie da się sprawdzić z bazy; `powod` mówi dlaczego, bez żadnych danych:
+ *    BRAK = danych klienta jeszcze nie zapisano, USUNIETE = usunięte po okresie przechowywania, NIEODCZYTANE = brak
+ *    klucza, błąd szyfru albo inny błąd odczytu (wyjątek nie wywraca „Policz przesyłkę”).
+ */
+export async function punktOdbioruZBazy(
+  db: PrismaClient,
+  orderId: string,
+  env?: Record<string, string | undefined>,
+): Promise<{ stan: 'JEST'; kod: string } | { stan: 'BRAK_PUNKTU' } | { stan: 'NIEZNANY'; powod: 'BRAK' | 'USUNIETE' | 'NIEODCZYTANE' }> {
+  let d: Awaited<ReturnType<typeof daneKlienta>>
+  try {
+    d = await daneKlienta(db, orderId, { actorId: 'system:wysylka', zakres: 'PELNY', cel: 'PRZESYLKA', env: env ?? process.env })
+  } catch (e) {
+    // bez treści błędu: mógłby nieść dane klienta
+    console.warn(`[wysylka] punkt odbioru do podglądu nieodczytany: zamówienie ${orderId}, ${e instanceof Error ? e.name : 'błąd'}`)
+    return { stan: 'NIEZNANY', powod: 'NIEODCZYTANE' }
+  }
+  if (d.stan === 'BRAK') return { stan: 'NIEZNANY', powod: 'BRAK' }
+  if (d.stan === 'USUNIETE') return { stan: 'NIEZNANY', powod: 'USUNIETE' }
+  if (d.stan !== 'PELNY') return { stan: 'NIEZNANY', powod: 'NIEODCZYTANE' }
+  const kod = d.rekord.punktOdbioru?.kod?.trim()
+  return kod ? { stan: 'JEST', kod } : { stan: 'BRAK_PUNKTU' }
+}
+
 /** Kontrahent faktury wFirma (`WejscieFaktury.kontrahent`). */
 export async function kontrahentFaktury(
   db: PrismaClient,

@@ -147,6 +147,14 @@ model Product {
   // strefa magazynu ustawiona ręcznie w karcie produktu; null = z reguł firmy (ProductZoneRule).
   // klucz strefy firmy (PackingZoneDef.key), nie enum
   packingZone       String?
+  // kategoria asortymentowa (jedna na produkt, drzewo firmy w ProductCategory); null = bez kategorii.
+  // Źródło = informacja, skąd wzięło się bieżące przypisanie (RECZNE | CSV | KANAL | BL | USUNIECIE, lib/produkty/kategorie.ts);
+  // nie blokuje zmiany: ręczne przypisanie, lista i import CSV nadpisują kategorię niezależnie od źródła.
+  categoryId        String?
+  categorySource    String?
+  categorySetAt     DateTime?
+  // klucz złożony z firmą: produkt nie wskaże kategorii innej firmy nawet z pominięciem kodu (jak Stock → Warehouse)
+  category          ProductCategory?  @relation(fields: [organizationId, categoryId], references: [organizationId, id], onDelete: Restrict)
   active            Boolean           @default(true)
   createdAt         DateTime          @default(now())
   updatedAt         DateTime          @updatedAt
@@ -163,6 +171,7 @@ model Product {
   @@unique([organizationId, sku])
   @@unique([organizationId, wfirmaGoodId])
   @@index([ean])
+  @@index([organizationId, categoryId])
 }
 
 // zdjęcia produktu. Pliki w katalogu zdjęć (ZDJECIA_DIR, wolumen kontenera): <firma>/<id>.webp (do 1600 px),
@@ -304,6 +313,9 @@ model ChannelOffer {
   // Kiedy ofertę wyłączył import. Import włącza z powrotem tylko ofertę, którą sam wyłączył;
   // wyłączenie w panelu zostawia to pole puste i jest trwałe.
   deactivatedByImportAt DateTime?
+  // kanał zakończył ofertę na polecenie Kompletora (stan 0); przy stanie dodatnim Kompletor wznawia tylko
+  // taką ofertę. Pusta = nie my (zakończona ręcznie albo przez kanał zostaje zakończona).
+  endedByZeroStockAt    DateTime?
   createdAt             DateTime      @default(now())
   updatedAt             DateTime      @updatedAt
 
@@ -661,6 +673,10 @@ model Order {
   // liczniki panelu; z `companyStatus`, jedno groupBy menu i statusów firmy
   @@index([organizationId, status, carrier, companyStatus])
   @@index([organizationId, totalGross]) // sortowanie listy po kwocie
+  // (przegląd końcowy): rozłączność archiwum w raporcie szuka `Order` po koncie i numerze albo id; bez
+  // `channel`, bo przy RLS porównanie enum nie jest leakproof i nie może być warunkiem indeksu (zostaje filtrem)
+  @@index([organizationId, channelAccountId, channelNumber])
+  @@index([organizationId, channelAccountId, externalId])
 }
 
 model OrderLine {
@@ -1125,8 +1141,10 @@ model Organization {
   carrierPickups       CarrierPickup[]
   carrierPickupEvents  CarrierPickupEvent[]
   carrierPickupShips   CarrierPickupShipping[]
+  courierPickupOrders  CourierPickupOrder[]
   productZoneRules     ProductZoneRule[]
   packingZoneDefs      PackingZoneDef[]
+  productCategories    ProductCategory[]
   orderStatusDefs      OrderStatusDef[]
   orderStatusGroups    OrderStatusGroup[]
   automationGroups     AutomationGroup[]
@@ -1166,6 +1184,8 @@ model Organization {
   ksefInvoiceDrafts    KsefInvoiceDraft[]
   invoiceNumberSeries  InvoiceNumberSeries[]
   orderCustomers       OrderCustomer[]
+  archivedOrders       ArchivedOrder[]
+  archivedOrderLines   ArchivedOrderLine[]
   customerDataSettings CustomerDataSettings?
   orderNotes           OrderNote[]
   orderPayments        OrderPayment[]
@@ -1607,6 +1627,41 @@ model CarrierPickupEvent {
   @@index([organizationId, carrier, arrivedAt])
 }
 
+// Zamówienie podjazdu kuriera u przewoźnika z kolejki pakowania (zdolność shipment.pickup). Jeden aktywny wiersz na
+// przewoźnika, moduł, konto i dzień odbioru (rezerwacja pod blokadą przed żądaniem); świadome drugie zamówienie tego
+// dnia = kolejna próba (`attempt`). Stany: TWORZENIE (żądanie w drodze), ZAMOWIONY, NIEJEDNOZNACZNY (nie wiadomo, czy
+// przewoźnik przyjął; rozstrzyga człowiek), BLAD (odmowa, nic nie zamówiono). Bez danych klientów: liczba i waga paczek.
+model CourierPickupOrder {
+  organizationId String       @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  id             String       @id @default(cuid())
+  carrier        Carrier
+  adapterKey     String
+  // konto przewoźnika (`config.sekretyKonta` reguły); pusty tekst = konto główne modułu (unikat bez NULL)
+  accountKey     String       @default("")
+  pickupDay      String // RRRR-MM-DD (Warszawa)
+  attempt        Int          @default(1)
+  reference      String
+  state          String // TWORZENIE | ZAMOWIONY | NIEJEDNOZNACZNY | BLAD
+  fromMinute     Int
+  toMinute       Int
+  parcels        Int
+  weightKg       Decimal      @db.Decimal(10, 3)
+  // numer zlecenia u przewoźnika i suma kontrolna do anulowania (DPD: orderNumber, checkSum)
+  externalRef    String?
+  checkSum       String?
+  lastError      String?
+  failureKind    String?
+  requestedBy    String
+  requestedName  String
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  @@unique([organizationId, carrier, adapterKey, accountKey, pickupDay, attempt])
+  @@unique([organizationId, reference])
+  @@index([organizationId, pickupDay])
+}
+
 // „Przyjechał <przewoźnik>” = „Wysłane”. Raport jednej operacji w tle dla kliknięcia (jedno na
 // odbiór dnia): ile zamówień przeniesiono do „Wysłane”, ile pominięto i dlaczego (numer zamówienia + powód, bez danych
 // klientów). Osobna tabela, bo CarrierPickupEvent jest tylko do dopisywania (rola aplikacji bez UPDATE). Rola aplikacji
@@ -1644,6 +1699,35 @@ model ProductZoneRule {
   updatedAt      DateTime     @updatedAt
 
   @@unique([organizationId, priority])
+}
+
+// ═══: kategorie produktów (drzewo firmy) ══════════════════════════════════════════════════════════════════
+// Drzewo kategorii asortymentowych firmy: nazwy, kolejność i przypisania to dane firmy (żadnych nazw w kodzie).
+// `path` = zapisana ścieżka nazw rozdzielona „ > ” (np. „Napoje > Soki”), przeliczana w tej samej transakcji przy
+// zmianie nazwy i przeniesieniu poddrzewa; filtr całej gałęzi to prefiks ścieżki. `depth` 1 = korzeń, najwyżej 5.
+// Nazwa unikalna wśród rodzeństwa (korzenie: indeks częściowy w migracji, bo NULL w unique się nie porównuje).
+// Usunięcie kategorii z produktami blokuje FK (Restrict); kod przenosi produkty i usuwa w jednej transakcji.
+model ProductCategory {
+  organizationId String            @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization   Organization      @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  id             String            @id @default(cuid())
+  parentId       String?
+  name           String
+  slug           String
+  path           String
+  depth          Int
+  sortOrder      Int               @default(0)
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+
+  parent   ProductCategory?  @relation("DrzewoKategorii", fields: [organizationId, parentId], references: [organizationId, id], onDelete: Restrict)
+  children ProductCategory[] @relation("DrzewoKategorii")
+  products Product[]
+
+  @@unique([organizationId, slug])
+  @@unique([organizationId, id])
+  @@unique([organizationId, parentId, name])
+  @@index([organizationId, path])
 }
 
 // ═══: zwroty i korekty (spec 3.5, 3.6, 4.5, 7.4), kolejka wywołań wFirmy (3.4, 8.1) ═══════════════
@@ -2869,4 +2953,73 @@ model AutomationCursor {
   lastAt         DateTime
   lastId         String       @default("")
   updatedAt      DateTime     @updatedAt
+}
+
+// archiwum zamówień sprzed odczytu kanału przez Kompletor (historia do raportów rok do roku). Osobne tabele,
+// nie `Order`: żadne zapytanie operacyjne (pulpit pracy, lista, pakowanie, automaty, maile, API v1, cień, retencja)
+// archiwum nie widzi; czytają je tylko raporty sprzedaży i wyszukiwanie (lista plików w tests/archiwum-straznik.test.ts).
+// Bez danych klienta (etap 4 dołoży szyfrowane ArchivedOrderCustomer). Tylko do odczytu po imporcie, bez rezerwacji,
+// ruchów magazynowych, faktur i zapisów do kanałów. Import: `npm run archiwum -- import` (lib/archiwum/).
+model ArchivedOrder {
+  organizationId   String              @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization     Organization        @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  id               String              @id @default(cuid())
+  /// skąd wiersz: WOO_API | ALLEGRO_API | ALLEGRO_ZRZUT | MIRAKL_API | EASYTOOLS_API | BL_FAKTURA
+  source           String
+  channel          Channel
+  /// kanał odtworzony, nie podany przez źródło (faktura BL bez pary w pozostałych kanałach = Allegro); raport liczy normalnie, ale pokazuje osobno
+  channelInferred  Boolean             @default(false)
+  channelAccountId String
+  externalId       String
+  channelNumber    String? // numer widoczny w kanale, gdy inny niż id (Woo: numeracja wtyczki)
+  blOrderId        Int?
+  /// status końcowy w słowniku Kompletora: WYSLANE | ODEBRANE | ANULOWANE | REKLAMACJA; null = nie do ustalenia
+  status           OrderStatus?
+  channelStatus    String // surowy status kanału
+  createdAtChannel DateTime
+  closedAt         DateTime?
+  paymentState     PaymentState
+  paymentMethod    String?
+  totalGross       Decimal             @db.Decimal(12, 2)
+  shippingGross    Decimal?            @db.Decimal(12, 2)
+  refundGross      Decimal             @default(0) @db.Decimal(12, 2)
+  currency         String
+  deliveryMethod   String?
+  trackingNumbers  String[]
+  invoiceNumbers   String[]
+  sourceRevision   String?
+  importRunId      String?
+  importedAt       DateTime            @default(now())
+  updatedAt        DateTime            @updatedAt
+
+  lines ArchivedOrderLine[]
+
+  @@unique([organizationId, channel, channelAccountId, externalId])
+  @@index([organizationId, createdAtChannel])
+  @@index([organizationId, blOrderId])
+}
+
+model ArchivedOrderLine {
+  organizationId String        @default(dbgenerated("current_setting('app.org_id'::text)"))
+  organization   Organization  @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  id             String        @id @default(cuid())
+  orderId        String
+  externalLineId String
+  offerId        String?
+  productId      String? // produkt z katalogu, gdy dało się zmapować (oferta, SKU, EAN); null = poza marżą
+  name           String
+  sku            String?
+  ean            String?
+  /// ilość w jednostce bazowej produktu (oferta × przelicznik), bez pozycji wysyłki
+  qty            Decimal       @db.Decimal(12, 3)
+  /// wartość pozycji brutto (po rabacie), cała pozycja, nie za sztukę
+  lineGross      Decimal       @db.Decimal(12, 2)
+  vatRate        String?
+  refundQty      Decimal       @default(0) @db.Decimal(12, 3)
+  refundGross    Decimal       @default(0) @db.Decimal(12, 2)
+
+  order ArchivedOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@unique([orderId, externalLineId])
+  @@index([organizationId, productId])
 }

@@ -320,6 +320,17 @@ describe('niejasna dodatkowa przesyłka: wyjście w oknie „Dodaj przesyłkę�
   })
 })
 
+describe('waga domyślna z ustawień przewoźnika (INFO)', () => {
+  it('nie wymaga potwierdzenia: dosyłka bez zaznaczonej wagi powstaje jak główna przesyłka', async () => {
+    const z = await zGlowna()
+    const n = utworzonych()
+    // KONFIG ma defaultWeightKg, produkt bez wagi: `waga_domyslna` jest INFO, człowiek jej nie zaznacza w oknie
+    const w = await dodaj(z.id, { potwierdzoneOstrzezenia: ['gabaryt_podpowiedz'] })
+    expect(w).toMatchObject({ wynik: 'UTWORZONA', istniala: false })
+    expect(utworzonych()).toBe(n + 1)
+  })
+})
+
 describe('wyłącznik funkcji firmy', () => {
   it('domyślnie wyłączona: bramka i „Dodaj przesyłkę” odmawiają bez przewoźnika i bez wiersza; po włączeniu jak zwykle', async () => {
     const z = await zGlowna('WYSLANE')

@@ -5,7 +5,7 @@ import { PII_SENTINELS } from '../adaptery/suita-kontraktowa'
 import type { ShipmentInput } from '../adaptery/kontrakt'
 import { ustawieniaDpd, wyliczPrzesylkeDpd } from './dpd'
 import { LICZENIE_PRZESYLKI } from './moduly'
-import { buildPackagesPayload, czyEmpik, odbiorcaDpd, parseNadawca } from './zlecenie-dpd'
+import { buildPackagesPayload, czyEmpik, odbiorcaDpd, parseNadawca, wagaDoDpd } from './zlecenie-dpd'
 
 const USTAWIONE = ustawieniaDpd({ defaultSideXCm: 40, defaultSideYCm: 30, defaultSideZCm: 20, defaultWeightKg: 1 })
 const baza: ShipmentInput = { carrier: 'DPD', gabaryt: 'DPD', weightG: 2_000, weightComplete: true, paymentState: 'PAID', paymentMethod: 'Przelew', totalGross: 120, codAmountUncertain: null, pickupPoint: null }
@@ -26,10 +26,19 @@ describe('wyliczPrzesylkeDpd', () => {
     expect(wyliczPrzesylkeDpd({ ...baza, pickupPoint: ' PL11033 ' }, USTAWIONE)).toMatchObject({ courierCode: 'DPD_PICKUP', pickupPoint: 'PL11033', problems: [] })
   })
 
-  it('salon Empik: zawsze Pickup z ostrzeżeniem; bez kodu salonu BLAD punkt', () => {
+  it('salon Empik: zawsze Pickup; z kodem salonu bez problemów (bez empik_niepotwierdzone); bez kodu BLAD punkt', () => {
     expect(wyliczPrzesylkeDpd({ ...baza, carrier: 'DPD_EMPIK', pickupPoint: 'PL99001' }, USTAWIONE)).toMatchObject({ courierCode: 'DPD_PICKUP', pickupPoint: 'PL99001' })
-    expect(kody({ carrier: 'DPD_EMPIK', pickupPoint: 'PL99001' })).toEqual(['OSTRZEZENIE:empik_niepotwierdzone'])
-    expect(kody({ carrier: 'DPD_EMPIK' })).toEqual(['OSTRZEZENIE:empik_niepotwierdzone', 'BLAD:punkt'])
+    expect(kody({ carrier: 'DPD_EMPIK', pickupPoint: 'PL99001' })).toEqual([])
+    expect(kody({ carrier: 'DPD_EMPIK' })).toEqual(['BLAD:punkt'])
+  })
+
+  it('waga domyślna z ustawień firmy = INFO (bez potwierdzania), wbudowana = OSTRZEZENIE; liczba ta sama', () => {
+    const zUstawien = wyliczPrzesylkeDpd({ ...baza, carrier: 'DPD_EMPIK', pickupPoint: 'PL99001', weightG: null, weightComplete: false }, ustawieniaDpd({ defaultSideXCm: 40, defaultSideYCm: 30, defaultSideZCm: 20, defaultWeightKg: 5 }))
+    expect(zUstawien.weightKg).toBe(5)
+    expect(zUstawien.problems).toEqual([{ kod: 'waga_domyslna', poziom: 'INFO', tekst: 'Paczka pójdzie z wagą 5 kg z ustawień przewoźnika (produkty nie mają wpisanej wagi). Zmienisz ją w: Ustawienia → Wysyłka i druk → Przewoźnicy → Konta przewoźników.' }])
+    const wbudowana = wyliczPrzesylkeDpd({ ...baza, weightG: null, weightComplete: false }, ustawieniaDpd({ defaultSideXCm: 40, defaultSideYCm: 30, defaultSideZCm: 20 }))
+    expect(wbudowana.weightKg).toBe(1)
+    expect(wbudowana.problems.map((x) => `${x.poziom}:${x.kod}`)).toEqual(['OSTRZEZENIE:waga_domyslna'])
   })
 
   it('Pickup: limit 20 kg, kurier: limit z konfiguracji (domyślnie 31,5 kg)', () => {
@@ -101,9 +110,9 @@ describe('buildPackagesPayload', () => {
       { code: 'DPD_PICKUP', attributes: [{ code: 'PUDO', value: 'PL11033' }] },
       { code: 'COD', attributes: [{ code: 'AMOUNT', value: '99.50' }, { code: 'CURRENCY', value: 'PLN' }] },
     ])
+    // salon bez osobnego potwierdzenia
     const empik = wyliczPrzesylkeDpd({ ...baza, carrier: 'DPD_EMPIK', pickupPoint: 'PL99001' }, USTAWIONE)
-    expect(() => buildPackagesPayload(empik, ODB, nadawca, ust)).toThrow(/empik_niepotwierdzone/)
-    const pe = (buildPackagesPayload(empik, ODB, nadawca, { ...ust, potwierdzoneOstrzezenia: ['empik_niepotwierdzone'] }) as { packages: Record<string, unknown>[] }).packages[0]!
+    const pe = (buildPackagesPayload(empik, ODB, nadawca, ust) as { packages: Record<string, unknown>[] }).packages[0]!
     expect(pe['services']).toEqual([{ code: 'DPD_PICKUP', attributes: [{ code: 'PUDO', value: 'PL99001' }] }])
   })
 
@@ -154,5 +163,28 @@ describe('nadawcaFirmy (host adaptera przewoźnika)', () => {
     const bezTel = nadawcaFirmy({ firma: { ...profil.firma, telefon: undefined } })!
     expect(parse({ nadawca: JSON.parse(JSON.stringify(bezTel)) }).braki).toEqual(['phone'])
     expect(nadawcaFirmy({})).toBeUndefined()
+  })
+})
+
+describe('wagaDoDpd', () => {
+  it('najwyżej dwa miejsca po przecinku, w górę do 10 g; pełne dziesiątki gramów bez zmiany', () => {
+    expect(wagaDoDpd(0.144)).toBe(0.15)
+    expect(wagaDoDpd(0.141)).toBe(0.15)
+    expect(wagaDoDpd(0.058)).toBe(0.06)
+    expect(wagaDoDpd(0.01)).toBe(0.01)
+    expect(wagaDoDpd(0.2)).toBe(0.2)
+    expect(wagaDoDpd(0.24)).toBe(0.24)
+    expect(wagaDoDpd(0.29)).toBe(0.29)
+    expect(wagaDoDpd(1.5)).toBe(1.5)
+    expect(wagaDoDpd(19.999)).toBe(20)
+    expect(wagaDoDpd(31.5)).toBe(31.5)
+  })
+
+  it('treść żądania niesie wagę zaokrągloną, a przesyłka zostaje z wagą z gramów', () => {
+    const p = wyliczPrzesylkeDpd({ ...baza, weightG: 144 }, USTAWIONE)
+    expect(p.weightKg).toBe(0.144)
+    const nadawca = parseNadawca({ nadawca: NADAWCA_TESTOWY }).nadawca!
+    const pkg = (buildPackagesPayload(p, ODB, nadawca, { payerFid: '1495', reference: 'ORD-1/1' }) as { packages: { parcels: { weight: number }[] }[] }).packages[0]!
+    expect(pkg.parcels[0]!.weight).toBe(0.15)
   })
 })

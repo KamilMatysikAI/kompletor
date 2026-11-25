@@ -15,7 +15,7 @@ export async function importujCsv(_prev: StanImportu, form: FormData): Promise<S
   if (!plik) return { blad: 'Wybierz plik CSV.', wynik: null }
   if (!plik.ok) return { blad: plik.message, wynik: null }
   const hasWfirma = await firmaMaWfirme(ctx.db).catch(() => false)
-  const r = await importCsv(ctx.db, plik.file.content.toString('utf8'), ctx.user.id, { hasWfirma })
+  const r = await importCsv(ctx.db, plik.file.content.toString('utf8'), ctx.user.id, { hasWfirma, tworzKategorie: form.get('tworzKategorie') !== null })
   if ('blad' in r) return { blad: r.blad, wynik: null }
   revalidatePath('/produkty')
   return { blad: null, wynik: r }

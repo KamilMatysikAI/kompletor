@@ -173,7 +173,8 @@ describe('lista przesyłek: droga paczki', () => {
     const w = wszystkie.wiersze.find((r) => r.id === wDrodze.id)!
     expect(w).toMatchObject({ droga: 'W_DRODZE', drogaOpis: 'W drodze', link: `https://inpost.pl/sledzenie-przesylek?number=${wDrodze.trackingNumber}` })
     expect(w.drogaOd!.getTime()).toBe(T0.getTime() + 5 * H)
-    expect(wszystkie.wiersze.find((r) => r.id === bez.id)).toMatchObject({ droga: null, drogaOpis: null, link: null })
+    // bez odczytu drogi; link panelu jak na produkcji od 22.11.2026 (komponent NumerNadania): strona śledzenia Allegro
+    expect(wszystkie.wiersze.find((r) => r.id === bez.id)).toMatchObject({ droga: null, drogaOpis: null, link: 'https://allegro.pl/allegrodelivery/sledzenie-paczki?numer=A000TESTOWY' })
     expect((await strona({ droga: 'ZWROT' })).wiersze.map((r) => r.id)).toEqual([zwrot.id])
     expect((await strona({ droga: 'BRAK' })).wiersze.map((r) => r.id)).toEqual([bez.id])
     expect((await strona({ droga: 'DORECZONA' })).razem).toBe(0)

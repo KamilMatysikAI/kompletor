@@ -58,6 +58,7 @@ const CONFIG: readonly ConfigField[] = [
     type: 'string',
     required: false,
     description: 'środowisko ADE: test (domyślnie, osobne dane dostępu od GLS) albo produkcja',
+    zKontaPrzewoznika: true,
     options: [
       { value: 'test', label: 'Testowe (ADE test)' },
       { value: 'produkcja', label: 'Produkcyjne (prawdziwe paczki)' },

@@ -28,20 +28,23 @@ export interface Rozliczenie {
   roznicaGr: number
   /** Różnica ma sens: zamówienie opłacone (poza pobraniem), niedopłata albo są wpisy płatności. */
   pokaz: boolean
+  /** Za pobraniem: klient płaci kurierowi przy odbiorze, więc to nie jest wpłata („Do zapłaty przy odbiorze”). */
+  pobranie: boolean
 }
 
 /**
  * Rozliczenie (czysta funkcja). Podstawa „zapłacono”: kwota sprzed pierwszej edycji z karty (`kwotaZaplacona`), a bez
- * edycji kwota zamówienia, gdy jest opłacone. Pobranie: klient płaci kurierowi kwotę bieżącą, więc różnicy nie ma.
+ * edycji kwota zamówienia, gdy jest opłacone. Pobranie: klient płaci kurierowi kwotę bieżącą, więc różnicy nie ma,
+ * a „zapłacono” to tylko zapisane wpisy (pobranie nie jest wpłatą, dopóki kurier nie odda pieniędzy).
  */
 export function rozliczenie(o: { totalGross: { toString(): string } | number; paymentState: PaymentState; flags: unknown }, wpisy: { kind: OrderPaymentKind; amount: { toString(): string } | number }[]): Rozliczenie {
   const zamowienieGr = grosze(o.totalGross)
-  if (o.paymentState === 'COD') return { zamowienieGr, zaplaconoGr: zamowienieGr, roznicaGr: 0, pokaz: false }
+  const ruch = wpisy.reduce((s, w) => s + (w.kind === 'ZWROT' ? -1 : 1) * grosze(w.amount), 0)
+  if (o.paymentState === 'COD') return { zamowienieGr, zaplaconoGr: ruch, roznicaGr: 0, pokaz: false, pobranie: true }
   const f = flagsOf({ flags: o.flags as Order['flags'] })
   const podstawa = isPaid(o.paymentState) ? (f.kwotaZaplacona !== undefined ? grosze(f.kwotaZaplacona) : zamowienieGr) : 0
-  const ruch = wpisy.reduce((s, w) => s + (w.kind === 'ZWROT' ? -1 : 1) * grosze(w.amount), 0)
   const zaplaconoGr = podstawa + ruch
-  return { zamowienieGr, zaplaconoGr, roznicaGr: zamowienieGr - zaplaconoGr, pokaz: isPaid(o.paymentState) || o.paymentState === 'PARTIAL' || wpisy.length > 0 }
+  return { zamowienieGr, zaplaconoGr, roznicaGr: zamowienieGr - zaplaconoGr, pokaz: isPaid(o.paymentState) || o.paymentState === 'PARTIAL' || wpisy.length > 0, pobranie: false }
 }
 
 /** Data wpłaty z formularza (RRRR-MM-DD), najwyżej rok wstecz i nie z przyszłości; puste = dziś. */

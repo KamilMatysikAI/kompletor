@@ -262,8 +262,22 @@ async function utworzPrzesylkeKrok(db: Db, orderId: string, a: Extract<Krok, { t
 
 async function drukujEtykiete(db: Db, orderId: string, a: Extract<Krok, { typ: 'drukujEtykiete' }>, k: KontekstWykonania): Promise<WynikKroku> {
   const krok = 'drukujEtykiete' as const
-  const s = await db.shipment.findFirst({ where: { orderId, extraNo: 0, state: 'UTWORZONA' }, orderBy: { createdAt: 'desc' }, select: { id: true } })
-  if (!s) return pominiety(db, orderId, k, krok, 'zamówienie nie ma utworzonej przesyłki')
+  // odbiór osobisty nie ma przesyłki, a etykieta odbioru (do naklejenia na paczkę) idzie tym samym zleceniem
+  // druku; tylko konto sklepu w trybie pracy, jak nadanie po „Spakowano” (w podglądzie paczki prowadzi dotychczasowy system)
+  const o = await db.order.findUnique({ where: { id: orderId }, select: { carrier: true, status: true, channel: true, channelAccountId: true } })
+  if (o?.carrier === 'OSOBISTY') {
+    if (o.status === 'ANULOWANE') return pominiety(db, orderId, k, krok, 'zamówienie anulowane')
+    let praca: boolean
+    try {
+      praca = pracaDostepna(await kontoZamowienia(db, o, k.env), k.env)
+    } catch {
+      praca = false
+    }
+    if (!praca) return pominiety(db, orderId, k, krok, 'etykieta odbioru osobistego tylko dla konta sklepu w trybie pracy', true)
+  } else {
+    const s = await db.shipment.findFirst({ where: { orderId, extraNo: 0, state: 'UTWORZONA' }, orderBy: { createdAt: 'desc' }, select: { id: true } })
+    if (!s) return pominiety(db, orderId, k, krok, 'zamówienie nie ma utworzonej przesyłki')
+  }
   const stan = a.stanowisko ?? (await db.printStation.findFirst({ where: { disabledAt: null }, orderBy: { createdAt: 'asc' }, select: { id: true } }))?.id ?? null
   if (!stan) return pominiety(db, orderId, k, krok, 'brak stanowiska druku (Ustawienia → Wysyłka i druk → Druk)')
   const klucz = `automat-${k.regulaId}-${k.okazja}`.replace(/[^A-Za-z0-9_-]/g, '-').slice(0, 64).padEnd(16, '0')

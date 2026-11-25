@@ -4,7 +4,7 @@ import { ALLEGRO_MANIFEST } from '@/lib/adaptery/allegro'
 import { ALLEGRO_ZAPIS_MANIFEST } from '@/lib/adaptery/allegro-zapis'
 import { WOO_MANIFEST } from '@/lib/adaptery/woo'
 import { WOO_ZAPIS_MANIFEST } from '@/lib/adaptery/woo-zapis'
-import { blokadaInstancji, domyslnyTryb, kluczeZapisu, maEnvPrefix, mozna, OPIS_TRYBU_NOWEGO_KONTA, prowadziZamowienia, trybKonta, trybyPol, warunkiPracy, warunkiZapisu } from './tryb'
+import { blokadaInstancji, domyslnyTryb, kluczeZapisu, kontoTylkoApi, maEnvPrefix, mozna, OPIS_TRYBU_NOWEGO_KONTA, prowadziZamowienia, trybKonta, trybyPol, warunkiPracy, warunkiZapisu } from './tryb'
 
 const baza = { active: true, testOk: true, offers: 3, manifest: WOO_ZAPIS_MANIFEST, config: {}, firmaZBl: false }
 
@@ -85,6 +85,23 @@ describe('praca bez stanów', () => {
     expect(t).not.toMatch(/stany nie będą wysyłane/)
     expect(mozna(warunkiPracy({ ...baza, testOk: null, bezStanow: true }, {}))).toBe(false)
     expect(mozna(warunkiPracy({ ...baza, config: { zapisWlaczony: true, statusy: {} }, bezStanow: true }, {}))).toBe(false)
+  })
+  it('konto tylko przez API (EasyTools): bez testu połączenia, bez ostrzeżeń o sklepie i BaseLinkerze', () => {
+    const api = { active: true, testOk: null, offers: 0, manifest: null, config: {}, firmaZBl: true, tylkoApi: true }
+    for (const bezStanow of [false, true]) {
+      const w = warunkiPracy({ ...api, bezStanow }, { EKRANY_PRACA: '1' })
+      expect(mozna(w)).toBe(true)
+      const t = w.map((x) => x.tekst).join(' ')
+      expect(t).toMatch(/przez API Kompletora/)
+      expect(t).not.toMatch(/Sprawdź połączenie|Zapis do sklepu|wyłącz w nim|przypisanych ofert/)
+    }
+    // te same twarde bramki co reszta: wyłączone konto i instancja bez trybu pracy dla firmy z BL
+    expect(mozna(warunkiPracy({ ...api, active: false }, { EKRANY_PRACA: '1' }))).toBe(false)
+    expect(mozna(warunkiPracy(api, {}))).toBe(false)
+    // nieudany test (np. ktoś kliknął „Sprawdź połączenie” na koncie bez adaptera) nie blokuje konta tylko przez API
+    expect(mozna(warunkiPracy({ ...api, testOk: false }, { EKRANY_PRACA: '1' }))).toBe(true)
+    expect(kontoTylkoApi('EASYTOOLS')).toBe(true)
+    for (const c of ['WOO', 'ALLEGRO', 'EMPIK', 'RECZNE', 'BL_INNE'] as const) expect(kontoTylkoApi(c)).toBe(false)
   })
   it('wyłącznik zapisu przy pracy bez stanów: bez „Tylko podgląd”, z informacją o stanach', () => {
     const z = warunkiZapisu({ active: true, manifest: WOO_ZAPIS_MANIFEST, config: {}, tryb: 'BEZ_STANOW', sekrety: new Set(['WOO_WRITE_KEY', 'WOO_WRITE_SECRET']), zEnv: false })

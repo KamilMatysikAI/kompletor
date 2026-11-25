@@ -76,6 +76,10 @@ describe('strażnik schematu: każda tabela danych pod RLS', () => {
     expect(tables.find((x) => x.name === 'PackingZoneDef')).toMatchObject({ rls: true, hasOrg: true, policies: 1 })
     // logo firmy w bazie
     expect(tables.find((x) => x.name === 'OrganizationLogo')).toMatchObject({ rls: true, hasOrg: true, policies: 1 })
+    // archiwum zamówień (historia do raportów rok do roku) — tabele firmowe pod tą samą polityką
+    for (const t of ['ArchivedOrder', 'ArchivedOrderLine']) expect(tables.find((x) => x.name === t), t).toMatchObject({ rls: true, hasOrg: true, policies: 1 })
+    // drzewo kategorii produktów firmy
+    expect(tables.find((x) => x.name === 'ProductCategory')).toMatchObject({ rls: true, hasOrg: true, policies: 1 })
   })
 
   it(`rola ${APP_ROLE} nie omija RLS; klient firmy łączy się z izolacją`, async () => {
@@ -574,7 +578,9 @@ describe('strażnik kodu: klient systemowy tylko w kodzie systemowym', () => {
   // RESET tych samych i ALL, DISCARD, set_config, Prisma.raw/sql (P1)
   const SESSION_ESCAPE =
     /\b(set_config|SET\s+(LOCAL\s+|SESSION\s+)?(ROLE|SESSION\s+AUTHORIZATION|app\.org_id)|RESET\s+(ROLE|ALL|SESSION\s+AUTHORIZATION|app\.org_id)|DISCARD|Prisma\.raw|Prisma\.sql)\b/i
-  const SESSION_ESCAPE_ALLOWED = new Set<string>([])
+  // fragment SQL rozłączności archiwum (Prisma.raw ze stałych modułu i aliasu sprawdzanego regexem; bez
+  // poleceń sesji, pilnuje tego lib/archiwum/rozlacznosc.test.ts)
+  const SESSION_ESCAPE_ALLOWED = new Set<string>(['lib/archiwum/rozlacznosc.ts'])
   // ALTER / CREATE / DROP ROLE tylko w kroku instalacji w lib/db.ts
   const ROLE_DDL = /\b(ALTER|CREATE|DROP)\s+(ROLE|USER)\b/i
   const ROLE_DDL_ALLOWED = new Set<string>(['lib/db.ts'])

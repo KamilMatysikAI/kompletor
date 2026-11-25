@@ -10,6 +10,21 @@
 > `allegro.v1`) z ustawieniami reguły przewoźnika (`zapisWlaczony`, `formatEtykiety`). Opis dla sprzedawcy:
 > [Allegro](integracje/allegro.md). Poniższy opis dotyczy trybu podglądu `allegro.wysylam.v1`, który działa bez zmian
 > (strażnik odczytu nadal odrzuca ścieżki komend).
+>
+> **, śledzenie (`shipment.track`, `trackReportsDelivered`) w `allegro.wysylam.zapis.v1`:** przebieg
+> śledzenia (`lib/pakowanie/wyslane-po-przyjezdzie.ts`, co 15 min) czyta `GET shipments/{id}` (`packages[].waybill`,
+> `carrier`, `canceledDate`), a potem historię statusów `GET /order/carriers/{carrier}/tracking?waybill=<numer>`.
+> `{carrierId}` = pole `carrier` przesyłki, tak każe poradnik Allegro („Jak pobrać historię statusów przesyłek”);
+> `ALLEGRO` w dokumentacji to tylko przykład. Zasób nie wymaga osobnego zakresu OAuth (w specyfikacji
+> `bearer-token-for-user: []`), więc autoryzacja konta się nie zmienia. Strażnik przepuszcza tę jedną ścieżkę
+> z parametrem zapytania: wyłącznie `waybill`, 1–20 numerów (litery, cyfry, myślnik). Kody (`ParcelTrackingStatus`):
+> PENDING → przed nadaniem; IN_TRANSIT, RELEASED_FOR_DELIVERY, AVAILABLE_FOR_PICKUP, NOTICE_LEFT → u przewoźnika
+> (zamówienie z „Do wysłania” przechodzi do „Wysłane”); DELIVERED → doręczona (koniec śledzenia po „Wysłane”);
+> ISSUE i RETURNED bez wcześniejszego „u przewoźnika” oraz kody spoza listy → nieznany (bez zmian). Pusta historia albo
+> `trackingDetails: null` = przed nadaniem. Do historii zamówienia trafia sam kod i polski opis kodu; pola
+> `description` z Allegro (wolny tekst) nie bierzemy. Śledzenie nie wymaga wyłącznika nadawania (sam odczyt paczek już
+> nadanych). 403 przy historii to błąd tej paczki (przejściowy), nie konta: nie liczy się do wyłączenia konta Allegro.
+> Przesyłka nieznana (404), anulowana w Allegro albo bez `carrier` = błąd w wyniku zadania śledzenia, bez zgadywania.
 
 Faza F2, tryb „przygotuj, nie wysyłaj”. System liczy przesyłkę zamówienia z Allegro (gabaryt, wymiary, waga, pobranie,
 problemy) i pokazuje ją na karcie zamówienia w bloku „Przesyłka (podgląd, nic nie zostało nadane)”. **Żadna przesyłka
@@ -39,6 +54,12 @@ nie powstaje.**
 - **Treść komendy `create-commands`** (`lib/wysylka/zlecenie-allegro.ts`, `buildCreateCommandPayload`): nadpisuje
   w `suggestedInput` tylko `packages` i `cashOnDelivery`, pomija przestarzałe `deliveryMethodId` i `credentialsId`.
   Używają jej wyłącznie testy z danymi fikcyjnymi i przyszły tryb PRACA; nic jej wyniku nie zapisuje ani nie wysyła.
+- **Wymiary do limitu metody dostawy** (`dopasujWymiaryDoLimitu`): przy nadaniu robocze wymiary gabarytu (tylko
+  z ostrzeżeniem `wymiary_domyslne`) są przycinane do `limits.dimensions` opcji PACKAGE z `delivery-proposals`
+  (metody zagraniczne mają mniejsze skrytki). Kilka opcji z różnymi skrytkami = bez przycięcia (opcja nie ma
+  identyfikatora metody). Po przycięciu wynik nadania niesie informację „Wymiary przycięte … paczka musi się zmieścić
+  w … cm”; potwierdzenia przed wysłaniem nie ma (ostrzeżenia zbiera host bez propozycji Allegro). Odmowa
+  `DIMENSIONS_VALIDATION_ERROR` pokazuje wysłane wymiary i limit (albo: nie podało / nieczytelny / niejednoznaczny).
 - **Telefon z prefiksem kraju** (wymóg Allegro od 01.10.2026): przed wysłaniem komendy
   `create-commands` (tryb nadawania, `allegro.wysylam.zapis.v1`) telefon nadawcy i odbiorcy przechodzi przez wspólny
   odczyt `lib/wysylka/telefon.ts` do postaci „+48600100200”. Numer polski bez prefiksu (np. „600 100 200”) dostaje
@@ -48,14 +69,24 @@ nie powstaje.**
   (np. „-”) to błąd „nieczytelny”. Numer nieczytelny albo zagraniczny bez prefiksu
   kończy się błędem „telefon odbiorcy (nadawcy) nieczytelny albo bez prefiksu kraju” bez wysyłki do Allegro: popraw
   telefon w karcie zamówienia (odbiorca) albo w danych nadawcy na koncie Allegro, z których Allegro buduje
-  propozycję dostawy (nadawca), i kliknij ponownie. Podjazdu kuriera
-  (`pickups/create-commands`) Kompletor jeszcze nie zamawia; gdy powstanie, używa tego samego odczytu.
+  propozycję dostawy (nadawca), i kliknij ponownie. Zamówienie odbioru
+  przez kuriera (`pickups/create-commands`) używa tego samego odczytu dla telefonu nadawcy.
+- **Zamawianie kuriera** (`allegro.wysylam.zapis.v1`, zdolność `shipment.pickup`, włącznik „Zamawianie kuriera
+  z Kompletora” na karcie „Wysyłam z Allegro”, domyślnie wyłączony): przycisk „Zamów kuriera” w kolejce pakowania
+  zamawia odbiór przesyłek z numerem nadania na koncie Allegro tych przesyłek. Adapter czyta przewoźnika każdej
+  przesyłki (`GET /shipment-management/shipments/{id}`) i bierze tylko przesyłki przewoźnika z pola „Przewoźnik odbioru”
+  (puste = `ALLEGRO`, Allegro One), potem terminy z `POST /shipment-management/pickup-proposals` (tylko podpowiedź),
+  komendę `POST /shipment-management/pickups/create-commands` z deterministycznym `commandId` i odczyt wyniku
+  `GET .../create-commands/{commandId}`. Brak wyniku po wysłaniu = „nie wiadomo, sprawdź w Allegro”, bez ponawiania.
+  Adres odbioru z danych nadawcy firmy. Anulowania odbioru w API Allegro nie ma. Przesyłki na kilku kontach Allegro
+  naraz: odmowa z powodem. Zakresy: te same co nadawanie (`shipments:read`, `shipments:write`).
 
 ## Czego nie robi
 
 - nie tworzy, nie anuluje i nie odbiera przesyłek, nie pobiera etykiet ani protokołów: strażnik
   `assertAllegroWysylamReadOnly` (`lib/zrodla/allegro-wysylam.ts`) przepuszcza wyłącznie GET
-  `/shipment-management/delivery-proposals/{uuid}` i `/shipment-management/shipments/{uuid}`; `create-commands`,
+  `/shipment-management/delivery-proposals/{uuid}`, `/shipment-management/shipments/{uuid}` i
+  `/order/carriers/{carrier}/tracking` z samym parametrem `waybill`; `create-commands`,
   `cancel-commands`, `pickups`, `pickup-proposals`, `label`, `protocol`, `delivery-services` (przestarzałe, usunięcie
   w I kw. 2027), ścieżki z `..` albo z zapytaniem kończą się `ReadOnlyViolation` przed wysyłką;
 - nie zna punktu odbioru ani adresu odbiorcy (system nie przechowuje adresów klientów);

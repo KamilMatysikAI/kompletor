@@ -52,6 +52,9 @@ export async function crossOrgLeaks(sys: PrismaClient = testSystemDb()): Promise
   const checks: Record<string, string> = {
     stock_produkt: `SELECT count(*) FROM "Stock" x JOIN "Product" p ON p.id = x."productId" WHERE p."organizationId" <> x."organizationId"`,
     oferta_produkt: `SELECT count(*) FROM "ChannelOffer" x JOIN "Product" p ON p.id = x."productId" WHERE p."organizationId" <> x."organizationId"`,
+    // kategoria produktu i rodzic kategorii (klucze złożone z firmą, tu druga linia obrony)
+    produkt_kategoria: `SELECT count(*) FROM "Product" x JOIN "ProductCategory" k ON k.id = x."categoryId" WHERE k."organizationId" <> x."organizationId"`,
+    kategoria_rodzic: `SELECT count(*) FROM "ProductCategory" x JOIN "ProductCategory" k ON k.id = x."parentId" WHERE k."organizationId" <> x."organizationId"`,
     zestaw_skladnik: `SELECT count(*) FROM "BundleComponent" x JOIN "Product" b ON b.id = x."bundleId" JOIN "Product" c ON c.id = x."componentId" WHERE b."organizationId" <> x."organizationId" OR c."organizationId" <> x."organizationId"`,
     pozycja_zamowienie: `SELECT count(*) FROM "OrderLine" x JOIN "Order" o ON o.id = x."orderId" WHERE o."organizationId" <> x."organizationId"`,
     pozycja_produkt: `SELECT count(*) FROM "OrderLine" x JOIN "Product" p ON p.id = x."productId" WHERE p."organizationId" <> x."organizationId"`,
@@ -66,6 +69,7 @@ export async function crossOrgLeaks(sys: PrismaClient = testSystemDb()): Promise
     log_wysylki: `SELECT count(*) FROM "ChannelPushLog" x JOIN "ChannelOffer" o ON o.id = x."offerId" WHERE o."organizationId" <> x."organizationId"`,
     zwrot: `SELECT count(*) FROM "Return" x JOIN "Order" o ON o.id = x."orderId" WHERE o."organizationId" <> x."organizationId"`,
     klient_zamowienia: `SELECT count(*) FROM "OrderCustomer" x JOIN "Order" o ON o.id = x."orderId" WHERE o."organizationId" <> x."organizationId"`,
+    pozycja_archiwum: `SELECT count(*) FROM "ArchivedOrderLine" x JOIN "ArchivedOrder" o ON o.id = x."orderId" WHERE o."organizationId" <> x."organizationId"`,
     pozycja_zwrotu: `SELECT count(*) FROM "ReturnLine" x JOIN "Return" r ON r.id = x."returnId" JOIN "Product" p ON p.id = x."productId" WHERE r."organizationId" <> x."organizationId" OR p."organizationId" <> x."organizationId"`,
   }
   const out: Record<string, number> = {}

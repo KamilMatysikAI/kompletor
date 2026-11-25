@@ -9,6 +9,9 @@
 //   Cart[0].Order  — nadawca (name, street, house_no, locum_no, postal, city, phone, email, account = konto na zwrot
 //                    pobrań), odbiorca (taker_*), punkt odbioru taker_point, package_content (niesie referencję);
 //   CartOrder      — payment: `bank` (skarbonka, przedpłata) albo `pay_later` (płatność odroczona).
+// Podjazd kuriera: API nie ma osobnego zlecenia odbioru; podjazd jest częścią każdej przesyłki (`no_pickup: false` i pola
+// `pickup_*` w `Cart[0].Order`, wszystkie opcjonalne w dokumentacji). Adres podjazdu = adres nadawcy (`custom_pickup` nie
+// wysyłamy).
 // Dokumentacja oznacza `account` i `taker_point` jako wymagane: `taker_point` idzie zawsze (pusty tekst bez punktu, jak
 // formularz wtyczki), `account` zawsze, gdy firma ma poprawny rachunek zwrotu pobrań. [NIEPEWNE] czy API przyjmie
 // przesyłkę bez pobrania i bez `account` (dokumentacja tego nie rozstrzyga; konto ma rachunek w profilu): do sandboxa.
@@ -18,14 +21,19 @@
 // to dokłada klient HTTP.
 import type { PreparedParcel } from '../adaptery/kontrakt'
 
+/**
+ * Odbiorca przesyłki. Ulica, numer domu, kod i miasto mogą być null tylko przy dostawie do punktu odbioru
+ * (paczkomat, punkt DPD), bo tam adres domowy nie wpływa na doręczenie; każdy builder treści sam pilnuje, czego wymaga
+ * jego API przy kurierze do drzwi (wtedy brak = odmowa, jak dotąd).
+ */
 export interface OdbiorcaPrzesylki {
   imieNazwisko: string
   firma?: string | null
-  ulica: string
-  numerDomu: string
+  ulica: string | null
+  numerDomu: string | null
   numerLokalu?: string | null
-  kodPocztowy: string
-  miasto: string
+  kodPocztowy: string | null
+  miasto: string | null
   telefon: string
   email: string
 }
@@ -56,6 +64,12 @@ export interface OpcjeZleceniaBaseCourier {
   platnosc: PlatnoscBaseCourier
   /** true = bez zamawiania podjazdu kuriera (paczkomat, stały odbiór). */
   bezPodjazdu: boolean
+  /**
+   * Dzień i okno podjazdu (lib/wysylka/podjazd.ts) przy `bezPodjazdu: false`: pola `pickup_date` (RRRR-MM-DD),
+   * `pickup_ready_time` / `pickup_ready_time_minute` (od) i `pickup_close_time` / `pickup_close_time_minute` (do), godziny
+   * i minuty jako dwucyfrowy tekst jak klucze `hours` / `minutes` z `getPickupDateOptions`. null = podjazd bez daty.
+   */
+  podjazd?: { data: string; odMin: number; doMin: number } | null
   /** Ubezpieczenie (`cover`): null = bez (domyślnie), 'pobranie' = kwota pobrania (tylko przy pobraniu), liczba = kwota zł. */
   ubezpieczenie?: UbezpieczenieBaseCourier
 }
@@ -136,12 +150,33 @@ export function zRozdzielonymAdresem<T extends { ulica: string | null; numerDomu
   return { ...r, ulica: a.ulica, numerDomu: a.numerDomu, numerLokalu: (r.numerLokalu ?? '').trim() ? r.numerLokalu : a.numerLokalu }
 }
 
+const dwie = (n: number) => String(n).padStart(2, '0')
+
+/** Pola podjazdu w `Cart[0].Order`. */
+export function polaPodjazdu(p: { data: string; odMin: number; doMin: number }): Record<string, string> {
+  return {
+    pickup_date: p.data,
+    pickup_ready_time: dwie(Math.floor(p.odMin / 60)),
+    pickup_ready_time_minute: dwie(p.odMin % 60),
+    pickup_close_time: dwie(Math.floor(p.doMin / 60)),
+    pickup_close_time_minute: dwie(p.doMin % 60),
+  }
+}
+
 export function buildCreateOrderPayload(draft: PreparedParcel, recipient: OdbiorcaPrzesylki, potwierdzoneOstrzezenia: readonly string[], opcje: OpcjeZleceniaBaseCourier): Record<string, unknown> {
   const bledy = draft.problems.filter((p) => p.poziom === 'BLAD' || !potwierdzoneOstrzezenia.includes(p.kod))
   if (bledy.length) throw new Error(`Przesyłka nie jest gotowa: ${bledy.map((p) => p.kod).join(', ')}`)
   if (!draft.courierCode || draft.sideXCm === null || draft.sideYCm === null || draft.sideZCm === null || draft.weightKg === null) throw new Error('Przesyłka nie jest gotowa: brak kodu kuriera, wymiarów albo wagi')
   const konto = kontoPobranPoprawne(opcje.kontoPobran)
   if (draft.codAmount !== null && !konto) throw new Error('Pobranie wymaga numeru rachunku do zwrotu pobrań (ustawienie „kontoPobran” przewoźnika)')
+  // przy punkcie odbioru (`taker_point`) adres domowy nie wpływa na doręczenie. OpenAPI Base Courier
+  // (OrderDto.required) wymaga jednak `taker_street`, `taker_house_no`, `taker_postal` i `taker_city` zawsze, więc pola
+  // idą, ale bez wymyślonego numeru: linia adresu tak, jak przyszła z kanału, numer pusty. [NIEPEWNE] czy API przyjmie
+  // pusty `taker_house_no` przy punkcie: odmowa walidacji = TRWALY z nazwą pola (bez przesyłki), poprawka na karcie jak dotąd.
+  const punkt = !!draft.pickupPoint
+  const brakAdresu = [!recipient.ulica && 'ulica', !recipient.numerDomu && 'numer domu', !recipient.kodPocztowy && 'kod pocztowy', !recipient.miasto && 'miasto'].filter((x): x is string => !!x)
+  const brakPunkt = brakAdresu.filter((x) => x === 'kod pocztowy' || x === 'miasto')
+  if (punkt ? brakPunkt.length : brakAdresu.length) throw new Error(`Przesyłka nie jest gotowa: ${(punkt ? brakPunkt : brakAdresu).join(', ')}`)
   const n = opcje.nadawca
   const u = opcje.ubezpieczenie ?? null
   const cover = u === 'pobranie' ? draft.codAmount : u
@@ -174,15 +209,16 @@ export function buildCreateOrderPayload(draft: PreparedParcel, recipient: Odbior
           ...(konto ? { account: konto } : {}),
           taker_name: recipient.imieNazwisko,
           taker_vat_company: recipient.firma ?? '',
-          taker_street: recipient.ulica,
-          taker_house_no: recipient.numerDomu,
+          taker_street: recipient.ulica ?? '',
+          taker_house_no: recipient.numerDomu ?? '',
           taker_locum_no: recipient.numerLokalu ?? '',
-          taker_postal: recipient.kodPocztowy,
-          taker_city: recipient.miasto,
+          taker_postal: recipient.kodPocztowy ?? '',
+          taker_city: recipient.miasto ?? '',
           taker_phone: recipient.telefon,
           taker_email: recipient.email,
           taker_point: draft.pickupPoint ?? '',
           package_content: opcje.zawartosc,
+          ...(!opcje.bezPodjazdu && opcje.podjazd ? polaPodjazdu(opcje.podjazd) : {}),
         },
       },
     ],

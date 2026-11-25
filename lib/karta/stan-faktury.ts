@@ -3,6 +3,7 @@
 import { statusyMomentu, type MomentWystawienia } from '@/lib/dokumenty/ustawienia'
 import type { Ton } from '@/lib/panel/statusy'
 import { flagsOf } from '@/lib/rdzen/rezerwacja'
+import { powodFakturyRecznej, tekstWalutaSprzedWlaczenia } from '@/lib/rdzen/waluta'
 import type { DaneKarty } from './dane'
 
 export type StanFaktury = { tekst: string; ton: Ton; numer: string | null; blad: boolean; wystawiona: boolean; wToku: boolean }
@@ -19,13 +20,17 @@ export const TEKST_PONOWIONA = 'W kolejce: system wystawi fakturę w ciągu kilk
  * `m`: moment dla źródła stanu — „W kolejce” tylko wtedy, gdy faktura naprawdę idzie po spakowaniu.
  * `opcje.spakowanePrzedWlaczeniem`: spakowane przed włączeniem „Wystawiaj faktury z Kompletora”,
  * kolejka ich nie fakturuje. `opcje.wystawianieWylaczone`: kolejka nie wystawia żadnej faktury. `opcje.tylkoSpakowane`:
- * faktura z rozchodem (stan w programie do faktur) idzie tylko ze statusu „Spakowane”.
+ * faktura z rozchodem (stan w programie do faktur) idzie tylko ze statusu „Spakowane”. `opcje.obcaWaluta`: kod waluty
+ * zamówienia innej niż PLN, `opcje.dokumentPoza`: zamówienie ma już dokument sprzedaży spoza Kompletora
+ * (faktura z BaseLinkera albo dokument potwierdzony przez biuro po wysyłce), wtedy waluta nie zmienia stanu.
+ * `opcje.walutaZatrzymana`: firma wystawia faktury w walucie zamówienia, a to zamówienie jest sprzed jego
+ * włączenia (reguła, `walutaCzekaNaPonowienie`); kolejka go sama nie weźmie, wraca po „Ponów fakturę” (przycisk jak przy błędzie).
  */
 export function stanFaktury(
   d: { o: ZamowienieDoStanuFaktury },
   kiedy = 'po spakowaniu',
   m: { wystawiajPrzy: string; tylkoNaZadanie: boolean } = { wystawiajPrzy: 'SPAKOWANE', tylkoNaZadanie: false },
-  opcje: { spakowanePrzedWlaczeniem?: boolean; wystawianieWylaczone?: boolean; tylkoSpakowane?: boolean } = {},
+  opcje: { spakowanePrzedWlaczeniem?: boolean; wystawianieWylaczone?: boolean; tylkoSpakowane?: boolean; obcaWaluta?: string; dokumentPoza?: boolean; walutaZatrzymana?: string } = {},
 ): StanFaktury {
   const { o } = d
   const ost = o.invoices.filter((i) => i.packageNo === o.packageNo).at(-1)
@@ -36,6 +41,11 @@ export function stanFaktury(
   if (ost?.state === 'ISSUED') return { ...baza, tekst: 'Wystawiona', ton: 'sukces', numer: ost.number ?? ost.wfirmaDocId, wystawiona: true }
   if (ost?.state === 'SENDING' || ost?.state === 'UNKNOWN')
     return { ...baza, tekst: ost.state === 'SENDING' ? 'W kolejce' : 'W kolejce: sprawdzamy w programie do faktur, czy powstała', ton: 'info', numer: null, wToku: true }
+  // obca waluta — kolejka nie wystawi (lib/rdzen/waluta.ts), więc ani „W kolejce”, ani „Ponów fakturę”.
+  // Zamówienie z dokumentem spoza Kompletora (faktura BL, dokument potwierdzony po wysyłce) pokazuje stan jak przed zmianą.
+  if (opcje.obcaWaluta && !opcje.dokumentPoza && o.status !== 'ANULOWANE') return { ...baza, tekst: powodFakturyRecznej(opcje.obcaWaluta), ton: 'ostrzezenie', numer: null }
+  if (opcje.walutaZatrzymana && !opcje.dokumentPoza && o.status !== 'ANULOWANE' && kolejkaPodejmie(o.status, o.mode, m.wystawiajPrzy, bezProsby, opcje))
+    return { ...baza, tekst: tekstWalutaSprzedWlaczenia(opcje.walutaZatrzymana), ton: 'ostrzezenie', numer: null, blad: true }
   // Po „Ponów fakturę” flaga błędu jest zdjęta, a ostatnią próbą jest dalej ta nieudana sprzed ponowienia, dopóki kolejka
   // nie zacznie nowej. Pokazujemy oczekiwanie tylko wtedy, gdy kolejka to zamówienie naprawdę podejmie (te same warunki
   // co jej wybór zamówień); w innym razie zostaje błąd, żeby stan nie wisiał w „W kolejce”.

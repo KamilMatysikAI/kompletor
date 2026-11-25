@@ -65,13 +65,31 @@ Zapisuje tylko przy włączonym zapisie, trybie „Aktywny” i zgodzie na daną
 
 | Co | Kiedy | Jak wygląda w Allegro |
 |---|---|---|
-| Stan oferty | Gdy zmieni się stan dostępny produktu. Spadek idzie od razu, wzrost po najbliższym odczycie zamówień (Allegro samo zdejmuje stan przy zakupie). Raz na dobę, w nocy, wszystkie oferty jeszcze raz. | Liczba sztuk w ofercie. Kompletor zmienia tylko liczbę sztuk: nie zmienia cen, opisów ani parametrów. Stan 0 może zakończyć ofertę, tak jak przy ręcznej zmianie w Allegro. |
+| Stan oferty | Gdy zmieni się stan dostępny produktu. Spadek idzie od razu, wzrost po najbliższym odczycie zamówień (Allegro samo zdejmuje stan przy zakupie). Raz na dobę, w nocy, wszystkie oferty jeszcze raz. | Liczba sztuk w ofercie. Kompletor zmienia tylko liczbę sztuk i publikację: nie zmienia cen, opisów ani parametrów. Przy stanie 0 kończy ofertę, a gdy towar wróci, wznawia ofertę, którą sam zakończył (sekcja „Stan 0” niżej). |
 | Status realizacji | Po zmianie statusu w Kompletorze, według tabeli „Statusy w sklepie” na ekranie konta. | Status w „Moja sprzedaż”: na przykład „W realizacji”, „Wysłane”, „Odebrane”. |
 | Anulowanie nieopłaconego | Gdy rezerwacja nieopłaconego zamówienia wygaśnie po terminie. | Status realizacji „Anulowane”, ale tylko wtedy, gdy Allegro nadal nie widzi płatności. Opłacone w międzyczasie zamówienie zostaje bez zmian. |
 | Numer nadania | Gdy przesyłka dostanie numer nadania albo gdy ktoś wpisze numer przy „Wysłane”. | Numer przesyłki w zamówieniu (kupujący widzi go w Allegro). Ten sam numer nie trafia do zamówienia dwa razy. Paczki Wysyłam z Allegro Allegro dopisuje samo, Kompletor tylko to sprawdza. |
 | Przesyłka Wysyłam z Allegro | Po kliknięciu „Utwórz przesyłkę: Allegro A/B/C” (patrz niżej). | Przesyłka w „Wysyłam z Allegro” z etykietą. |
 
 Domyślna tabela statusów: „Zbieranie” → W realizacji, „Do wysłania” → Do wysłania, „Do odbioru” → Do odbioru, „Wysłane” → Wysłane, „Odebrane” → Odebrane, „Anulowane” i „Anulowane: brak płatności w terminie” → Anulowane. Puste pole = tego przejścia nie wysyłamy.
+
+### Stan 0: zakończenie i wznowienie oferty
+
+Allegro nie przyjmuje liczby 0 na aktywnej ofercie (odrzuca ją kodem `INVALID_OFFER_QUANTITY`). Dlatego przy stanie 0 Kompletor robi to samo, co BaseLinker z ustawieniem „Stan zerowy: Zakończ ofertę”:
+
+- **Stan 0 na aktywnej ofercie:** Kompletor kończy ofertę. Liczba sztuk w zakończonej ofercie zostaje stara, ale oferty nikt nie kupi.
+- **Stan 0 na ofercie już zakończonej:** nic nie wysyła, wynik bez błędu.
+- **Stan większy niż 0 na ofercie, którą zakończył Kompletor:** najpierw ustawia nową liczbę sztuk, potem wznawia ofertę pod tym samym numerem (Allegro wznawia oferty „Kup teraz”).
+- **Oferty zakończonej ręcznie albo przez Allegro Kompletor nie wznawia.** Zmienia w niej tylko liczbę sztuk. Gdy ofertę zakończoną przez Kompletor ktoś wznowi i zakończy sam, Kompletor też jej nie wznawia i zapisuje to w dzienniku („oferta zakończona poza Kompletorem: nie wznawiam”).
+- **Bezpiecznik:** najwyżej 100 zakończonych ofert w ciągu 24 h na konto. Kolejne oferty ze stanem 0 zostają aktywne, Kompletor ich nie ponawia i wysyła alert. Chroni to przed masowym zamknięciem ofert po złym odczycie stanów z magazynu. Po sprawdzeniu stanów podnieś limit (albo poczekaj dobę) i kliknij „Wyślij stany ponownie”.
+- **Odmowa Allegro** przy kończeniu albo wznawianiu (np. oferta w formacie licytacji) to błąd tej jednej oferty z treścią od Allegro, bez ponawiania co kilka minut i z jednym alertem dziennie. Po wyjaśnieniu: „Wypchnij teraz”.
+
+| Funkcja | Gdzie | Kto widzi |
+|---|---|---|
+| Ile ofert Kompletor zakończył, limit, ostatnie zakończenia i wznowienia | **Ustawienia** → **Sprzedaż i kanały** → **Kanały sprzedaży** → konto Allegro → sekcja **Zapis do sklepu** → **Stany** → „Stan 0: zakończone oferty” | uprawnienie „Ustawienia” |
+| Zachowanie przy stanie 0 („Zakończ ofertę” albo „Wyślij liczbę 0”) i limit zakończeń na dobę | to samo konto → karta **Ustawienia i klucze** → **Zaawansowane** → pola „Przy stanie 0” i „Limit zakończeń ofert na dobę” | jak wyżej |
+
+Ekran nie pokazuje listy wszystkich zakończonych ofert z nazwami; numery ofert są w „Ostatnie zakończenia i wznowienia” (10 ostatnich). Zakończenie i wznowienie używa tej samej zgody co stany („Stany ofert”), więc po wdrożeniu nie trzeba łączyć konta ponownie.
 
 ### Jedna zmiana, nawet przy podwójnym kliknięciu
 
@@ -93,6 +111,8 @@ Przed pierwszym prawdziwym kontem: test na koncie sandbox Allegro (adres `https:
 - **Odrzucenie:** gdy Allegro odrzuci przesyłkę (np. złe wymiary), przesyłka ma stan „Nie utworzono” z kodem błędu Allegro. Po poprawce można kliknąć ponownie.
 - **Anulowanie:** „Anuluj przesyłkę” z pytaniem przed wykonaniem. Działa tylko, gdy konto Allegro jest w trybie „Aktywny” (jak tworzenie przesyłki). Po anulowaniu zamówienie nie ma numeru nadania, numer anulowanej przesyłki nie idzie już do Allegro (zostaje w historii zamówienia), a nową przesyłkę można utworzyć od razu.
 - **Etykieta:** drukuje się sama na stanowisku po utworzeniu; „Pobierz etykietę” i „Drukuj etykietę ponownie” w sekcji „Przesyłka”.
+- **Śledzenie:** co 15 minut Kompletor czyta w Allegro historię statusów paczki (sam odczyt, bez nowej zgody przy połączeniu konta). Gdy Allegro pokazuje paczkę „w drodze”, „wydaną do doręczenia”, „czekającą w punkcie” albo „awizo”, zamówienie z „Do wysłania” przechodzi samo do „Wysłane” (bez kliknięcia „Przyjechał”). Doręczenie zapisuje się w historii zamówienia. Status u przewoźnika widać pod stanem przesyłki na liście przesyłek ([Przesyłki](../przesylki.md)) i w historii zamówienia. Szczegóły techniczne: „Wysyłam z Allegro” (`docs/wysylam-z-allegro.md`).
+- **Link do śledzenia:** numer nadania paczki Wysyłam z Allegro jest linkiem do strony śledzenia Allegro (`allegro.pl/allegrodelivery/sledzenie-paczki`, nowa karta) na liście przesyłek (menu → „Przesyłki”), na liście zamówień i na karcie zamówienia w sekcji „Przesyłka”; ten sam link dostaje klient w mailu „Faktura”, gdy zamówienie ma jedną paczkę.
 
 ## Czego Kompletor nie robi w Allegro
 
@@ -110,6 +130,7 @@ Przed pierwszym prawdziwym kontem: test na koncie sandbox Allegro (adres `https:
 ## Do potwierdzenia na koncie sandbox
 
 - Rodzaj aplikacji w Allegro dla device flow (krok 1 połączenia).
+- Treść odpowiedzi Allegro przy zakończeniu i wznowieniu oferty (komenda publikacji END / ACTIVATE): sprawdzone na atrapie według dokumentacji Allegro, nie na koncie.
 - Odpowiedź Allegro na powtórne wysłanie tej samej komendy stanów (Kompletor przyjmuje „komenda istnieje”, a przy innej odmowie sprawdza, czy Allegro zna komendę, i czyta jej wynik).
 - Jak długo Allegro pamięta komendy utworzenia przesyłki (Kompletor przy każdym tworzeniu czyta wszystkie pięć prób tej samej przesyłki, więc zapomniana stara próba nie prowadzi do drugiej płatnej etykiety).
 - Wymiary gabarytów Allegro A/B/C i limit wagi (dziś wartości robocze jak paczkomat, z ostrzeżeniem do potwierdzenia).

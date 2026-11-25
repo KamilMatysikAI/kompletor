@@ -37,12 +37,7 @@ export function Szczegoly({ d }: { d: DaneKarty }) {
             </dd>
           </>
         )}
-        {numer.bl !== null && (
-          <>
-            <dt>Numer w BaseLinkerze</dt>
-            <dd className="mono">{numer.bl}</dd>
-          </>
-        )}
+        {/* numer BL jest raz, małą linią pod tytułem karty (naglowek.tsx) */}
         {liczbaPaczek > 1 && (
           <>
             <dt>Paczka</dt>

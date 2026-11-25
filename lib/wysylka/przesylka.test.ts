@@ -133,17 +133,24 @@ describe('waga', () => {
     expect(wagaZeSkladu([{ ilosc: 1, jednostka: 'szt', wagaSztukiG: 0 }])).toEqual({ gramy: 0, pelna: false })
   })
 
-  it('bez wagi: domyślna z konfiguracji + ostrzeżenie; znana część większa od domyślnej wygrywa', () => {
+  it('bez wagi: domyślna z konfiguracji (INFO, ustawiona przez firmę) albo wbudowana (OSTRZEZENIE); znana część większa od domyślnej wygrywa', () => {
     const p = licz({ weightG: null, weightComplete: false }, { defaultWeightKg: 2 })
     expect(p.weightKg).toBe(2)
-    expect(p.problems).toEqual([expect.objectContaining({ kod: 'waga_domyslna', poziom: 'OSTRZEZENIE' })])
+    expect(p.problems).toEqual([expect.objectContaining({ kod: 'waga_domyslna', poziom: 'INFO' })])
+    const w = licz({ weightG: null, weightComplete: false }, {})
+    expect(w.weightKg).toBe(1)
+    expect(w.problems.find((x) => x.kod === 'waga_domyslna')).toMatchObject({ poziom: 'OSTRZEZENIE' })
     expect(licz({ weightG: 3000, weightComplete: false }, { defaultWeightKg: 2 }).weightKg).toBe(3)
   })
 
   it('znana część cięższa od domyślnej to waga niepełna, nie domyślna', () => {
     const tekst = (o: Partial<ShipmentInput>) => licz(o, { defaultWeightKg: 2 }).problems.find((p) => p.kod === 'waga_domyslna')!.tekst
-    expect(tekst({ weightG: 3000, weightComplete: false })).toBe('Waga niepełna: 3 kg znanych pozycji plus sztuki bez wagi.')
-    expect(tekst({ weightG: 500, weightComplete: false })).toBe('Waga domyślna 2 kg: produkty w zamówieniu nie mają wagi.')
+    // tekst mówi, z jaką wagą paczka pójdzie i gdzie to zmienić; niepełna zostaje ostrzeżeniem
+    expect(tekst({ weightG: 3000, weightComplete: false })).toBe('Paczka pójdzie z wagą 3 kg: tyle ważą produkty z wpisaną wagą, część produktów nie ma wagi. Brakującą wagę wpiszesz w: Produkty → karta produktu, pole „Waga (g)”.')
+    expect(licz({ weightG: 3000, weightComplete: false }, { defaultWeightKg: 2 }).problems.find((p) => p.kod === 'waga_domyslna')!.poziom).toBe('OSTRZEZENIE')
+    expect(tekst({ weightG: 500, weightComplete: false })).toBe('Paczka pójdzie z wagą 2 kg z ustawień przewoźnika (produkty nie mają wpisanej wagi). Zmienisz ją w: Ustawienia → Wysyłka i druk → Przewoźnicy → Konta przewoźników.')
+    expect(licz({ weightG: null, weightComplete: false }, { defaultWeightKg: 0.5 }).problems.find((x) => x.kod === 'waga_domyslna')!.tekst).toContain('wagą 0,5 kg')
+    expect(licz({ weightG: null, weightComplete: false }, {}).problems.find((x) => x.kod === 'waga_domyslna')!.tekst).toBe('Paczka pójdzie z wagą 1 kg: produkty nie mają wpisanej wagi, a firma nie ustawiła wagi domyślnej. Ustawisz ją w: Ustawienia → Wysyłka i druk → Przewoźnicy → Konta przewoźników.')
   })
 
   it('limity: 25 kg, DPD Pickup i salon 20 kg', () => {
@@ -204,6 +211,18 @@ describe('buildCreateOrderPayload (createOrderV2)', () => {
 
   it('przesyłka z błędem nie daje treści zlecenia', () => {
     expect(() => buildCreateOrderPayload(licz({ pickupPoint: null }), ODBIORCA, [], OPCJE)).toThrow(/punkt/)
+  })
+
+  // przy punkcie odbioru adres domowy nie wpływa na doręczenie. Pola `taker_street` i `taker_house_no` są
+  // w dokumentacji wymagane, więc idą zawsze, ale bez wymyślonego numeru: linia adresu bez zmian, numer pusty.
+  it('punkt odbioru bez numeru domu: linia adresu bez zmian, numer pusty, nic nie dopisane; kurier bez numeru = brak treści', () => {
+    const order = (b: Record<string, unknown>) => (b['Cart'] as { Order: Record<string, unknown> }[])[0]!.Order
+    const bezNumeru = { ...ODBIORCA, ulica: 'Lipowa 7 3', numerDomu: null }
+    expect(order(buildCreateOrderPayload(licz(), bezNumeru, [], OPCJE))).toMatchObject({ taker_point: 'POZ01A', taker_street: 'Lipowa 7 3', taker_house_no: '', taker_locum_no: '' })
+    expect(order(buildCreateOrderPayload(licz(), { ...ODBIORCA, ulica: null, numerDomu: null }, [], OPCJE))).toMatchObject({ taker_street: '', taker_house_no: '' })
+    const kurier = licz({ carrier: 'DPD', gabaryt: 'DPD', pickupPoint: null })
+    expect(() => buildCreateOrderPayload(kurier, bezNumeru, ['wymiary_domyslne'], OPCJE)).toThrow(/numer domu/)
+    expect(() => buildCreateOrderPayload(kurier, { ...ODBIORCA, ulica: null }, ['wymiary_domyslne'], OPCJE)).toThrow(/ulica/)
   })
 
   it('wartości robocze bez potwierdzenia nie dają treści zlecenia; potwierdzenie błędu nic nie zmienia', () => {

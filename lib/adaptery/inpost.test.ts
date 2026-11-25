@@ -293,8 +293,24 @@ describe('zapis z włączonym wyłącznikiem (atrapa)', () => {
     for (const p of PII_SENTINELS) expect(JSON.stringify(r)).not.toContain(p)
     // numer domu null i ulica bez jednoznacznego numeru = brak pola, bez pustego stringa w zastępstwie
     // (hotfix 19.11.2026: „ulica numer” w jednej linii rozdziela się sama przy nadaniu)
-    expect(await ad.createShipment({ ...REQ, recipient: { ...ODBIORCA_ATRAPY, ulica: 'Testowa 5-7', numerDomu: null } }, 'r3')).toMatchObject({ kind: 'TRWALY', message: 'brak danych odbiorcy: numerDomu' })
+    // kurier bez numeru domu dalej odmowa; paczkomat bez adresu domowego przechodzi (test niżej)
+    const kurier = { ...REQ, carrier: 'INPOST_KURIER' as const, parcel: { ...PARCEL, courierCode: 'inpost_courier_standard', gabaryt: 'INPOST_KURIER', pickupPoint: null } }
+    expect(await ad.createShipment({ ...kurier, recipient: { ...ODBIORCA_ATRAPY, ulica: 'Testowa 5-7', numerDomu: null } }, 'r3')).toMatchObject({ kind: 'TRWALY', message: 'brak danych odbiorcy: numerDomu' })
     expect(a.calls).toHaveLength(0)
+  })
+
+  it('paczkomat bez numeru domu, ulicy, kodu i miasta: żądanie bez adresu domowego (odbiorca = imię, e-mail, telefon)', async () => {
+    const a = inpostAtrapa()
+    const ad = wlaczony(a)
+    const bezAdresu = { ...ODBIORCA_ATRAPY, ulica: 'Testowa 5-7', numerDomu: null }
+    expect(await ad.createShipment({ ...REQ, recipient: bezAdresu }, 'p1')).toMatchObject({ kind: 'OK' })
+    const receiver = (a.calls[0]!.body as Record<string, Record<string, unknown>>)['receiver']!
+    expect(receiver).not.toHaveProperty('address')
+    expect(receiver).toMatchObject({ email: ODBIORCA_ATRAPY.email })
+    expect(await ad.createShipment({ ...REQ, recipient: { ...bezAdresu, ulica: null, kodPocztowy: null, miasto: null } }, 'p2')).toMatchObject({ kind: 'OK' })
+    // e-mail i telefon zostają wymagane także przy paczkomacie
+    expect(await ad.createShipment({ ...REQ, recipient: { ...bezAdresu, email: null } }, 'p3')).toMatchObject({ kind: 'TRWALY', message: 'brak danych odbiorcy: email' })
+    expect(a.calls).toHaveLength(2)
   })
 
   it('odbiorca spoza Polski = TRWALY bez żądania i bez wartości kraju w komunikacie', async () => {

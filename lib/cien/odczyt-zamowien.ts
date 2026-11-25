@@ -11,9 +11,11 @@ import { organizationIdOf } from '../db'
 import { createAccountAdapter, type ChannelAccountSettings } from '../adaptery/konta'
 import { AdapterError, type AdapterContext, type ChannelOrder, hasOrderFeed, type OrderFeed, type ChannelAdapter, UnreadableDataError } from '../adaptery/kontrakt'
 import { AdapterConfigError, type AdapterRegistry, rodzinaAdaptera } from '../adaptery/rejestr'
+import { zapiszOdczytZKanalu } from '../karta/opis-z-kanalu'
 import { recordOrderPoll } from '../rdzen/propagacja'
-import { alert } from '../rdzen/stan'
-import { ingestOrder, type IncomingOrder, ValidationError } from '../rdzen/zamowienia'
+import { hintAllocate } from '../rdzen/rezerwacja'
+import { alert, runTx } from '../rdzen/stan'
+import { dostawaZKanalu, ingestOrder, type IncomingOrder, ValidationError } from '../rdzen/zamowienia'
 import type { SecretSource } from '../sekrety'
 import type { FetchLike } from '../zrodla/http'
 
@@ -454,6 +456,10 @@ export async function pollAccount(db: PrismaClient, acc: ChannelAccountSettings,
     throw e
   }
   stats.doPonowienia = retry.length
+  // zamówienia przyjęte bez sposobu dostawy (odczyt w trakcie zapisu w kanale); osobno, nie psuje odczytu
+  await uzupelnijPusteDostawy(db, acc, clock, (id) => adapter.getOrder(id)).catch((e) => {
+    console.warn(`[odczyt-zamowien] uzupełnianie dostaw nie powiodło się: ${accountRef(acc)}, ${e instanceof Error ? e.name : 'błąd'}`)
+  })
   const finishedAt = clock()
   // „Odczyt OK” (warunek wzrostów stanu, spec 6.2; pokrycie kanału w porównaniu z BL) tylko przy pełnym odczycie:
   // do końca dziennika, bez zaległych ponowień i bez zamówień nieczytelnych — inaczej nie znamy wszystkich zamówień.
@@ -476,6 +482,74 @@ export async function pollAccount(db: PrismaClient, acc: ChannelAccountSettings,
   })
   if (ok) await db.alert.updateMany({ where: { kind: NOT_READING_ALERT, ref: accountRef(acc), closedAt: null }, data: { closedAt: finishedAt } })
   return stats
+}
+
+/** ile minut od złożenia świeże zamówienie bez sposobu dostawy jest czytane z kanału ponownie. */
+export const PONOWNY_ODCZYT_DOSTAWY_MIN = 10
+const LIMIT_PUSTYCH_DOSTAW = 50
+
+/**
+ * otwarte zamówienia konta przed zbieraniem z pustym sposobem dostawy i bez przewoźnika. Kanał potrafi pokazać
+ * zamówienie w trakcie zapisu (bez linii wysyłki, pozycje po 0 zł) z tą samą datą zmiany co gotowe, więc dziennik zmian
+ * już go nie zwróci. Kopia z kanału ma sposób dostawy (nowsza rewizja zapisana) → uzupełnienie z kopii,
+ * bez odczytu kanału. Kopia bez sposobu, zamówienie młodsze niż `PONOWNY_ODCZYT_DOSTAWY_MIN` → ponowny odczyt z kanału
+ * (opis, ceny przy otwartych kwotach, dostawa: jak „Odśwież z kanału”). Starsze bez dostawy także w kopii zostają
+ * dla obsługi („Odśwież z kanału” na karcie). Każde zamówienie osobno; błąd jednego nie zatrzymuje reszty ani odczytu.
+ * Zwraca liczbę uzupełnionych.
+ */
+export async function uzupelnijPusteDostawy(db: PrismaClient, acc: ChannelAccountSettings, clock: () => Date, getOrder: (externalId: string) => Promise<ChannelOrder | null>): Promise<number> {
+  const now = clock()
+  const kandydaci = await db.order.findMany({
+    where: {
+      channel: acc.channel,
+      channelAccountId: acc.channelAccountId,
+      parentOrderId: null,
+      status: { in: ['NOWE', 'DO_REALIZACJI', 'DO_WYJASNIENIA'] },
+      AND: [{ OR: [{ carrier: null }, { carrier: 'BRAK' }] }, { OR: [{ deliveryMethod: null }, { deliveryMethod: '' }] }],
+    },
+    select: { id: true, externalId: true, createdAtChannel: true },
+    orderBy: { createdAtChannel: 'desc' },
+    take: LIMIT_PUSTYCH_DOSTAW,
+  })
+  if (!kandydaci.length) return 0
+  const kopie = new Map(
+    (
+      await db.channelOrderSnapshot.findMany({
+        where: { channel: acc.channel, channelAccountId: acc.channelAccountId, externalId: { in: kandydaci.map((k) => k.externalId) } },
+        select: { externalId: true, deliveryMethod: true, orderId: true },
+      })
+    ).map((s) => [s.externalId, s]),
+  )
+  const aktor = `system:poll:${acc.channel}:${acc.channelAccountId}`
+  let uzupelnione = 0
+  for (const k of kandydaci) {
+    try {
+      const kopia = kopie.get(k.externalId)
+      if (kopia?.deliveryMethod?.trim() && (!kopia.orderId || kopia.orderId === k.id)) {
+        const d = await runTx(db, async (tx) => {
+          const w = await dostawaZKanalu(tx, k.id, kopia.deliveryMethod, aktor)
+          if (w) await hintAllocate(tx, k.id, now) // jak po wyjaśnieniu: braki mogą dostać towar ze stanu
+          return w
+        })
+        if (d) uzupelnione++
+        continue
+      }
+      const wiekMs = now.getTime() - k.createdAtChannel.getTime()
+      if (wiekMs < 0 || wiekMs > PONOWNY_ODCZYT_DOSTAWY_MIN * 60_000) continue
+      const z = await getOrder(k.externalId)
+      if (!z?.deliveryMethod?.trim() || z.lifecycle !== 'OPEN') continue
+      const { dostawa } = await zapiszOdczytZKanalu(db, k.id, z, aktor, now)
+      if (dostawa) {
+        uzupelnione++
+        await db.channelOrderSnapshot.updateMany({ where: { channel: acc.channel, channelAccountId: acc.channelAccountId, externalId: k.externalId, deliveryMethod: null }, data: { deliveryMethod: z.deliveryMethod } })
+      }
+    } catch (e) {
+      if (e instanceof AdapterConfigError) throw e
+      // bez treści wyjątku (odpowiedź kanału); zamówienie spróbuje się w kolejnym odczycie
+      console.warn(`[odczyt-zamowien] dostawa zamówienia ${k.id} nieuzupełniona: ${e instanceof Error ? e.name : 'błąd'}`)
+    }
+  }
+  return uzupelnione
 }
 
 /** Odstęp odczytów konta: max(limit adaptera, ustawienie konta, domyślnie 60 s); przy awarii co 5 min. */

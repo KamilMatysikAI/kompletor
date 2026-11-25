@@ -15,7 +15,7 @@ import { przebiegRetencji, usunDaneKlientow } from '@/lib/klienci/retencja'
 import { reencryptCustomers } from '@/lib/klienci/szyfr'
 import { zapiszUstawieniaKlientow } from '@/lib/klienci/ustawienia'
 import { kontrahentFaktury, nabywcaKsef, odbiorcaPrzesylki } from '@/lib/klienci/wejscia'
-import { wykonajZapisKlienta, zapiszRekordKlienta, ZAPIS_AUDIT } from '@/lib/klienci/zapis'
+import { wykonajZapisKlienta, zapiszRekordKlienta, zapiszZKanalu, ZAPIS_AUDIT } from '@/lib/klienci/zapis'
 import { rekordZOdbiorcy } from '@/lib/klienci/rekord'
 import { NABYWCA_ZASTEPCZY, prepareKsefForOrder } from '@/lib/ksef/szkice'
 import { ingestOrder } from '@/lib/rdzen/zamowienia'
@@ -365,6 +365,21 @@ describe('przesyłka, faktura i KSeF z bazy', () => {
       ['system:wysylka', 'PRZESYLKA'],
       ['system:faktury', 'FAKTURA'],
     ])
+  })
+
+  it('„Odśwież z kanału” dla zamówienia zapisanego bez punktu: nowy odczyt z punktem nadpisuje rekord i trafia do przesyłki', async () => {
+    // zamówienie wczytane, zanim adapter czytał punkt (rekord KANAL bez punktu, problem punkt_nieznany)
+    state.recipients.set('R-1', { ...ODBIORCA, punktOdbioru: null, problemy: ['punkt_nieznany'] })
+    const id = await przyjmij(db, 'R-1')
+    await wykonajKolejke(db)
+    expect((await odbiorcaPrzesylki(db, id, { modul: 'wysylka', registry, secrets: secrets() })).punktOdbioru).toBeNull()
+    // kanał podaje już punkt; przycisk woła zapiszZKanalu z aktorem-użytkownikiem (app/(panel)/zamowienia/[id]/akcje-klient.ts)
+    state.recipients.set('R-1', { ...ODBIORCA, punktOdbioru: { kod: 'TST01M', nazwa: null, adres: null } })
+    const r = await zapiszZKanalu(db, id, { registry, secrets: secrets(), actorId: ids.biuro!, maksCzekanieMs: 0 })
+    expect(r.wynik).toBe('ZAPISANO')
+    const p = await odbiorcaPrzesylki(db, id, { modul: 'wysylka', registry, secrets: secrets() })
+    expect(p).toMatchObject({ zrodlo: 'BAZA', punktOdbioru: { kod: 'TST01M' } })
+    expect(await trafieniaWBazie()).toEqual([])
   })
 
   it('fallback: brak wiersza → odczyt z kanału z zapisem; zapis wyłączony → odczyt na żądanie bez zapisu', async () => {

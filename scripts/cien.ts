@@ -31,6 +31,10 @@
 //                                                             --z-ofertami odczyt ofert /sale/offers
 //   npm run cien -- allegro-wysylam-test [--konto <id>]       test zakresu przesyłek Wysyłam z Allegro, bez tokenów
 //   npm run cien -- rabat-woo [--od RRRR-MM-DD] [--do RRRR-MM-DD] [--konto <id>] [--limit-na-minute N] [--limit-czasu-s N] [--wykonaj]
+//   npm run cien -- archiwum-woo --konto <id> --od RRRR-MM-DD [--do RRRR-MM-DD] [--na-sucho | --wykonaj] [--maks-stron N] [--plik <md>]
+//     (archiwum zamówień Woo sprzed odczytu kanału, domyślnie na sucho; scripts/archiwum.ts)
+//   npm run cien -- archiwum [--kanal WOO|ALLEGRO|EMPIK|EASYTOOLS] --konto <id> --od RRRR-MM-DD [--do RRRR-MM-DD] [--z-pliku <json>] [...]
+//     (etap 2: to samo dla Allegro z API albo ze zrzutu, Empiku z OR11 i EasyTools z pliku)
 //                                                             ceny pozycji zamówień Woo z rabatem
 //                                                             z ujemnych opłat (sklep tylko czytany); bez --wykonaj na sucho
 //   npm run cien -- nieudane-platnosci-woo [--konto <id>] [--takze-w-pracy] [--maks-wiek-minuty N] [--wykonaj]
@@ -78,6 +82,7 @@ import { sciezkaPresetu, wczytajPreset } from '../lib/preset-plik'
 import { fakturyPodglad } from './faktury-podglad'
 import { fakturaRoboczaCli } from './faktura-robocza'
 import { rabatWooCli } from './rabat-woo'
+import { archiwumCli, archiwumWooCli } from './archiwum'
 import { opisPunktuCiecia, punktCiecia } from '../lib/kanaly/punkt-ciecia'
 import { opisNieudanychPlatnosciWoo, przeliczNieudanePlatnosciWoo } from '../lib/kanaly/nieudane-platnosci-woo'
 import { przywrocRezerwacjeZwolnionych } from '../lib/rdzen/powrot-rezerwacji'
@@ -336,10 +341,12 @@ async function main(): Promise<number> {
     else if (cmd === 'faktury-podglad') await fakturyPodglad(db, dayArg(addDays(toWarsaw(new Date()).day, -1)))
     else if (cmd === 'faktura-robocza') return await fakturaRoboczaCli(db, { zamowienie: arg('--zamowienie'), wykonaj: flag('--wykonaj'), usun: arg('--usun'), sprawdz: arg('--sprawdz'), takzeZNip: flag('--takze-z-nip'), registry: defaultRegistry(), src: { env, envFallback: org.envFallback } })
     else if (cmd === 'rabat-woo') return await rabatWooCli(db, { od: arg('--od'), do: arg('--do'), konto: arg('--konto'), wykonaj: flag('--wykonaj'), limitNaMinute: arg('--limit-na-minute'), limitCzasuS: arg('--limit-czasu-s'), registry: defaultRegistry(), src: { env, envFallback: org.envFallback } })
+    else if (cmd === 'archiwum') return await archiwumCli(db, { kanal: arg('--kanal'), konto: arg('--konto'), od: arg('--od'), do: arg('--do'), zPliku: arg('--z-pliku'), zFakturBl: arg('--z-faktur-bl'), zrodlaBl: arg('--zrodla-bl'), mapaZrodel: arg('--mapa-zrodel'), progBezOdpowiednika: arg('--prog-bez-odpowiednika'), pozwolBezOdpowiednika: flag('--pozwol-bez-odpowiednika'), naSucho: flag('--na-sucho'), wykonaj: flag('--wykonaj'), maksStron: arg('--maks-stron'), plik: arg('--plik'), registry: defaultRegistry(), src: { env, envFallback: org.envFallback } })
+    else if (cmd === 'archiwum-woo') return await archiwumWooCli(db, { konto: arg('--konto'), od: arg('--od'), do: arg('--do'), naSucho: flag('--na-sucho'), wykonaj: flag('--wykonaj'), maksStron: arg('--maks-stron'), plik: arg('--plik'), registry: defaultRegistry(), src: { env, envFallback: org.envFallback } })
     else if (cmd === 'allegro-autoryzuj') return await authorizeAllegro(db, { channelAccountId: arg('--konto'), registry: defaultRegistry(), src: { env, envFallback: org.envFallback }, zPrzesylkami: flag('--z-przesylkami'), zOfertami: flag('--z-ofertami') })
     else if (cmd === 'allegro-wysylam-test') return await allegroWysylamTest(db, { channelAccountId: arg('--konto'), registry: defaultRegistry(), src: { env, envFallback: org.envFallback } })
     else {
-      console.error('Użycie: tsx scripts/cien.ts konfiguruj [--preset <nazwa> | --plik <ścieżka>] | test | worker [--minut N] | raport --od <ISO> [--do <ISO>] [--porownaj] [--okno-godzin N] [--plik <md>] | sprzedaz-dnia [--dzien dzis|RRRR-MM-DD] | rozjazdy [--dzien RRRR-MM-DD] [--plik <md>] | faktury-podglad [--dzien RRRR-MM-DD] [--firma <slug>] | faktura-robocza --zamowienie <id> [--wykonaj [--takze-z-nip]] | faktura-robocza --usun <docId> | faktura-robocza --sprawdz <docId> | punkt-ciecia [--kanal K] [--konto <id>] [--zapisz] [--maks-wiek-minuty N] [--plik <md>] | nieudane-platnosci-woo [--konto <id>] [--takze-w-pracy] [--maks-wiek-minuty N] [--wykonaj] | przywroc-rezerwacje [--firma <slug>] [--wykonaj] | allegro-autoryzuj [--konto <id>] [--z-przesylkami] [--z-ofertami] | allegro-wysylam-test [--konto <id>] | rabat-woo [--od RRRR-MM-DD] [--do RRRR-MM-DD] [--konto <id>] [--limit-na-minute N] [--limit-czasu-s N] [--wykonaj]  (klucze: --klucze-z <mapa.json>)')
+      console.error('Użycie: tsx scripts/cien.ts konfiguruj [--preset <nazwa> | --plik <ścieżka>] | test | worker [--minut N] | raport --od <ISO> [--do <ISO>] [--porownaj] [--okno-godzin N] [--plik <md>] | sprzedaz-dnia [--dzien dzis|RRRR-MM-DD] | rozjazdy [--dzien RRRR-MM-DD] [--plik <md>] | faktury-podglad [--dzien RRRR-MM-DD] [--firma <slug>] | faktura-robocza --zamowienie <id> [--wykonaj [--takze-z-nip]] | faktura-robocza --usun <docId> | faktura-robocza --sprawdz <docId> | punkt-ciecia [--kanal K] [--konto <id>] [--zapisz] [--maks-wiek-minuty N] [--plik <md>] | nieudane-platnosci-woo [--konto <id>] [--takze-w-pracy] [--maks-wiek-minuty N] [--wykonaj] | przywroc-rezerwacje [--firma <slug>] [--wykonaj] | allegro-autoryzuj [--konto <id>] [--z-przesylkami] [--z-ofertami] | allegro-wysylam-test [--konto <id>] | rabat-woo [--od RRRR-MM-DD] [--do RRRR-MM-DD] [--konto <id>] [--limit-na-minute N] [--limit-czasu-s N] [--wykonaj] | archiwum [--kanal WOO|ALLEGRO|EMPIK|EASYTOOLS] --konto <id> --od RRRR-MM-DD [--do RRRR-MM-DD] [--z-pliku <json> | --z-faktur-bl <jsonl> [--zrodla-bl <csv> --mapa-zrodel "nazwa=KANAŁ|POMIN;…" [--prog-bez-odpowiednika <zł> | --pozwol-bez-odpowiednika]]] [--na-sucho | --wykonaj] [--maks-stron N] [--plik <md>] | archiwum-woo --konto <id> --od RRRR-MM-DD [--do RRRR-MM-DD] [--na-sucho | --wykonaj] [--maks-stron N] [--plik <md>]  (klucze: --klucze-z <mapa.json>)')
       return 2
     }
     return 0

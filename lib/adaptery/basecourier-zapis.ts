@@ -14,6 +14,8 @@
 import { BaseCourierZapis, BASE_COURIER_ID_RE, NUMER_LISTU_RE, type PrinterType, type PrzesylkaBaseCourier, type StatusBaseCourier } from '../zrodla/basecourier-zapis'
 import { parseNadawca } from '../wysylka/zlecenie-dpd'
 import { buildCreateOrderPayload, kontoPobranPoprawne, parseUbezpieczenie, rozdzielAdres, zRozdzielonymAdresem, zawartoscMaReferencje, zawartoscPrzesylki, type NadawcaBaseCourier, type OdbiorcaPrzesylki, type PlatnoscBaseCourier } from '../wysylka/zlecenie'
+import { parseOknoPodjazdu, parseTerminyPodjazdu, wybierzPodjazd, type Podjazd } from '../wysylka/podjazd'
+import type { Carrier } from '@prisma/client'
 import { BASE_COURIER_DEFINITION, BASE_COURIER_MANIFEST } from './basecourier'
 import {
   AdapterError,
@@ -37,6 +39,18 @@ import {
 
 export const BASE_COURIER_ZAPIS_KEY = 'basecourier.zapis.v1'
 
+/**
+ * Okna podjazdu per kurier: przewoźnicy przyjmują podjazd w swoich stałych przedziałach godzin,
+ * więc konto ma osobne pole dla każdego kuriera nadawanego przez Base Courier. Klucz ustawienia → przewoźnicy Kompletora.
+ */
+export const OKNA_PODJAZDU_KURIEROW: readonly { key: string; nazwa: string; carriers: readonly Carrier[]; podpowiedz?: string }[] = [
+  { key: 'oknoPodjazduDpd', nazwa: 'DPD', carriers: ['DPD', 'DPD_EMPIK'], podpowiedz: 'zwykle do wyboru 09:00-17:00, 11:00-14:00, 14:00-17:00' },
+  { key: 'oknoPodjazduPaczkomaty', nazwa: 'InPost (paczki do paczkomatów)', carriers: ['PACZKOMATY'] },
+  { key: 'oknoPodjazduInpostKurier', nazwa: 'InPost Kurier', carriers: ['INPOST_KURIER'] },
+  { key: 'oknoPodjazduGls', nazwa: 'GLS', carriers: ['GLS'] },
+  { key: 'oknoPodjazduPocztaPolska', nazwa: 'Poczta Polska (Pocztex)', carriers: ['POCZTA_POLSKA'] },
+]
+
 export const BASE_COURIER_ZAPIS_MANIFEST: AdapterManifest = {
   ...BASE_COURIER_MANIFEST,
   adapterKey: BASE_COURIER_ZAPIS_KEY,
@@ -56,6 +70,7 @@ export const BASE_COURIER_ZAPIS_MANIFEST: AdapterManifest = {
       type: 'string',
       required: false,
       description: 'płatność za przesyłki w Base Courier',
+      zKontaPrzewoznika: true,
       options: [
         { value: 'bank', label: 'Skarbonka (saldo przedpłacone)' },
         { value: 'pay_later', label: 'Płatność odroczona' },
@@ -68,7 +83,26 @@ export const BASE_COURIER_ZAPIS_MANIFEST: AdapterManifest = {
       description: 'ubezpieczenie przesyłki (może podnieść cenę): puste = bez, „pobranie” = na kwotę pobrania, liczba = kwota w zł',
       pattern: /^(pobranie|\d+([.,]\d{1,2})?)?$/i,
     },
-    { key: 'zamawiajPodjazd', type: 'boolean', required: false, description: 'tak = zamawiaj podjazd kuriera przy każdej przesyłce; brak = bez podjazdu (paczkomat, stały odbiór)' },
+    {
+      key: 'zamawiajPodjazd',
+      type: 'boolean',
+      required: false,
+      description: 'Zamawiaj podjazd kuriera (tak = z każdą przesyłką, na najbliższy dzień odbioru z harmonogramu przewoźnika; nie = paczki zanosicie sami albo kurier ma stały odbiór)',
+    },
+    {
+      key: 'oknoPodjazdu',
+      type: 'string',
+      required: false,
+      description: 'Okno podjazdu kuriera, np. 10:00-15:00 (puste = od godziny odbioru z harmonogramu przez 2 godziny)',
+      pattern: /^(\s*\d{1,2}:\d{2}\s*-\s*\d{1,2}:\d{2}\s*)?$/,
+    },
+    ...OKNA_PODJAZDU_KURIEROW.map((k) => ({
+      key: k.key,
+      type: 'string' as const,
+      required: false,
+      description: `Okno podjazdu kuriera ${k.nazwa}: stały przedział godzin, który przewoźnik przyjmuje dla Twojego adresu, np. 09:00-17:00${k.podpowiedz ? ` (${k.podpowiedz})` : ''}. Idzie do przewoźnika w całości, także dziś. Wypełnij tylko, jeśli nadajesz tym przewoźnikiem przez Base Courier; puste = jak „Okno podjazdu kuriera”`,
+      pattern: /^(\s*\d{1,2}:\d{2}\s*-\s*\d{1,2}:\d{2}\s*)?$/,
+    })),
     {
       key: 'rozmiarEtykiety',
       type: 'string',
@@ -87,17 +121,25 @@ const WYLACZONY = 'zapis wyłączony'
 
 /** Pola odbiorcy wymagane przez Base Courier; brak = błąd z nazwą pola, nigdy z wartością. */
 const POLA_ODBIORCY = ['imieNazwisko', 'ulica', 'numerDomu', 'kodPocztowy', 'miasto', 'telefon', 'email'] as const
+/**
+ * przy punkcie odbioru (paczkomat, punkt DPD) bez ulicy i numeru domu. Kod i miasto zostają: OpenAPI Base
+ * Courier ma je w OrderDto.required, a kanały podają je przy punkcie (dotąd wymagane tak samo).
+ */
+const POLA_ODBIORCY_PUNKT = ['imieNazwisko', 'kodPocztowy', 'miasto', 'telefon', 'email'] as const
 
 const tekst = (v: unknown): string | null => (typeof v === 'string' && v.trim() ? v.trim() : null)
 
-/** Odbiorca z kontraktu (pola nullowalne). Moduł krajowy: kraj inny niż PL = błąd `kraj` (jak InPost i DPD). */
-function odbiorca(r0: Readonly<RecipientAddress>): OdbiorcaPrzesylki | { brak: string[] } {
+/**
+ * Odbiorca z kontraktu (pola nullowalne). Moduł krajowy: kraj inny niż PL = błąd `kraj` (jak InPost i DPD). Przy
+ * punkcie odbioru niejednoznaczna linia adresu zostaje bez zmian w `ulica`, numer domu null (nic nie zgadujemy).
+ */
+function odbiorca(r0: Readonly<RecipientAddress>, punkt: boolean): OdbiorcaPrzesylki | { brak: string[] } {
   const kraj = tekst(r0.kraj)
   const r = zRozdzielonymAdresem(r0)
   if (kraj && kraj.toUpperCase() !== 'PL') return { brak: ['kraj'] }
-  const brak = POLA_ODBIORCY.filter((k) => !tekst(r[k]))
+  const brak = (punkt ? POLA_ODBIORCY_PUNKT : POLA_ODBIORCY).filter((k) => !tekst(r[k]))
   if (brak.length) return { brak: [...brak] }
-  return { imieNazwisko: tekst(r.imieNazwisko)!, firma: tekst(r.firma), ulica: tekst(r.ulica)!, numerDomu: tekst(r.numerDomu)!, numerLokalu: tekst(r.numerLokalu), kodPocztowy: tekst(r.kodPocztowy)!, miasto: tekst(r.miasto)!, telefon: tekst(r.telefon)!, email: tekst(r.email)! }
+  return { imieNazwisko: tekst(r.imieNazwisko)!, firma: tekst(r.firma), ulica: tekst(r.ulica), numerDomu: tekst(r.numerDomu), numerLokalu: tekst(r.numerLokalu), kodPocztowy: tekst(r.kodPocztowy)!, miasto: tekst(r.miasto)!, telefon: tekst(r.telefon)!, email: tekst(r.email)! }
 }
 
 /** Nadawca z `config.nadawca` (JSON od hosta): profil firmy z ulicą i numerem osobno. */
@@ -115,11 +157,22 @@ function nadawca(c: Readonly<Record<string, unknown>>): NadawcaBaseCourier | { b
   return { nazwa: n.nadawca.name, ulica: a.ulica, numerDomu: a.numerDomu, numerLokalu: a.numerLokalu, kodPocztowy: n.nadawca.postalCode, miasto: n.nadawca.city, telefon: n.nadawca.phone, email: n.nadawca.email }
 }
 
-/** Przesyłka do punktu bez punktu, salon Empik bez punktu: błąd przed wysyłką (adapter nie zgaduje). */
+/**
+ * Base Courier ma jeden kod DPD i sprawdza punkt na własnej umowie DPD; salonu Empik nie zna (20.11.2026, PL49077:
+ * „Punkt odbioru DPD nie istnieje”). BL nadaje salony modułem DPD z konta „DPD Salony Empik”.
+ */
+export const BC_SALON_EMPIK = 'Base Courier nie nadaje paczek do salonów Empik: nadaj w BaseLinkerze (konto „DPD Salony Empik”) albo ustaw dla „DPD do salonu Empik” moduł DPD bezpośrednio'
+
+/** Dopisek do odmowy Base Courier z polem podjazdu (`pickup_*`): przesyłka nie powstała, co zrobić. */
+export const BC_PODJAZD_ODMOWA =
+  'Przesyłka nie powstała, bo Base Courier nie przyjął terminu podjazdu kuriera. Sprawdź dni i godzinę odbioru w Ustawienia → Wysyłka i druk → Przewoźnicy i kliknij „Utwórz przesyłkę” ponownie; gdy odmowa wraca, wyłącz „Zamawiaj podjazd kuriera” w karcie konta Base Courier, utwórz przesyłkę i zamów kuriera w panelu Base Courier'
+
+/** Przesyłka do punktu bez punktu, salon Empik: błąd przed wysyłką (adapter nie zgaduje). */
 function punktProblem(req: ShipmentCreateRequest): string | null {
-  if ((req.carrier === 'PACZKOMATY' || req.carrier === 'DPD_EMPIK') && !req.parcel.pickupPoint) return 'brak punktu odbioru (paczkomat albo salon Empik)'
+  if (req.carrier === 'DPD_EMPIK') return BC_SALON_EMPIK
+  if (req.carrier === 'PACZKOMATY' && !req.parcel.pickupPoint) return 'brak punktu odbioru (paczkomat)'
   if (req.carrier === 'PACZKOMATY' && !/^paczkomaty/.test(req.parcel.courierCode ?? '')) return 'paczkomat wymaga kodu kuriera paczkomaty'
-  if ((req.carrier === 'DPD' || req.carrier === 'DPD_EMPIK') && req.parcel.courierCode !== 'dpd') return 'przesyłka DPD wymaga kodu kuriera dpd'
+  if (req.carrier === 'DPD' && req.parcel.courierCode !== 'dpd') return 'przesyłka DPD wymaga kodu kuriera dpd'
   return null
 }
 
@@ -146,10 +199,12 @@ class BaseCourierZapisAdapter implements ChannelAdapter, ShipmentPreparer, Shipm
   private readonly zapis: BaseCourierZapis | null
   /** Numer listu z odpowiedzi utworzenia (ta sama instancja woła zaraz `getTrackingNumber`): bez drugiego żądania. */
   private readonly numery = new Map<string, string>()
+  private readonly now: () => Date
 
   constructor(ctx: AdapterContext) {
     this.odczyt = BASE_COURIER_DEFINITION.create(ctx) as ChannelAdapter & ShipmentPreparer
     this.config = ctx.config
+    this.now = ctx.now
     this.zapis =
       ctx.config['zapisWlaczony'] === true
         ? new BaseCourierZapis({ baseUrl: String(ctx.config['baseUrl']), login: ctx.secrets['BASE_COURIER_LOGIN']!, apiKey: ctx.secrets['BASE_COURIER_API_KEY']!, wylacznik: true, fetchImpl: ctx.fetch })
@@ -174,13 +229,16 @@ class BaseCourierZapisAdapter implements ChannelAdapter, ShipmentPreparer, Shipm
    */
   async createShipment(req: ShipmentCreateRequest, reference: string): Promise<WriteOutcome> {
     if (!this.zapis) return { kind: 'TRWALY', reference, message: WYLACZONY }
-    const r = odbiorca(req.recipient)
+    // paczkomat bez kodu punktu też liczy się jako punkt: wtedy komunikat mówi o braku punktu (punktProblem), nie o numerze domu
+    const r = odbiorca(req.recipient, !!req.parcel.pickupPoint || req.carrier === 'PACZKOMATY')
     if ('brak' in r) return { kind: 'TRWALY', reference, message: r.brak.includes('kraj') ? 'odbiorca spoza Polski: moduł Base Courier w Kompletorze jest krajowy (kraj)' : `brak danych odbiorcy: ${r.brak.join(', ')}` }
     const n = nadawca(this.config)
     if ('braki' in n) return { kind: 'TRWALY', reference, message: `brak danych nadawcy firmy (Ustawienia → Dokumenty i faktury → Dane firmy): ${n.braki.join(', ')}` }
     const pp = punktProblem(req)
     if (pp) return { kind: 'TRWALY', reference, message: pp }
     const platnosc: PlatnoscBaseCourier = this.config['platnosc'] === 'pay_later' ? 'pay_later' : 'bank'
+    const zPodjazdem = this.config['zamawiajPodjazd'] === true
+    const p = zPodjazdem ? await this.podjazd(req) : { podjazd: null, uwaga: null }
     let payload: Record<string, unknown>
     try {
       payload = buildCreateOrderPayload(req.parcel, r, req.potwierdzoneOstrzezenia ?? [], {
@@ -188,7 +246,8 @@ class BaseCourierZapisAdapter implements ChannelAdapter, ShipmentPreparer, Shipm
         zawartosc: zawartoscPrzesylki(reference, req.orderExternalId),
         kontoPobran: tekst(this.config['kontoPobran']),
         platnosc,
-        bezPodjazdu: this.config['zamawiajPodjazd'] !== true,
+        bezPodjazdu: !zPodjazdem,
+        podjazd: p.podjazd,
         ubezpieczenie: parseUbezpieczenie(this.config['ubezpieczenie']),
       })
     } catch (e) {
@@ -198,7 +257,29 @@ class BaseCourierZapisAdapter implements ChannelAdapter, ShipmentPreparer, Shipm
     const wrazliwe = [r.imieNazwisko, r.firma, r.ulica, r.kodPocztowy, r.miasto, r.telefon, r.email, n.nazwa, n.ulica, n.telefon, n.email, konto].filter((x): x is string => !!x)
     const w = await this.zapis.createOrder(payload, reference, wrazliwe)
     this.zapamietaj(w.przesylka)
+    if (!zPodjazdem) return w.wynik
+    if (w.wynik.kind === 'OK') return p.uwaga ? { ...w.wynik, info: p.uwaga } : w.wynik
+    // odmowa pól podjazdu: przesyłka nie powstała (walidacja = pewny brak), magazyn dostaje drogę obejścia
+    if (w.wynik.kind === 'TRWALY' && /pickup/i.test(w.wynik.message)) return { ...w.wynik, message: `${w.wynik.message}. ${BC_PODJAZD_ODMOWA}` }
     return w.wynik
+  }
+
+  /**
+   * Dzień i okno podjazdu: propozycja hosta z harmonogramu firmy (`req.podjazd`), godziny z ustawienia `oknoPodjazdu`,
+   * dzień sprawdzony z terminami Base Courier (`getPickupDateOptions`). Błąd odczytu terminów nie blokuje przesyłki:
+   * wtedy pierwszy dzień z harmonogramu bez sprawdzenia.
+   */
+  private async podjazd(req: ShipmentCreateRequest): Promise<{ podjazd: Podjazd | null; uwaga: string | null }> {
+    let terminy = null
+    try {
+      terminy = parseTerminyPodjazdu(await this.zapis!.terminyPodjazdu())
+    } catch {
+      terminy = null
+    }
+    // okno kuriera (DPD, pozostali): stały przedział przewoźnika, idzie w całości także dziś
+    const klucz = OKNA_PODJAZDU_KURIEROW.find((k) => k.carriers.includes(req.carrier))?.key
+    const oknoKuriera = klucz ? parseOknoPodjazdu(this.config[klucz]) : null
+    return wybierzPodjazd(req.podjazd ?? null, oknoKuriera ?? parseOknoPodjazdu(this.config['oknoPodjazdu']), terminy, this.now(), oknoKuriera !== null)
   }
 
   /** Etykieta PDF (Kompletor bierze z Base Courier tylko PDF: przy ZPL host zapisze PDF); rozmiar z `rozmiarEtykiety`, domyślnie A6. */

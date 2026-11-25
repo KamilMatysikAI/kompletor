@@ -85,6 +85,33 @@ describe('komponenty app/ui', () => {
     expect(pusta).toContain('<h2>Brak zamówień</h2>')
   })
 
+  it('NaglowekSortu i SortNaTelefonie (tabela pisana ręcznie): aria-sort tylko na aktywnej kolumnie, strzałka kierunku, link GET', () => {
+    const aktywna = html(h('table', null, h('thead', null, h('tr', null, h(ui.NaglowekSortu, { etykieta: 'Dostępne', href: '/produkty?kier=malejaco&sort=dostepne', kierunek: 'rosnaco', className: 'right' })))))
+    expect(aktywna).toContain('<th scope="col" class="right" aria-sort="ascending">')
+    expect(aktywna).toContain('href="/produkty?kier=malejaco&amp;sort=dostepne"')
+    expect(aktywna).toContain('▲')
+    const malejaco = html(h('table', null, h('thead', null, h('tr', null, h(ui.NaglowekSortu, { etykieta: 'Dostępne', href: '/produkty', kierunek: 'malejaco' })))))
+    expect(malejaco).toContain('aria-sort="descending"')
+    expect(malejaco).toContain('▼')
+    const nieaktywna = html(h('table', null, h('thead', null, h('tr', null, h(ui.NaglowekSortu, { etykieta: 'Oferty', href: '/produkty?sort=oferty' })))))
+    expect(nieaktywna).not.toContain('aria-sort')
+    expect(nieaktywna).toContain('↕')
+    expect(ui.ariaSortu({ klucz: 'a', kierunek: 'malejaco' }, 'a')).toBe('descending')
+    expect(ui.ariaSortu({ klucz: 'a', kierunek: 'malejaco' }, 'b')).toBeUndefined()
+    const tel = html(
+      h(ui.SortNaTelefonie, {
+        opcje: [
+          { klucz: 'produkt', etykieta: 'Produkt', href: '/produkty?sort=produkt&kier=malejaco' },
+          { klucz: 'dostepne', etykieta: 'Dostępne', href: '/produkty?kier=malejaco&sort=dostepne', kierunek: 'rosnaco' },
+        ],
+      }),
+    )
+    expect(tel).toContain('class="ui-sort-tel"')
+    expect(tel).toContain('aria-current="true"')
+    expect(tel).toContain(', rosnąco')
+    expect((tel.match(/class="btn"/g) ?? []).length).toBe(2)
+  })
+
   it('Potwierdzenie: fokus po otwarciu na „Tak”, przy wariancie niebezpiecznym na „Anuluj”', async () => {
     const zwykle = html(h(ui.Potwierdzenie, { otwarte: false, tytul: 'Wysłać?', tak: 'Tak, wyślij', onTak: () => {}, onNie: () => {} }))
     expect(zwykle).toContain('<button data-fokus="" type="button" class="btn primary">Tak, wyślij</button>')

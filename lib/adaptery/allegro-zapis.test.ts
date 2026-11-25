@@ -96,7 +96,8 @@ describe('strażnik ścieżek zapisu', () => {
     ['DELETE', `/order/checkout-forms/${U}/shipments`],
     ['PUT', `/order/checkout-forms/${U}/fulfillment?x=1`],
     ['PUT', `/order/checkout-forms/../fulfillment`],
-    ['POST', '/shipment-management/pickups/create-commands'],
+    ['POST', `/shipment-management/pickups/create-commands/${U}`],
+    ['GET', '/shipment-management/pickups/create-commands/nie-uuid'],
     ['POST', '/shipment-management/protocol'],
     ['GET', '/shipment-management/delivery-services'],
   ])('%s %s → odmowa przed wysłaniem', (method, path) => {

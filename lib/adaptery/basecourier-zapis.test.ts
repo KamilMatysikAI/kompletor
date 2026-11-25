@@ -7,7 +7,7 @@ import { parseUbezpieczenie, zawartoscMaReferencje, zawartoscPrzesylki } from '.
 import { ReadOnlyViolation } from '../zrodla/http'
 import { BASE_COURIER_URL_RE } from '../zrodla/basecourier'
 import { wyliczPrzesylke, ustawieniaPrzesylki } from '../wysylka/przesylka'
-import { BASE_COURIER_ZAPIS_DEFINITION, BASE_COURIER_ZAPIS_KEY } from './basecourier-zapis'
+import { BASE_COURIER_ZAPIS_DEFINITION, BASE_COURIER_ZAPIS_KEY, OKNA_PODJAZDU_KURIEROW } from './basecourier-zapis'
 import { defaultRegistry } from './domyslne'
 import { hasReferenceFinder, hasShipmentCanceller, hasShipmentCreator, type ChannelAdapter, type RecipientAddress, type ShipmentCreator, type ShipmentInput } from './kontrakt'
 import { PII_SENTINELS } from './suita-kontraktowa'
@@ -22,15 +22,18 @@ const WYMIARY = { defaultSideXCm: 30, defaultSideYCm: 20, defaultSideZCm: 10 }
 const paczka = (o: Partial<ShipmentInput> = {}, c: Record<string, unknown> = {}) => wyliczPrzesylke({ ...BAZA, ...o }, ustawieniaPrzesylki(c))
 
 type Ad = ChannelAdapter & ShipmentCreator
-function adapter(fetchImpl: ReturnType<typeof bcAtrapa>['fetchImpl'], config: Record<string, unknown> = {}): Ad {
+function adapter(fetchImpl: ReturnType<typeof bcAtrapa>['fetchImpl'], config: Record<string, unknown> = {}, now?: () => Date): Ad {
   return defaultRegistry().create(BASE_COURIER_ZAPIS_KEY, {
     integration,
     rawConfig: { baseUrl: BC_SANDBOX, nadawca: NADAWCA, kontoPobran: KONTO, defaultSideXCm: 30, defaultSideYCm: 20, defaultSideZCm: 10, ...config },
     rawSecrets: { BASE_COURIER_LOGIN: BC_LOGIN, BASE_COURIER_API_KEY: BC_KEY },
     fetch: fetchImpl,
+    ...(now ? { now } : {}),
   }) as Ad
 }
-const wlaczony = (a: ReturnType<typeof bcAtrapa>, c: Record<string, unknown> = {}) => adapter(a.fetchImpl, { zapisWlaczony: true, ...c })
+const wlaczony = (a: ReturnType<typeof bcAtrapa>, c: Record<string, unknown> = {}, now?: () => Date) => adapter(a.fetchImpl, { zapisWlaczony: true, ...c }, now)
+/** Treść żądania utworzenia (przy podjeździe pierwsze idzie odczytanie terminów). */
+const utworzenie = (a: ReturnType<typeof bcAtrapa>) => a.calls.find((c) => c.endpoint === 'createOrderV2.json')!.body
 const bezPii = (v: unknown) => {
   const t = JSON.stringify(v)
   for (const s of PII_SENTINELS) expect(t).not.toContain(s)
@@ -51,8 +54,8 @@ describe('manifest i rejestr', () => {
     expect(hasReferenceFinder(a)).toBe(false)
   })
 
-  it('klient zapisu: tylko siedem endpointów, wyłącznik w konstruktorze, adres tylko Base Courier', () => {
-    for (const e of ['createOrderV2.json', 'getWaybill.json', 'cancelOrder.json', 'getOrderDetails.json', 'getOrderDetailsByWaybillNo.json', 'getOrders.json', 'getWaybillTracking.json']) expect(() => assertBaseCourierZapis(e)).not.toThrow()
+  it('klient zapisu: tylko osiem endpointów, wyłącznik w konstruktorze, adres tylko Base Courier', () => {
+    for (const e of ['createOrderV2.json', 'getWaybill.json', 'cancelOrder.json', 'getOrderDetails.json', 'getOrderDetailsByWaybillNo.json', 'getOrders.json', 'getWaybillTracking.json', 'getPickupDateOptions.json']) expect(() => assertBaseCourierZapis(e)).not.toThrow()
     for (const e of ['downloadWaybillsMerged', 'getValuation.json', 'x']) expect(() => assertBaseCourierZapis(e)).toThrow(ReadOnlyViolation)
     expect(() => new BaseCourierZapis({ baseUrl: BC_SANDBOX, login: BC_LOGIN, apiKey: BC_KEY } as never)).toThrow(/wyłącznika/)
     expect(() => new BaseCourierZapis({ baseUrl: 'https://zly.example.invalid/api', login: BC_LOGIN, apiKey: BC_KEY, wylacznik: true })).toThrow(/adres API/)
@@ -99,16 +102,25 @@ describe('utworzenie przesyłki', () => {
     }
   })
 
-  it('Kurier DPD (wymiary firmy) i salon Empik (punkt); płatność odroczona i podjazd z ustawień', async () => {
+  it('Kurier DPD (wymiary firmy); płatność odroczona i podjazd z ustawień', async () => {
     const a = bcAtrapa()
     const ad = wlaczony(a, { platnosc: 'pay_later', zamawiajPodjazd: true })
     expect(await ad.createShipment({ carrier: 'DPD', parcel: paczka({ carrier: 'DPD', gabaryt: 'DPD', pickupPoint: null }, WYMIARY), recipient: ODBIORCA }, 'ref-d')).toMatchObject({ kind: 'OK' })
-    expect(a.calls[0]!.body['CourierSearch']).toMatchObject({ courier_code: 'dpd', side_x: 30, side_y: 20, side_z: 10, no_pickup: false, origin: 'kompletor' })
+    expect(utworzenie(a)['CourierSearch']).toMatchObject({ courier_code: 'dpd', side_x: 30, side_y: 20, side_z: 10, no_pickup: false, origin: 'kompletor' })
     // kurier DPD do drzwi: `taker_point` pusty (pole wymagane w dokumentacji), rachunek firmy także bez pobrania
-    expect((a.calls[0]!.body['Cart'] as { Order: Record<string, unknown> }[])[0]!.Order).toMatchObject({ taker_point: '', account: '11111111111111111111111111' })
-    expect(a.calls[0]!.body['CartOrder']).toEqual({ payment: 'pay_later' })
-    expect(await ad.createShipment({ carrier: 'DPD_EMPIK', parcel: paczka({ carrier: 'DPD_EMPIK', gabaryt: 'DPD', pickupPoint: 'PL12345' }, WYMIARY), recipient: ODBIORCA }, 'ref-e')).toMatchObject({ kind: 'OK' })
-    expect((a.calls[1]!.body['Cart'] as { Order: Record<string, unknown> }[])[0]!.Order).toMatchObject({ taker_point: 'PL12345' })
+    expect((utworzenie(a)['Cart'] as { Order: Record<string, unknown> }[])[0]!.Order).toMatchObject({ taker_point: '', account: '11111111111111111111111111' })
+    expect(utworzenie(a)['CartOrder']).toEqual({ payment: 'pay_later' })
+  })
+
+  // Base Courier sprawdza punkt na swojej umowie DPD i salonu Empik nie zna (20.11.2026, PL49077: „Punkt
+  // odbioru DPD nie istnieje”); BL nadaje salony modułem DPD z konta „DPD Salony Empik”. Odmowa przed żądaniem, nie NIEJEDNOZNACZNA.
+  it('salon Empik: odmowa TRWALY z czytelnym komunikatem, bez żądania do Base Courier', async () => {
+    const a = bcAtrapa()
+    const ad = wlaczony(a)
+    const w = await ad.createShipment({ carrier: 'DPD_EMPIK', parcel: paczka({ carrier: 'DPD_EMPIK', gabaryt: 'DPD', pickupPoint: 'PL12345' }, WYMIARY), recipient: ODBIORCA }, 'ref-e')
+    expect(w).toMatchObject({ kind: 'TRWALY', reference: 'ref-e' })
+    expect('message' in w ? w.message : '').toMatch(/Base Courier nie nadaje paczek do salonów Empik/)
+    expect(a.calls).toEqual([])
   })
 
   it('pobranie: kwota z zamówienia jako uptake, bez ubezpieczenia domyślnie; rachunek zwrotu z ustawień; bez rachunku = odmowa bez żądania', async () => {
@@ -152,6 +164,26 @@ describe('utworzenie przesyłki', () => {
     expect(await ad.createShipment({ carrier: 'DPD', parcel: robocze, recipient: ODBIORCA }, 'r')).toMatchObject({ kind: 'TRWALY', message: expect.stringContaining('waga_domyslna') })
     expect(await ad.createShipment({ carrier: 'DPD', parcel: robocze, recipient: ODBIORCA, potwierdzoneOstrzezenia: ['waga_domyslna', 'wymiary_domyslne'] }, 'r')).toMatchObject({ kind: 'OK' })
     expect(a.ile('createOrderV2.json')).toBe(1)
+  })
+
+  // punkt odbioru (paczkomat, punkt DPD) nie wymaga adresu domowego; kurier dalej wymaga ulicy i numeru
+  it('punkt odbioru bez numeru domu albo bez ulicy: żądanie idzie (linia adresu bez zmian, numer pusty); kurier bez numeru = odmowa bez żądania', async () => {
+    const a = bcAtrapa()
+    const ad = wlaczony(a)
+    const niejednoznaczny = { ...ODBIORCA, ulica: 'Testowa 5-7', numerDomu: null }
+    expect(await ad.createShipment({ carrier: 'PACZKOMATY', parcel: paczka(), recipient: niejednoznaczny }, 'p1')).toMatchObject({ kind: 'OK' })
+    expect((a.calls[0]!.body['Cart'] as { Order: Record<string, unknown> }[])[0]!.Order).toMatchObject({ taker_point: 'POZ01A', taker_street: 'Testowa 5-7', taker_house_no: '' })
+    expect(await ad.createShipment({ carrier: 'PACZKOMATY', parcel: paczka(), recipient: { ...ODBIORCA, ulica: null, numerDomu: null } }, 'p2')).toMatchObject({ kind: 'OK' })
+    const punktDpd = paczka({ carrier: 'DPD', gabaryt: 'DPD', pickupPoint: 'PL12345' }, WYMIARY)
+    expect(await ad.createShipment({ carrier: 'DPD', parcel: punktDpd, recipient: niejednoznaczny, potwierdzoneOstrzezenia: punktDpd.problems.map((p) => p.kod) }, 'p3')).toMatchObject({ kind: 'OK' })
+    expect(a.ile('createOrderV2.json')).toBe(3)
+    // kurier do drzwi: numer domu i ulica wymagane jak dotąd
+    const kurier = paczka({ carrier: 'DPD', gabaryt: 'DPD', pickupPoint: null }, WYMIARY)
+    expect(await ad.createShipment({ carrier: 'DPD', parcel: kurier, recipient: niejednoznaczny }, 'k1')).toMatchObject({ kind: 'TRWALY', message: 'brak danych odbiorcy: numerDomu' })
+    expect(await ad.createShipment({ carrier: 'DPD', parcel: kurier, recipient: { ...ODBIORCA, ulica: null, numerDomu: null } }, 'k2')).toMatchObject({ kind: 'TRWALY', message: 'brak danych odbiorcy: ulica, numerDomu' })
+    // punkt nie zwalnia z kodu pocztowego i miasta (pola wymagane przez API Base Courier)
+    expect(await ad.createShipment({ carrier: 'PACZKOMATY', parcel: paczka(), recipient: { ...niejednoznaczny, kodPocztowy: null } }, 'p4')).toMatchObject({ kind: 'TRWALY', message: 'brak danych odbiorcy: kodPocztowy' })
+    expect(a.ile('createOrderV2.json')).toBe(3)
   })
 
   it('odrzucenie z walidacją: TRWALY z nazwami pól i komunikatem bez danych odbiorcy', async () => {
@@ -487,5 +519,117 @@ describe('stanBaseCourier (śledzenie przesyłki)', () => {
     expect(opisStatusu('Odebrał ktos@example.invalid')).toBeNull()
     expect(opisStatusu('Telefon 600700800')).toBeNull()
     expect(opisStatusu(null)).toBeNull()
+  })
+})
+
+describe('podjazd kuriera', () => {
+  // pt. 20.11.2026 15:00 (Warszawa) = 14:00 UTC
+  const PT = () => new Date('2026-11-20T14:00:00Z')
+  const PROP = { dni: ['2026-11-23', '2026-11-24'], odMin: 13 * 60, doMin: 15 * 60 }
+  const dpd = () => paczka({ carrier: 'DPD', gabaryt: 'DPD', pickupPoint: null }, WYMIARY)
+  const order = (a: ReturnType<typeof bcAtrapa>) => (utworzenie(a)['Cart'] as { Order: Record<string, unknown> }[])[0]!.Order
+
+  it('wyłączony (domyślnie): bez podjazdu, bez pól pickup_* i bez odczytu terminów, jak dotąd', async () => {
+    const a = bcAtrapa({ terminyPodjazdu: ['2026-11-23'] })
+    expect(await wlaczony(a, {}, PT).createShipment({ carrier: 'DPD', parcel: dpd(), recipient: ODBIORCA, podjazd: PROP }, 'r0')).toMatchObject({ kind: 'OK' })
+    expect(a.calls.map((c) => c.endpoint)).toEqual(['createOrderV2.json'])
+    expect(utworzenie(a)['CourierSearch']).toMatchObject({ no_pickup: true })
+    expect(Object.keys(order(a)).filter((k) => k.startsWith('pickup'))).toEqual([])
+  })
+
+  it('włączony: dzień z harmonogramu potwierdzony terminami Base Courier, okno godzin w polach pickup_*', async () => {
+    const a = bcAtrapa({ terminyPodjazdu: ['2026-11-23', '2026-11-24'] })
+    const w = await wlaczony(a, { zamawiajPodjazd: true }, PT).createShipment({ carrier: 'DPD', parcel: dpd(), recipient: ODBIORCA, podjazd: PROP }, 'r1')
+    expect(w).toEqual({ kind: 'OK', reference: 'r1', externalRef: '9100001' })
+    expect(a.calls.map((c) => c.endpoint)).toEqual(['getPickupDateOptions.json', 'createOrderV2.json'])
+    expect(utworzenie(a)['CourierSearch']).toMatchObject({ no_pickup: false })
+    expect(order(a)).toMatchObject({ pickup_date: '2026-11-23', pickup_ready_time: '13', pickup_ready_time_minute: '00', pickup_close_time: '15', pickup_close_time_minute: '00' })
+    expect(order(a)).not.toHaveProperty('custom_pickup')
+  })
+
+  it('paczkomat InPost też dostaje podjazd (ustawienie konta dotyczy wszystkich przesyłek konta)', async () => {
+    const a = bcAtrapa({ terminyPodjazdu: ['2026-11-23'] })
+    await wlaczony(a, { zamawiajPodjazd: true }, PT).createShipment({ carrier: 'PACZKOMATY', parcel: paczka(), recipient: ODBIORCA, podjazd: PROP }, 'r2')
+    expect(utworzenie(a)['CourierSearch']).toMatchObject({ courier_code: 'paczkomaty', no_pickup: false })
+    expect(order(a)).toMatchObject({ pickup_date: '2026-11-23', taker_point: 'POZ01A' })
+  })
+
+  it('okno z ustawienia konta zastępuje godziny; Base Courier nie przyjmuje pierwszego dnia = drugi dzień harmonogramu', async () => {
+    const a = bcAtrapa({ terminyPodjazdu: ['2026-11-24'] })
+    await wlaczony(a, { zamawiajPodjazd: true, oknoPodjazdu: '10:30-16:00' }, PT).createShipment({ carrier: 'DPD', parcel: dpd(), recipient: ODBIORCA, podjazd: PROP }, 'r3')
+    expect(order(a)).toMatchObject({ pickup_date: '2026-11-24', pickup_ready_time: '10', pickup_ready_time_minute: '30', pickup_close_time: '16', pickup_close_time_minute: '00' })
+  })
+
+  it('okno podjazdu DPD: tylko dla DPD, cały przedział także dziś; Paczkomaty zostają przy oknie konta', async () => {
+    const dzis = () => new Date('2026-11-23T08:55:00Z') // 09:55 w Warszawie
+    const cfg = { zamawiajPodjazd: true, oknoPodjazduDpd: '09:00-17:00' }
+    const a = bcAtrapa({ terminyPodjazdu: ['2026-11-23', '2026-11-24'] })
+    await wlaczony(a, cfg, dzis).createShipment({ carrier: 'DPD', parcel: dpd(), recipient: ODBIORCA, podjazd: PROP }, 'r3a')
+    expect(order(a)).toMatchObject({ pickup_date: '2026-11-23', pickup_ready_time: '09', pickup_ready_time_minute: '00', pickup_close_time: '17', pickup_close_time_minute: '00' })
+    const b = bcAtrapa({ terminyPodjazdu: ['2026-11-23', '2026-11-24'] })
+    await wlaczony(b, cfg, dzis).createShipment({ carrier: 'PACZKOMATY', parcel: paczka(), recipient: ODBIORCA, podjazd: PROP }, 'r3b')
+    expect(order(b)).toMatchObject({ pickup_date: '2026-11-23', pickup_ready_time: '13', pickup_ready_time_minute: '00', pickup_close_time: '15', pickup_close_time_minute: '00' })
+    const okno = BASE_COURIER_ZAPIS_DEFINITION.manifest.config.find((f) => f.key === 'oknoPodjazduDpd')!
+    expect(okno.pattern!.test('09:00-17:00')).toBe(true)
+    expect(okno.pattern!.test('')).toBe(true)
+  })
+
+  it('okno podjazdu per kurier: każdy kurier ma swoje pole, okno idzie w całości także dziś, inni zostają przy oknie konta', async () => {
+    const dzis = () => new Date('2026-11-23T08:55:00Z') // 09:55 w Warszawie
+    const cfg = { zamawiajPodjazd: true, oknoPodjazdu: '10:00-16:00', oknoPodjazduPaczkomaty: '08:00-15:00' }
+    const a = bcAtrapa({ terminyPodjazdu: ['2026-11-23', '2026-11-24'] })
+    await wlaczony(a, cfg, dzis).createShipment({ carrier: 'PACZKOMATY', parcel: paczka(), recipient: ODBIORCA, podjazd: PROP }, 'r3c')
+    expect(order(a)).toMatchObject({ pickup_date: '2026-11-23', pickup_ready_time: '08', pickup_ready_time_minute: '00', pickup_close_time: '15', pickup_close_time_minute: '00' })
+    // DPD bez własnego pola: okno konta, dziś przycięte do bieżącego kwadransa
+    const b = bcAtrapa({ terminyPodjazdu: ['2026-11-23', '2026-11-24'] })
+    await wlaczony(b, cfg, dzis).createShipment({ carrier: 'DPD', parcel: dpd(), recipient: ODBIORCA, podjazd: PROP }, 'r3d')
+    expect(order(b)).toMatchObject({ pickup_date: '2026-11-23', pickup_ready_time: '10', pickup_ready_time_minute: '00', pickup_close_time: '16', pickup_close_time_minute: '00' })
+    const pola = BASE_COURIER_ZAPIS_DEFINITION.manifest.config.filter((f) => f.key.startsWith('oknoPodjazdu')).map((f) => f.key)
+    expect(pola).toEqual(['oknoPodjazdu', ...OKNA_PODJAZDU_KURIEROW.map((k) => k.key)])
+    expect(new Set(OKNA_PODJAZDU_KURIEROW.flatMap((k) => k.carriers)).size).toBe(OKNA_PODJAZDU_KURIEROW.flatMap((k) => k.carriers).length)
+    for (const k of OKNA_PODJAZDU_KURIEROW) expect(BASE_COURIER_ZAPIS_DEFINITION.manifest.config.find((f) => f.key === k.key)!.pattern!.test('9:00-17:00')).toBe(true)
+  })
+
+  it('terminy nieosiągalne (błąd sieci): przesyłka powstaje z pierwszym dniem harmonogramu', async () => {
+    const a = bcAtrapa()
+    a.awarie['getPickupDateOptions.json'] = ['network-error']
+    expect(await wlaczony(a, { zamawiajPodjazd: true }, PT).createShipment({ carrier: 'DPD', parcel: dpd(), recipient: ODBIORCA, podjazd: PROP }, 'r4')).toMatchObject({ kind: 'OK' })
+    expect(order(a)).toMatchObject({ pickup_date: '2026-11-23' })
+    expect(a.ile('createOrderV2.json')).toBe(1)
+  })
+
+  it('bez harmonogramu firmy: najbliższy termin i godziny domyślne Base Courier', async () => {
+    const a = bcAtrapa({ terminyPodjazdu: ['2026-11-20', '2026-11-23'] })
+    await wlaczony(a, { zamawiajPodjazd: true }, PT).createShipment({ carrier: 'DPD', parcel: dpd(), recipient: ODBIORCA, podjazd: null }, 'r5')
+    expect(order(a)).toMatchObject({ pickup_date: '2026-11-20', pickup_ready_time: '15', pickup_ready_time_minute: '00', pickup_close_time: '16', pickup_close_time_minute: '00' })
+  })
+
+  it('ani harmonogramu, ani terminów: przesyłka powstaje z podjazdem bez daty, magazyn dostaje uwagę', async () => {
+    const a = bcAtrapa()
+    const w = await wlaczony(a, { zamawiajPodjazd: true }, PT).createShipment({ carrier: 'DPD', parcel: dpd(), recipient: ODBIORCA }, 'r6')
+    expect(w).toMatchObject({ kind: 'OK', externalRef: '9100001' })
+    expect('info' in w ? w.info : '').toMatch(/bez daty podjazdu/)
+    expect(utworzenie(a)['CourierSearch']).toMatchObject({ no_pickup: false })
+    expect(order(a)).not.toHaveProperty('pickup_date')
+  })
+
+  it('Base Courier odrzuca termin podjazdu: TRWALY z drogą obejścia, jedno utworzenie, żadnego drugiego', async () => {
+    const a = bcAtrapa({ terminyPodjazdu: ['2026-11-23'], odrzucPodjazdNa: '2026-11-23' })
+    const w = await wlaczony(a, { zamawiajPodjazd: true }, PT).createShipment({ carrier: 'DPD', parcel: dpd(), recipient: ODBIORCA, podjazd: PROP }, 'r7')
+    expect(w).toMatchObject({ kind: 'TRWALY', reference: 'r7' })
+    expect('message' in w ? w.message : '').toMatch(/pickup_date.*nie przyjął terminu podjazdu.*Zamawiaj podjazd kuriera/)
+    expect(a.ile('createOrderV2.json')).toBe(1)
+    expect(a.zamowienia).toHaveLength(0)
+    bezPii(w)
+  })
+
+  it('manifest: przełącznik i okno w karcie konta, domyślnie wyłączone', () => {
+    const m = BASE_COURIER_ZAPIS_DEFINITION.manifest
+    expect(m.config.find((f) => f.key === 'zamawiajPodjazd')).toMatchObject({ type: 'boolean', required: false })
+    expect(m.config.find((f) => f.key === 'zamawiajPodjazd')!.description).toMatch(/^Zamawiaj podjazd kuriera/)
+    const okno = m.config.find((f) => f.key === 'oknoPodjazdu')!
+    expect(okno.pattern!.test('10:00-15:00')).toBe(true)
+    expect(okno.pattern!.test('')).toBe(true)
+    expect(okno.pattern!.test('rano')).toBe(false)
   })
 })

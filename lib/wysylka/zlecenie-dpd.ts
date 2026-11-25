@@ -112,6 +112,11 @@ export function odbiorcaDpd(r: Readonly<RecipientAddress>, punkt: boolean): { od
 
 const kodPocztowy = (v: string) => v.replace(/[^0-9A-Za-z]/g, '')
 
+/** DPDServices przyjmuje wagę najwyżej z dwoma miejscami po przecinku (schemat `Parcel.weight`: „Accuracy to two
+ * decimal places”); trzecie miejsce kończy się HTTP 400 (`packages[0].parcels[0].weight`, 0,144 kg).
+ * W górę do 10 g, bo paczka nie może być zgłoszona jako lżejsza, niż jest. */
+export const wagaDoDpd = (kg: number): number => Math.ceil(Math.round(kg * 1000) / 10) / 100
+
 export function buildPackagesPayload(parcel: PreparedParcel, recipient: OdbiorcaDpd, nadawca: NadawcaDpd, ustawienia: UstawieniaZleceniaDpd): Record<string, unknown> {
   const potwierdzone = ustawienia.potwierdzoneOstrzezenia ?? []
   const bledy = parcel.problems.filter((p) => p.poziom === 'BLAD' || !potwierdzone.includes(p.kod))
@@ -145,7 +150,7 @@ export function buildPackagesPayload(parcel: PreparedParcel, recipient: Odbiorca
       phone: nadawca.phone,
       ...(nadawca.email ? { email: nadawca.email } : {}),
     },
-    parcels: [{ weight: parcel.weightKg, sizeX: parcel.sideXCm, sizeY: parcel.sideYCm, sizeZ: parcel.sideZCm }],
+    parcels: [{ weight: wagaDoDpd(parcel.weightKg), sizeX: parcel.sideXCm, sizeY: parcel.sideYCm, sizeZ: parcel.sideZCm }],
     ...(services.length ? { services } : {}),
   }
   if (punkt) {

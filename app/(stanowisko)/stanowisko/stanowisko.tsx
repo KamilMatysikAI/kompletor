@@ -11,8 +11,9 @@ import type { UstawieniaStanowiska } from '@/lib/stanowisko/ustawienia'
 import { dolozDoPaczki, otworzZListy, podgladSpakowanego, skanujKarte, usunBrak, zapiszBrak, zapiszWynik, type WynikAkcji, type ZamowienieEkranu } from './akcje'
 import { StanDrukarek } from '@/app/(panel)/_komponenty/stan-drukarek'
 import { NadaniePrzesylki, zapamietaneStanowisko } from '@/app/(panel)/_komponenty/nadanie-przesylki'
+import { ogloszPrzeliczeniePrzesylki } from '@/app/(panel)/_komponenty/przeliczenie-przesylki-zdarzenie'
 import { useStanowiskaDruku } from '@/app/(panel)/_komponenty/druk'
-import { stanNadania, utworzPrzesylkeAkcja } from '@/app/(panel)/zamowienia/[id]/akcje-przesylka'
+import { etykietaOdbioruPoSpakowaniu, stanNadania, utworzPrzesylkeAkcja } from '@/app/(panel)/zamowienia/[id]/akcje-przesylka'
 import { PrzyciskiRegulStanowiska } from './przyciski-regul'
 
 type Ton = 'ok' | 'info' | 'blad' | 'czerwona'
@@ -622,12 +623,26 @@ export function Stanowisko({
     void (async () => {
       try {
         const stan = await stanNadania(orderId)
-        if (!stan || stan.nieDotyczy) return
+        if (!stan) return
+        if (stan.nieDotyczy) {
+          // odbiór osobisty — etykieta odbioru do naklejenia na paczkę, tym samym torem druku
+          const w = await etykietaOdbioruPoSpakowaniu(orderId, zapamietaneStanowisko(stanowiskaDruku))
+          if (!w) return
+          if (w.blad || !w.druk) ustawEtykiete(orderId, numer, 'blad', `etykieta odbioru nie wyszła: ${w.blad ?? 'brak zlecenia druku'}`)
+          else ustawEtykiete(orderId, numer, 'ok', `etykieta odbioru wysłana do druku (${w.druk.stanowisko})`)
+          return
+        }
         if (stan.przesylka && stan.przesylka.stan !== 'BLAD' && stan.przesylka.stan !== 'ANULOWANA') return
         if (stan.powod) return blad(stan.powod)
         ustawEtykiete(orderId, numer, 'trwa', 'tworzę przesyłkę i etykietę…')
         const w = await utworzPrzesylkeAkcja(orderId, gabaryt, ['wymiary_domyslne', 'waga_domyslna'], zapamietaneStanowisko(stanowiskaDruku))
-        if (w.blad) blad(w.blad)
+        // inne ostrzeżenia czekają na potwierdzenie, to nie jest błąd nadania. Blok przesyłki
+        // w oknie (gdy jest otwarty) dostaje świeże teksty z odmowy, a pasek mówi, co zrobić, także gdy okna już nie ma
+        if (w.doPotwierdzenia?.length) {
+          ogloszPrzeliczeniePrzesylki({ orderId, doPotwierdzenia: w.doPotwierdzenia })
+          ustawEtykiete(orderId, numer, 'blad', 'przesyłka czeka na potwierdzenie (nic nie nadano): w zamówieniu zaznacz pola w „Sprawdź przed nadaniem” i kliknij „Potwierdzam i tworzę przesyłkę”')
+        }
+        else if (w.blad) blad(w.blad)
         else if (!w.druk) ustawEtykiete(orderId, numer, 'blad', `${w.info ?? 'przesyłka utworzona'} Etykieta nie poszła do druku.`)
         else ustawEtykiete(orderId, numer, 'ok', `etykieta wysłana do druku (${w.druk.stanowisko})`)
       } catch {
@@ -889,7 +904,7 @@ export function Stanowisko({
                   />
                   {/* po „Spakowane” przesyłka z gabarytem z pakowania i druk etykiety na tym stanowisku; konto w cieniu widzi przycisk nieaktywny z powodem */}
                   {/* akcja przesyłki zatrzymuje odliczanie powrotu do skanu, okno nie zamknie się w trakcie */}
-                  {okno.spakowane && <NadaniePrzesylki orderId={okno.z.id} gabarytZPakowania={okno.gabaryt ?? null} onStart={() => setOdliczanie(null)} />}
+                  {okno.spakowane && <NadaniePrzesylki orderId={okno.z.id} gabarytZPakowania={okno.gabaryt ?? null} onStart={() => setOdliczanie(null)} podzialAdresu />}
                   {/* przyciski automatycznych akcji firmy (Ustawienia → Automatyczne akcje) */}
                   {okno.spakowane && <PrzyciskiRegulStanowiska orderId={okno.z.id} onStart={() => setOdliczanie(null)} />}
                 </>
@@ -899,7 +914,7 @@ export function Stanowisko({
                 <>
                   <Pozycje okno={okno} setOkno={setOkno} zmien={zmien} wszystko={wszystkoWKoszyku} jednakJest={jednakJest} jednakWPaczce={jednakWPaczce} />
                   {/* 19.11.2026: podgląd spakowanego zamówienia: pod pozycjami przesyłka i ponowny druk etykiety */}
-                  {okno.podglad && <NadaniePrzesylki orderId={okno.z.id} gabarytZPakowania={null} />}
+                  {okno.podglad && <NadaniePrzesylki orderId={okno.z.id} gabarytZPakowania={null} podzialAdresu />}
                 </>
               )}
             </section>

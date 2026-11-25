@@ -4,7 +4,7 @@
 // „Zapis do kanału” (bramki hosta zapisu, lib/kanaly/zapis-host.ts, bez zmian). Każda zmiana w AuditLog i w
 // `goBy`/`goAt`/`goRef` konta. Jedna funkcja warunków dla ekranu i dla akcji (ekran nie obiecuje tego, czego akcja
 // odmówi). (onboarding) używa tej samej funkcji; twarda blokada instancji: `blokadaInstancji`.
-import type { ChannelMode, Prisma, PrismaClient } from '@prisma/client'
+import type { Channel, ChannelMode, Prisma, PrismaClient } from '@prisma/client'
 import { type AdapterManifest, WYSTAWIANIE_OFERT_KLUCZ, wystawianieOfertWlaczone } from '../adaptery/kontrakt'
 import type { AdapterRegistry } from '../adaptery/rejestr'
 import { trybPracyInstancji } from '../praca/wlacznik'
@@ -52,7 +52,17 @@ export interface StanDoTrybu {
   firmaZBl: boolean
   /** warunki dla trybu pracy bez stanów (stany ofert zostają w dotychczasowym systemie). */
   bezStanow?: boolean
+  /** konto, do którego zamówienia przychodzą wyłącznie przez API Kompletora (`kontoTylkoApi`). */
+  tylkoApi?: boolean
 }
+
+/**
+ * kanały bez połączenia do sprawdzenia: zamówienia wchodzą tylko przez API Kompletora (POST /api/v1/zamowienia,
+ * klucz firmy z zakresem `zamowienia:zapis`), Kompletor niczego z nich nie czyta i do nich nie pisze. Test połączenia
+ * nie ma czego sprawdzić (adapter `easytools.v1` nie jest w rejestrze), więc nie może blokować trybu pracy.
+ */
+const KANALY_TYLKO_API: readonly Channel[] = ['EASYTOOLS']
+export const kontoTylkoApi = (channel: Channel): boolean => KANALY_TYLKO_API.includes(channel)
 
 type Env = Record<string, string | undefined>
 
@@ -82,6 +92,13 @@ export function warunkiPracy(s: StanDoTrybu, env: Env): Warunek[] {
   if (inst) out.push({ tekst: inst, blokuje: true })
   // teksty bez „Najpierw” w środku: ekran nie dokleja prefiksu, blokujące odróżnia kolor i znacznik (przegląd, UX)
   if (!s.active) out.push({ tekst: 'Włącz konto (jest wyłączone).', blokuje: true, gdzie: '#aktywne' })
+  if (s.tylkoApi) {
+    out.push({
+      tekst: 'Zamówienia tego konta przychodzą przez API Kompletora (klucz z zakresem „zamowienia:zapis”: Ustawienia → Integracje i agenci AI → Klucze API). Kompletor prowadzi je jak zamówienia ręczne: pakowanie, wysyłka i faktury; do sprzedawcy nic nie wysyła.',
+      blokuje: false,
+    })
+    return out
+  }
   if (s.testOk !== true) out.push({ tekst: s.testOk === false ? 'Ostatni test połączenia nie przeszedł: popraw klucze i sprawdź połączenie.' : 'Sprawdź połączenie.', blokuje: true, gdzie: '#polaczenie' })
   const m = s.manifest
   const zapis = !!m && !m.readOnly && zapisWlaczony(s.config)
@@ -274,7 +291,7 @@ export async function zmienTrybKonta(
       db.channelOffer.count({ where: { channel: ref.channel, channelAccountId: ref.channelAccountId, active: true } }),
     ])
     const config = row.config && typeof row.config === 'object' && !Array.isArray(row.config) ? (row.config as Record<string, unknown>) : {}
-    const w = warunkiPracy({ active: row.active, testOk: st?.testOk ?? null, offers, manifest: opts.registry.get(row.adapterKey)?.manifest ?? null, config, firmaZBl: opts.firmaZBl, bezStanow: tryb === 'BEZ_STANOW' }, opts.env)
+    const w = warunkiPracy({ active: row.active, testOk: st?.testOk ?? null, offers, manifest: opts.registry.get(row.adapterKey)?.manifest ?? null, config, firmaZBl: opts.firmaZBl, bezStanow: tryb === 'BEZ_STANOW', tylkoApi: kontoTylkoApi(ref.channel) }, opts.env)
     const stop = w.filter((x) => x.blokuje)
     if (stop.length) throw new KontoError(stop.map((x) => x.tekst).join(' '))
   }

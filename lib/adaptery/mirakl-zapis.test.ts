@@ -4,8 +4,10 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import { MIRAKL_HOST, MIRAKL_KEY, MiraklAtrapa } from '../../tests/mirakl-atrapa'
 import { DEFAULT_CHANNEL_ADAPTER } from '../adaptery'
 import { ReadOnlyViolation } from '../zrodla/http'
-import { MIRAKL_MIN_INTERVAL_MS, miraklAccountThrottle, MiraklWriter } from '../zrodla/mirakl'
-import { mapaStatusow, wynikiPerOferta } from '../kanaly/zapis-host'
+import { komunikatBleduMirakl, MIRAKL_MIN_INTERVAL_MS, miraklAccountThrottle, MiraklWriter } from '../zrodla/mirakl'
+import { kanonicznyStatusKanalu, mapaStatusow, wynikiPerOferta } from '../kanaly/zapis-host'
+import { ALLEGRO_ZAPIS_MANIFEST } from './allegro-zapis'
+import { WOO_MANIFEST } from './woo'
 import { Throttle } from '../zrodla/http'
 import { defaultRegistry } from './domyslne'
 import {
@@ -25,7 +27,7 @@ import {
   type TrackingWriter,
 } from './kontrakt'
 import { opisZdarzenia } from '../karta/historia'
-import { carrierCodesOf, CZESCIOWA_AKCEPTACJA_WYLACZONA, kodyZRaportuBledow, MIRAKL_EMPIK_MANIFEST, MIRAKL_EMPIK_ZAPIS_MANIFEST, SHOP_SKU_TTL_MS, wyczyscPamiecOfertEmpiku, ZAPIS_WYLACZONY } from './mirakl-empik'
+import { carrierCodesOf, CZESCIOWA_AKCEPTACJA_WYLACZONA, EMPIK_KODY_PRZEWOZNIKOW,kodyZRaportuBledow, MIRAKL_EMPIK_MANIFEST, MIRAKL_EMPIK_ZAPIS_MANIFEST, SHOP_SKU_TTL_MS, wyczyscPamiecOfertEmpiku, ZAPIS_WYLACZONY } from './mirakl-empik'
 import { manifestProblems, validateAccountConfig } from './rejestr'
 import { type ContractHarness, runAdapterContract, type SeedOrder } from './suita-kontraktowa'
 import { executeWrite } from './zapis'
@@ -441,20 +443,53 @@ describe('Empik: pamięć ofert przed zapisem stanów (pkt 3)', () => {
 // ─── OR23 numer nadania, OR24 wysłane ────────────────────────────────────────
 
 describe('Empik OR23 i OR24: numer nadania i wysłane', () => {
-  it('przewoźnik z kodem z konfiguracji: carrier_code; bez kodu: nazwa i adres śledzenia', async () => {
-    const { at, adapter } = make({ zapisWlaczony: true, kodyPrzewoznikow: '{"DPD":"dpd","PACZKOMATY":"x y"}' })
+  it('przewoźnik z kodem z konfiguracji: carrier_code; bez kodu (także domyślnego): nazwa i adres śledzenia', async () => {
+    const { at, adapter } = make({ zapisWlaczony: true, kodyPrzewoznikow: '{"DPD":"dpd-wlasny","PACZKOMATY":"x y"}' })
     at.putOrder({ id: 'E-2', state: 'SHIPPING', lines: [{ id: 'E-2-1', sku: 'P1', qty: 1 }] })
     expect(await adapter.setTracking('E-2', { carrier: 'DPD', number: '0000123456789U' }, 't1')).toEqual({ kind: 'OK', reference: 't1' })
-    expect(at.tracking.get('E-2')).toEqual({ carrier_code: 'dpd', tracking_number: '0000123456789U' })
-    expect(await adapter.setTracking('E-2', { carrier: 'PACZKOMATY', number: '6200001', url: 'https://inpost.example/s/6200001' }, 't2')).toEqual({ kind: 'OK', reference: 't2' })
-    expect(at.tracking.get('E-2')).toEqual({ carrier_name: 'InPost Paczkomaty', tracking_number: '6200001', carrier_url: 'https://inpost.example/s/6200001' })
+    expect(at.tracking.get('E-2')).toEqual({ carrier_code: 'dpd-wlasny', tracking_number: '0000123456789U' })
+    expect(await adapter.setTracking('E-2', { carrier: 'OSOBISTY', number: '6200001', url: 'https://sklep.example/s/6200001' }, 't2')).toEqual({ kind: 'OK', reference: 't2' })
+    expect(at.tracking.get('E-2')).toEqual({ carrier_name: 'Odbiór osobisty', tracking_number: '6200001', carrier_url: 'https://sklep.example/s/6200001' })
+  })
+
+  it('bez kodów w koncie przewoźnicy z listy Empiku (SH21) idą z kodem, nie z nazwą; zły kod konta = domyślny', async () => {
+    const { at, adapter } = make({ zapisWlaczony: true, kodyPrzewoznikow: '{"PACZKOMATY":"x y"}' })
+    at.putOrder({ id: 'E-6', state: 'SHIPPING', lines: [{ id: 'E-6-1', sku: 'P1', qty: 1 }] })
+    const kod = async (carrier: string, number: string) => {
+      expect(await adapter.setTracking('E-6', { carrier, number, url: 'https://kurier.example/x' }, `t-${carrier}`)).toEqual({ kind: 'OK', reference: `t-${carrier}` })
+      return at.tracking.get('E-6')
+    }
+    // zamówienie 10000000000001-A: paczkomat przez Base Courier; 10000000000002-A: salon Empik, DPD z literą na końcu
+    expect(await kod('PACZKOMATY', '620000123456789012345678')).toEqual({ carrier_code: 'paczkomatyinpost', tracking_number: '620000123456789012345678' })
+    expect(await kod('DPD_EMPIK', '1000123456789U')).toEqual({ carrier_code: 'dpd', tracking_number: '1000123456789U' })
+    expect(await kod('DPD', '1000123456789U')).toEqual({ carrier_code: 'dpd', tracking_number: '1000123456789U' })
+    expect(await kod('INPOST_KURIER', '520000123')).toEqual({ carrier_code: 'inpostpaczkakurierska', tracking_number: '520000123' })
+    expect(await kod('GLS', 'GLS12345')).toEqual({ carrier_code: 'gls', tracking_number: 'GLS12345' })
+    expect(await kod('ORLEN_PACZKA', '9000123')).toEqual({ carrier_code: 'ORLEN', tracking_number: '9000123' })
+    expect(await kod('POCZTA_POLSKA', 'PX1234567')).toEqual({ carrier_code: 'pocztex', tracking_number: 'PX1234567' })
+    expect(EMPIK_KODY_PRZEWOZNIKOW.PACZKOMATY).toBe('paczkomatyinpost')
+  })
+
+  it('odmowa OR23 (400) niesie treść komunikatu Empiku, oczyszczoną (bez e-maili i telefonów)', async () => {
+    const { at, adapter } = make()
+    at.putOrder({ id: 'E-7', state: 'SHIPPING', lines: [{ id: 'E-7-1', sku: 'P1', qty: 1 }] })
+    at.injectWriteFailure('TRWALY')
+    const r = await adapter.setTracking('E-7', { carrier: 'DPD', number: 'ABC123' }, 'x')
+    expect(r).toMatchObject({ kind: 'TRWALY', message: expect.stringContaining('HTTP 400 (VALIDATION_ERROR)') })
+    expect((r as { message: string }).message).toContain('Empik: „VALIDATION_ERROR: zmyślony komunikat atrapy”')
+    expect(komunikatBleduMirakl('{"status":400,"message":"Carrier  \\n x for jan.kowalski@example.pl, tel. +48 600 100 200"}')).toBe('Carrier x for [e-mail], tel. [telefon]')
+    expect(komunikatBleduMirakl('{"status":400,"errors":[{"field":"carrier_code","message":"must not be blank"}]}')).toBe('carrier_code: must not be blank')
+    expect(komunikatBleduMirakl('<html>bramka</html>')).toBeNull()
+    expect(komunikatBleduMirakl('')).toBeNull()
+    expect(komunikatBleduMirakl(JSON.stringify({ message: 'x'.repeat(500) }))!.length).toBeLessThanOrEqual(200)
   })
 
   it('numer nadania: zły numer albo adres bez żądania; 503 przejściowe; brak odpowiedzi przejściowe (nadpisanie bezpieczne)', async () => {
     const { at, adapter } = make()
     at.putOrder({ id: 'E-2', state: 'SHIPPING', lines: [{ id: 'E-2-1', sku: 'P1', qty: 1 }] })
     expect((await adapter.setTracking('E-2', { carrier: 'DPD', number: 'a b' }, 'x')).kind).toBe('TRWALY')
-    expect((await adapter.setTracking('E-2', { carrier: 'DPD', number: 'ABC123', url: 'http://bez-tls.example' }, 'x')).kind).toBe('TRWALY')
+    // adres śledzenia sprawdzany tylko przy przewoźniku bez kodu (z kodem Empik liczy adres sam)
+    expect((await adapter.setTracking('E-2', { carrier: 'OSOBISTY', number: 'ABC123', url: 'http://bez-tls.example' }, 'x')).kind).toBe('TRWALY')
     expect(at.zapytania).toEqual([])
     at.injectWriteFailure('PRZEJSCIOWY')
     expect((await adapter.setTracking('E-2', { carrier: 'DPD', number: 'ABC123' }, 'x')).kind).toBe('PRZEJSCIOWY')
@@ -471,6 +506,28 @@ describe('Empik OR23 i OR24: numer nadania i wysłane', () => {
     const n = at.zapytania.length
     expect(await adapter.setOrderStatus('E-3', 'RECEIVED', 's2')).toMatchObject({ kind: 'TRWALY' })
     expect(at.zapytania.length).toBe(n)
+  })
+
+  it('„shipped” małymi literami (mapa zapisana z panelu przed poprawką) = SHIPPED, OR24 wychodzi', async () => {
+    const { at, adapter } = make()
+    at.putOrder({ id: 'E-8', state: 'SHIPPING', lines: [{ id: 'E-8-1', sku: 'P1', qty: 1 }] })
+    expect(await adapter.setOrderStatus('E-8', 'shipped', 's8')).toEqual({ kind: 'OK', reference: 's8' })
+    expect(at.stateOf('E-8')).toBe('SHIPPED')
+  })
+
+  it('wartość mapy statusów porównywana bez wielkości liter ze słownikiem kanału (Empik, Allegro), Woo bez zmian', () => {
+    const empik = make().adapter.manifest
+    expect(kanonicznyStatusKanalu('shipped', empik)).toBe('SHIPPED')
+    expect(kanonicznyStatusKanalu(' Shipped ', empik)).toBe('SHIPPED')
+    expect(kanonicznyStatusKanalu('wlasny', empik)).toBe('wlasny')
+    expect(kanonicznyStatusKanalu('sent', ALLEGRO_ZAPIS_MANIFEST)).toBe('SENT')
+    expect(kanonicznyStatusKanalu('ready_for_shipment', ALLEGRO_ZAPIS_MANIFEST)).toBe('READY_FOR_SHIPMENT')
+    expect(kanonicznyStatusKanalu('completed', WOO_MANIFEST)).toBe('completed')
+    expect(kanonicznyStatusKanalu('wc-wyslane', WOO_MANIFEST)).toBe('wc-wyslane')
+    expect(kanonicznyStatusKanalu('x', null)).toBe('x')
+    // mapa zapisana z panelu 20.11.2026 (WYSLANE: „shipped”) działa bez ręcznej poprawki
+    expect(mapaStatusow({ statusy: { WYSLANE: 'shipped' } }, empik)).toEqual({ mapa: { WYSLANE: 'SHIPPED' }, wlasna: true })
+    expect(empik.channelBehavior?.trackingBeforeStatus).toBe(true)
   })
 
   it('OR24 na zamówieniu jeszcze nieopłaconym: TRWALY ze stanem; zgubiona odpowiedź: PRZEJSCIOWY, potem OK', async () => {

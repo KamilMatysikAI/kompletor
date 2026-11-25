@@ -693,6 +693,20 @@ export class AllegroAdapter implements ChannelAdapter, OrderFeed, RecipientReade
     return { ...page, nextCursor: next }
   }
 
+  /**
+   * etap 2: strona listy formularzy zakupu do archiwum zamówień (tylko `GET /order/checkout-forms`, z filtrem
+   * daty zakupu i stronicowaniem; inny parametr = błąd przed wysłaniem). Allegro nie ma listy pól: odpowiedź zawiera
+   * dane kupującego, więc importer archiwum od razu ją przycina do listy dozwolonych pól (lib/archiwum/kanaly.ts).
+   */
+  async odczytListyZamowienArchiwum(query: [string, string][]): Promise<{ checkoutForms: unknown[]; totalCount: number | null }> {
+    if (query.some(([k]) => !/^(lineItems\.boughtAt\.(gte|lte)|sort|limit|offset)$/.test(k)))
+      throw new ReadOnlyViolation('Allegro: lista zamówień do archiwum tylko z filtrem daty zakupu i stronicowaniem')
+    const path = '/order/checkout-forms'
+    const body = this.expectBody(await this.call<{ checkoutForms?: unknown; totalCount?: unknown }>(path, query), path)
+    if (!Array.isArray(body.checkoutForms)) throw new AdapterError('Allegro /order/checkout-forms: brak listy', 'PRZEJSCIOWY')
+    return { checkoutForms: body.checkoutForms as unknown[], totalCount: typeof body.totalCount === 'number' && Number.isInteger(body.totalCount) ? body.totalCount : null }
+  }
+
   async getOrder(externalId: string): Promise<ChannelOrder | null> {
     if (!/^[A-Za-z0-9-]{1,64}$/.test(externalId)) throw new AdapterError(`zły numer formularza Allegro „${externalId}”`, 'TRWALY')
     const path = `/order/checkout-forms/${externalId}`

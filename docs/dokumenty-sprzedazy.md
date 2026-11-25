@@ -99,6 +99,14 @@ docker compose exec web kompletor cien faktura-robocza --sprawdz <id dokumentu w
 - Kody wyjścia: 0 zrobione, 1 błąd (nic nie zapisano), 2 odmowa, 3 odmowa usunięcia, 4 nie wiadomo, czy robocza powstała (odczekaj 5 minut, sprawdź w wFirmie listę roboczych i sprzedaży, dopiero potem ponów `--wykonaj`), 5 ALARM (nie ponawiaj).
 - Robocze trzeba mieć włączone w koncie wFirmy (USTAWIENIA » FAKTURY » METODY FAKTUROWANIA » „Wersje robocze faktur sprzedaży”). Usuń wszystkie robocze przed przełączeniem.
 
+### Forma płatności i „Zapłacono” na fakturze
+
+- **Forma płatności** wynika z metody płatności zamówienia: za pobraniem → „pobranie”; BLIK, PayU, PayPo, PayPal, przelew, płatności Allegro i „Płatność z góry” z Empiku → „przelew”. Nieznana metoda zatrzymuje fakturę (błąd „nieznana płatność”), firma dopisuje wtedy regułę w konfiguracji faktur.
+- **Zamówienie opłacone z góry** dostaje fakturę opłaconą: „Zapłacono” = kwota faktury, „Do zapłaty” 0,00, termin płatności = dzień wystawienia. Gdy zamówienie było zmieniane na karcie, „Zapłacono” to kwota sprzed zmiany plus dopłaty minus zwroty różnicy zapisane na karcie (sekcja „Płatność”); brakująca dopłata zostaje na fakturze „do zapłaty”.
+- **Za pobraniem** faktura zostaje „do zapłaty” (klient płaci kurierowi), forma „pobranie”.
+- **Nieopłacone i niedopłata:** „Zapłacono” to tylko wpłaty zapisane na karcie zamówienia; kwoty częściowej wpłaty z kanału Kompletor nie przechowuje, więc bez wpisu na karcie faktura idzie „do zapłaty” w całości, z terminem płatności wg ustawień wFirmy.
+- Faktury wystawione przed tą zmianą (19–20.11.2026) mają „Zapłacono 0,00” także przy zamówieniach opłaconych; zapłatę oznacza się na nich w wFirmie.
+
 ### Kupony, rabaty na całe zamówienie i grosze
 
 Faktura zawsze opiewa na kwotę, którą zapłacił klient, z cenami pozycji po rabacie.
@@ -110,6 +118,17 @@ Faktura zawsze opiewa na kwotę, którą zapłacił klient, z cenami pozycji po 
 - **Wysyłka** na fakturze to koszt dostawy podany przez sklep albo platformę. Gdy pozycje i wysyłka razem są droższe niż zapłacona kwota, różnica jest rabatem na towar (wysyłka się nie zmienia), o ile mieści się w limicie rabatu. Gdy zapłacona kwota jest wyższa o więcej niż grosze z zaokrągleń (np. opłata za pobranie), nadwyżka idzie razem z wysyłką.
 - Gdy kanał nie podał kosztu wysyłki, wysyłka to zapłacona kwota minus pozycje. Jeśli wtedy pozycje są droższe niż zapłacona kwota, faktura nie wychodzi i pojawia się błąd „Pozycje są droższe niż kwota zamówienia”: wystaw ją ręcznie.
 - **Zamówienie zapisane z cenami sprzed rabatu** (przyjęte, zanim Kompletor zaczął rozkładać rabat przy odczycie) ma na karcie ceny sprzed rabatu, a rabat liczy dopiero faktura. Paczka wysłana osobno (podział zamówienia, „dośle później”), korekta i zwrot biorą jednak cenę z zamówienia, a opłata za pobranie siedzi w zapłaconej kwocie. Dlatego takie zamówienie **z paczką dodatkową albo za pobraniem** i z rabatem większym niż 1% wartości pozycji nie dostaje faktury automatycznie (mniejsza różnica to grosze, np. po usunięciu pozycji z zamówienia, i rozkłada się na pozycje bez zmiany sumy): pojawia się komunikat z instrukcją (faktura ręcznie na zapłaconą kwotę, potem „Wyślij bez faktury” i „Dokument wystawiony” na karcie zamówienia). Ceny takich zamówień przelicza jednorazowo przeliczenie przed przeniesieniem danych na produkcję; po nim ten komunikat dotyczy tylko kanałów, które podają rabat poza pozycjami.
+
+### Faktury w walucie zamówienia (wFirma)
+
+**Gdzie:** Ustawienia → Dokumenty i faktury → Dokumenty sprzedaży → karta „Kiedy wystawiać” → pole **„Faktury w walucie zamówienia”**. Działa tylko z programem wFirma i z włączonym „Wystawiaj faktury z Kompletora”. KSeF bezpośrednio wystawia wyłącznie w PLN, więc tam zamówienie w obcej walucie dalej czeka na fakturę ręczną.
+
+- **Co robi:** zamówienie w innej walucie niż PLN (walutę podaje kanał sprzedaży, np. Allegro w Czechach = CZK) dostaje fakturę w wFirmie w tej walucie: pole waluty na fakturze, ceny pozycji i wysyłka w kwotach z zamówienia (bez przeliczania), stawki VAT jak w PLN.
+- **Kurs:** średni kurs NBP z ostatniego dnia roboczego przed datą sprzedaży (albo wystawienia, gdy wcześniejsza) dobiera wFirma sama; w API kurs jest tylko do odczytu. Kompletor go nie liczy i nie wysyła.
+- **Kontrola po zapisie:** zaraz po wystawieniu Kompletor czyta fakturę z wFirmy (jedna próba, do 15 s) i porównuje walutę, kurs (musi być większy od zera) i kwotę brutto (tolerancja 1 grosz na każdą stawkę VAT na fakturze). Zgodna = karta pokazuje „Kwota faktury” z kursem i tabelą NBP. Niezgodna albo nieudany odczyt = alert „Faktury” z obiema kwotami i walutą z wFirmy, a faktura zostaje: Kompletor nie wystawia drugiej, dokument sprawdza i poprawia biuro w wFirmie.
+- **Wyłączone (domyślnie):** zamówienie w obcej walucie nie dostaje dokumentu z Kompletora; karta pisze „wystaw fakturę ręcznie”, w alertach jest pozycja do wystawienia.
+- **Zamówienia sprzed włączenia:** automat bierze tylko zamówienia przyjęte po chwili włączenia pola (paczka dodatkowa: liczy się przyjęcie zamówienia głównego), bo wcześniejszym biuro mogło wystawić fakturę ręcznie jeszcze przed spakowaniem. Wcześniejsze, także te, których karta jeszcze nie pokazała jako zatrzymanych, czekają: karta pisze „Wystawione ręcznie? Jeśli nie, kliknij »Ponów fakturę«”. Sprawdź w wFirmie, czy faktura nie powstała ręcznie, i dopiero wtedy kliknij „Ponów fakturę”. Wyłączenie pola po „Ponów fakturę”, zanim faktura powstała, zatrzymuje zamówienie z powrotem (po ponownym włączeniu znów potrzebne jest „Ponów fakturę”).
+- **Pierwsze wystawienie:** włącz pole i zapisz ekran → (opcjonalnie) faktura robocza tego zamówienia (polecenie wyżej, dostaje tę samą walutę) → „Ponów fakturę” na karcie zamówienia → sprawdź dokument w wFirmie.
 
 ## Lista faktur i korekt
 

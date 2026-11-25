@@ -112,7 +112,7 @@ o zdarzeniu). Warunki ze słowem „nie” działają odwrotnie.
 | Wystaw fakturę | Nieudaną fakturę oddaje do kolejki faktur ponownie. Nową wystawia Kompletor sam po spakowaniu, gdy wystawianie jest włączone. | Brak faktury do ponowienia. |
 | Anuluj fakturę | Nieudana faktura jest już anulowana przez Kompletor (towar wraca do rezerwacji). | Wystawionej faktury reguła nie cofa (korekta z karty zamówienia). |
 | Utwórz przesyłkę | Przesyłka u przewoźnika zamówienia, opcjonalnie z gabarytem. | Nadawanie wyłączone w ustawieniach przewoźnika, konto w podglądzie, status, w którym przesyłki się nie tworzy. |
-| Wydrukuj etykietę | Najnowsza etykieta przesyłki na stanowisku druku. | Brak przesyłki albo stanowiska druku. |
+| Wydrukuj etykietę | Najnowsza etykieta przesyłki na stanowisku druku; przy odbiorze osobistym etykieta odbioru do naklejenia na paczkę. | Brak przesyłki (poza odbiorem osobistym) albo stanowiska druku; odbiór osobisty na koncie w podglądzie. |
 | Oznacz zamówienie | Gwiazdka na liście zamówień. | Nigdy. |
 | Anuluj zamówienie | Anulowanie przez Kompletor (zwolnienie rezerwacji, informacja do sklepu przez zwykły zapis do sklepu). | Po fakturze reguła nie anuluje; konto sklepu w trybie podglądu. |
 

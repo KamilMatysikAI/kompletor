@@ -16,6 +16,11 @@ import { EdycjaKarty, EdycjaSkladu, type DaneKarty } from './edycja'
 import { ZdjeciaProduktu } from './zdjecia'
 import { SekcjaPowiazan } from './sekcja-powiazania'
 import { opisPowiazania } from '@/lib/produkty/powiazania'
+import { drzewoKategorii } from '@/lib/produkty/kategorie'
+import { ToastZAdresuZapisu } from '@/app/ui'
+import { KategoriaProduktu } from './kategoria'
+import { AktywnoscProduktu } from './aktywnosc'
+import { przeszkodyWylaczenia } from '@/lib/produkty/aktywnosc'
 
 export const metadata = { title: 'Produkt' }
 
@@ -37,6 +42,7 @@ const liczbaPl = (n: number) => String(n).replace('.', ',')
 /** Wartość pola w historii po ludzku: kwoty jak w panelu, VAT z etykiety, jednostki. */
 function wartoscPola(k: string, v: unknown): string {
   if (v === null || v === undefined || v === '') return '—'
+  if (k === 'active' && typeof v === 'boolean') return v ? 'włączony' : 'wyłączony'
   if (typeof v === 'number') {
     if (k === 'priceGross' || k === 'purchasePriceNet') return money(v)
     if (k === 'weightG') return `${liczbaPl(v)} g`
@@ -58,8 +64,10 @@ function opisZmiany(before: unknown, after: unknown): string {
   if (a['zdjeciaZOfertyBledy']) return 'nie wszystkie zdjęcia z oferty sklepu udało się pobrać'
   if (a['powiazanie']) return opisPowiazania(a)
   if (a['towarWfirmy']) return `powiązany z towarem wFirmy „${String(a['towarWfirmy'])}”`
-  const keys = Object.keys(a)
+  // produkt przeniesiony przy usunięciu kategorii
+  const keys = Object.keys(a).filter((k) => k !== 'zUsunietej')
   if (!keys.length) return 'zmiana'
+  if (a['zUsunietej']) return `kategoria: ${wartoscPola('kategoria', b['kategoria'])} → ${wartoscPola('kategoria', a['kategoria'])} (poprzednia kategoria usunięta)`
   return keys.map((k) => (k === 'zdjecia' ? 'kolejność zdjęć' : k === 'sklad' ? 'skład zestawu' : `${(POLE_LABEL[k] ?? k).replace(/ \((g|cm)\)$/, '')}: ${wartoscPola(k, b[k])} → ${wartoscPola(k, a[k])}`)).join('; ')
 }
 
@@ -69,7 +77,7 @@ export default async function Produkt({ params, searchParams }: Props) {
   const [p, accs, zone, hasWfirma] = await Promise.all([productDetail(ctx.db, id), accounts(ctx.db), productZoneInfo(ctx.db, id), firmaMaWfirme(ctx.db)])
   if (!p) notFound()
   const canEdit = ctx.permissions.has('produkty.dodawanie')
-  const [zdjecia, historia, ai, opcjeSkladu, stanySkladnikow, packshot] = await Promise.all([
+  const [zdjecia, historia, ai, opcjeSkladu, stanySkladnikow, packshot, kategorie, przeszkody] = await Promise.all([
     zdjeciaProduktu(ctx.db, p.id),
     historiaProduktu(ctx.db, p.id),
     canEdit ? maDostawceAi(ctx.db) : Promise.resolve(false),
@@ -78,7 +86,10 @@ export default async function Produkt({ params, searchParams }: Props) {
       : Promise.resolve([]),
     p.kind === 'BUNDLE' ? ctx.db.stock.findMany({ where: { productId: { in: p.bundleComponents.map((c) => c.componentId) } }, select: { productId: true, physical: true, reserved: true } }) : Promise.resolve([]),
     canEdit ? stanPackshotu(ctx.db).catch(() => 'wylaczony' as const) : Promise.resolve('wylaczony' as const),
+    drzewoKategorii(ctx.db),
+    canEdit && p.active ? przeszkodyWylaczenia(ctx.db, [p.id]) : Promise.resolve(new Map<string, string[]>()), // wyłączanie
   ])
+  const kategoria = p.categoryId ? (kategorie.find((k) => k.id === p.categoryId) ?? null) : null
   // pozostałe warianty z tej samej grupy
   const warianty = p.groupId
     ? await ctx.db.product.findMany({ where: { groupId: p.groupId, id: { not: p.id } }, orderBy: { sku: 'asc' }, take: 50, select: { id: true, sku: true, title: true, active: true } })
@@ -145,7 +156,9 @@ export default async function Produkt({ params, searchParams }: Props) {
             </div>
           </div>
         </div>
+        {canEdit && <AktywnoscProduktu productId={p.id} aktywny={p.active} przeszkody={przeszkody.get(p.id) ?? []} stan={p.kind === 'STOCKED' ? p.stocks.reduce((a, x) => a + x.physical, 0) : null} />}
       </header>
+      <ToastZAdresuZapisu sukces="aktywnosc" blad="aktywnoscBlad" uwaga="aktywnoscUwaga" komunikaty={{ wylaczony: 'Produkt wyłączony.', wlaczony: 'Produkt włączony.', 'bez-zmian': 'Bez zmian.' }} />
       <nav className="tabs" aria-label="Sekcje karty produktu">
         <a href="#dane">Produkt</a>
         <a href="#zdjecia">
@@ -325,6 +338,9 @@ export default async function Produkt({ params, searchParams }: Props) {
           {p.dataSource === 'BL' && <p className="muted small">Skład z BaseLinkera: zmieniasz go w BaseLinkerze.</p>}
         </section>
       )}
+
+      <ToastZAdresuZapisu sukces="kategoria" blad="kategoriaBlad" komunikaty={{ zapisana: 'Kategoria zapisana.', 'bez-zmian': 'Kategoria bez zmian.' }} />
+      <KategoriaProduktu productId={p.id} kategoria={kategoria} zrodlo={p.categorySource} drzewo={kategorie} canEdit={canEdit} />
 
       {zone && <StrefaProduktu productId={p.id} info={zone} canEdit={ctx.permissions.has('ustawienia')} />}
 

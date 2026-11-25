@@ -56,7 +56,7 @@ export function ZmianaSposobu({ orderId, opcje, obecna, uwagi, pobranie }: { ord
   const pola = wybrana && (wybrana.rodzaj === 'PUNKT' || wybrana.rodzaj === 'ADRES' || wybrana.rodzaj === 'ADRES_LUB_PUNKT')
   return (
     <details onToggle={otworz}>
-      <summary className="small">Zmień sposób wysyłki przed nadaniem (np. Paczkomat → kurier DPD)</summary>
+      <summary className="btn small">Zmień sposób wysyłki przed nadaniem (np. Paczkomat → kurier DPD)</summary>
       {dane === undefined ? (
         <p className="small muted">Wczytuję…</p>
       ) : (

@@ -6,6 +6,9 @@
 // robocza (`type: normal_draft`) dostaje numer z osobnej numeracji roboczych „WRF n” (`roboczaBezNumeru` = bez numeru);
 // `roboczaJakZwykla` udaje konto, które zapisuje ją jako zwykłą fakturę z numerem. `invoices/get/<id>` oddaje typ, numer i `id_external`; `invoices/delete/<id>` usuwa.
 // `ciala` = surowe treści żądań `invoices/add` (porównanie bajt w bajt).
+// `currency` z żądania (brak = PLN); `invoices/get` oddaje `currency`, `total` (suma pozycji brutto) i kurs
+// księgowy jak wFirma (pola kursu liczy program: `kurs` dla obcej waluty, 1 dla PLN); `walutaOdczytu`/`kurs: null`
+// udają fakturę zapisaną inaczej, niż ją wysłaliśmy.
 import type { FetchLike } from '@/lib/zrodla/http'
 import type { WfirmaKeys } from '@/lib/zrodla/wfirma'
 
@@ -21,7 +24,13 @@ export interface FakturaAtrapy {
   pozycje: { goodId: number; count: number; price: string; name: string; vat: number }[]
   contractor: Record<string, unknown> | null
   paymentmethod: string
+  /** `alreadypaid_initial` z żądania (null = pole pominięte). */
+  alreadypaidInitial?: string | null
+  /** `paymentdate` z żądania (null = pole pominięte, wFirma liczy termin sama). */
+  paymentdate?: string | null
   type: string
+  /** `currency` z żądania (brak pola = PLN). */
+  currency?: string
 }
 
 export class WfirmaHttpAtrapa {
@@ -38,10 +47,18 @@ export class WfirmaHttpAtrapa {
   roboczaBezNumeru = false
   /** Robocza (typ `normal_draft`) z numerem w serii faktur zamiast numeracji roboczych. */
   numerRoboczejWSerii = false
-  /** Tyle najbliższych `invoices/get` skończy się błędem (HTTP 400, bez ponowień klienta odczytu). */
+  /** Tyle najbliższych `invoices/get` skończy się błędem (HTTP `getStatus`, domyślnie 400 bez ponowień klienta odczytu). */
   getBledy = 0
+  /** kod HTTP błędu `invoices/get` (500 = przejściowy, który klient odczytu domyślnie ponawia; 429 = limit). */
+  getStatus = 400
+  /** (b): przesunięcie `total` w odczycie o tyle groszy (faktura z inną kwotą przy tej samej walucie). */
+  totalPrzesuniecieGr = 0
   /** Wynik kolejnych `invoices/delete` (domyślnie OK). */
   usuwanie: ('OK' | 'ERROR')[] = []
+  /** kurs księgowy, który „dobiera” wFirma dla obcej waluty (null = faktura bez kursu). */
+  kurs: string | null = '0.1745'
+  /** waluta oddawana w odczycie zamiast zapisanej (faktura zapisana w innej walucie). */
+  walutaOdczytu: string | null = null
   private nr = 1000
   private nrRoboczej = 0
 
@@ -71,6 +88,9 @@ export class WfirmaHttpAtrapa {
         pozycje: contents.map((c) => ({ goodId: Number((c['good'] as { id: number }).id), count: Number(c['count']), price: String(c['price']), name: String(c['name']), vat: Number((c['vat_code'] as { id: number }).id) })),
         contractor: (inv['contractor'] as Record<string, unknown>) ?? null,
         paymentmethod: String(inv['paymentmethod']),
+        alreadypaidInitial: inv['alreadypaid_initial'] === undefined ? null : String(inv['alreadypaid_initial']),
+        paymentdate: inv['paymentdate'] === undefined ? null : String(inv['paymentdate']),
+        currency: inv['currency'] === undefined ? 'PLN' : String(inv['currency']),
       }
       this.faktury.push(f)
       if (wynik === 'TIMEOUT_PO_ZAPISIE') throw new Error('timeout po zapisie (atrapa)')
@@ -80,11 +100,16 @@ export class WfirmaHttpAtrapa {
     if (get) {
       if (this.getBledy > 0) {
         this.getBledy--
-        return json({ status: { code: 'ERROR' } }, 400)
+        return json({ status: { code: 'ERROR' } }, this.getStatus)
       }
       const f = this.faktury.find((x) => x.id === get[1])
       if (!f) return json({ status: { code: 'NOT FOUND' } })
-      return json({ status: { code: 'OK' }, invoices: { '0': { invoice: { id: f.id, type: f.type, fullnumber: f.fullnumber, id_external: f.idExternal, paymentmethod: f.paymentmethod } } } })
+      const total = (f.pozycje.reduce((s, p) => s + Math.round(p.count * Number(p.price) * 100), 0) + this.totalPrzesuniecieGr) / 100
+      const kurs = (f.currency ?? 'PLN') === 'PLN' ? '1.0000' : this.kurs
+      return json({
+        status: { code: 'OK' },
+        invoices: { '0': { invoice: { id: f.id, type: f.type, fullnumber: f.fullnumber, id_external: f.idExternal, paymentmethod: f.paymentmethod, currency: this.walutaOdczytu ?? f.currency ?? 'PLN', total: total.toFixed(2), currency_exchange: kurs ?? '0.0000', currency_date: '2026-11-20', currency_label: '226/A/NBP/2026' } } },
+      })
     }
     const del = /^invoices\/delete\/(\d+)$/.exec(sciezka)
     if (del) {

@@ -35,7 +35,8 @@ export function wyliczPrzesylkeAllegro(input: ShipmentInput, u: UstawieniaPrzesy
     const jest = isGabaryt(input.gabaryt) ? ` (jest ${GABARYTY[input.gabaryt]})` : ''
     problems.push(blad('gabaryt', `Wysyłam z Allegro wymaga gabarytu Allegro A, B albo C${jest}.`))
   }
-  const w = waga(input, u)
+  // waga domyślna Wysyłam z Allegro żyje w regule przewoźnika, panel jej nie edytuje (docs/wysylam-z-allegro.md)
+  const w = waga(input, u, { gdzieUstawienie: null })
   problems.push(...w.problemy)
   if (w.gramy > LIMIT_WAGI_ALLEGRO_G) problems.push(blad('waga_limit', `Paczka waży ${w.gramy / 1000} kg, limit to ${LIMIT_WAGI_ALLEGRO_G / 1000} kg (limit Allegro do potwierdzenia).`))
   const pob = kwotaPobrania({ paymentState: input.paymentState, paymentMethod: input.paymentMethod, totalGross: input.totalGross, kwotaNiepewna: input.codAmountUncertain })
@@ -150,4 +151,41 @@ export function parseDeliveryOptions(body: unknown): AllegroDeliveryOption[] {
   const list = body['deliveryOptions']
   if (!Array.isArray(list)) throw new UnreadableDataError('delivery-proposals bez listy deliveryOptions')
   return list.map((o, i) => opcja(o, i))
+}
+
+export interface WymiaryPaczkiCm {
+  length: number
+  width: number
+  height: number
+}
+
+/**
+ * Wymiary paczki dopasowane do limitu metody dostawy z `delivery-proposals` (opcje typu PACKAGE z pełnym, dodatnim
+ * limitem). Wymiary gabarytu są robocze (jak polski paczkomat), a metody zagraniczne mają mniejsze skrytki: bez
+ * dopasowania Allegro odrzuca przesyłkę kodem DIMENSIONS_VALIDATION_ERROR. Największy bok paczki trafia do pola
+ * z największym limitem, każdy bok jest przycięty do swojego limitu (przy równych limitach kolejność pól zostaje
+ * length, width, height). Paczka mieszcząca się w układzie gabarytu zostaje bez zmian; mieszcząca się dopiero po
+ * obróceniu jest przestawiona między polami bez przycięcia (`przyciete: false`).
+ * Opcja dostawy w specyfikacji nie ma `deliveryMethodId`, więc metody nie da się dopasować po identyfikatorze: kilka
+ * opcji z różnymi limitami (inna skrytka, nie tylko obrót) = limit niejednoznaczny, wymiary bez zmian, `limit: null`
+ * i `niejednoznaczny: true`. Brak pełnego limitu (albo zero) = wymiary bez zmian i `limit: null`.
+ */
+export function dopasujWymiaryDoLimitu(w: WymiaryPaczkiCm, opcje: readonly AllegroDeliveryOption[]): { wymiary: WymiaryPaczkiCm; limit: WymiaryPaczkiCm | null; przyciete: boolean; niejednoznaczny?: true } {
+  const limity: WymiaryPaczkiCm[] = []
+  for (const o of opcje) {
+    const d = o.packageType === 'PACKAGE' ? o.limits.dimensions : null
+    if (d && d.lengthCm && d.widthCm && d.heightCm) limity.push({ length: d.lengthCm, width: d.widthCm, height: d.heightCm })
+  }
+  const skrytka = (l: WymiaryPaczkiCm) => [l.length, l.width, l.height].sort((a, b) => b - a).join('×')
+  if (!limity.length) return { wymiary: w, limit: null, przyciete: false }
+  if (new Set(limity.map(skrytka)).size > 1) return { wymiary: w, limit: null, przyciete: false, niejednoznaczny: true }
+  const limit = limity[0]!
+  // mieści się w układzie gabarytu: nic nie zmieniamy (dotychczasowe metody krajowe)
+  if (w.length <= limit.length && w.width <= limit.width && w.height <= limit.height) return { wymiary: w, limit, przyciete: false }
+  const pola = (['length', 'width', 'height'] as const).slice().sort((a, b) => limit[b] - limit[a])
+  const boki = [w.length, w.width, w.height].sort((a, b) => b - a)
+  const wymiary = { ...w }
+  pola.forEach((pole, i) => (wymiary[pole] = Math.min(boki[i]!, limit[pole])))
+  const przyciete = boki.some((b, i) => b > limit[pola[i]!])
+  return { wymiary, limit, przyciete }
 }

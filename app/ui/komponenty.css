@@ -180,6 +180,11 @@ html:has(.ui-pasek-zapisu[data-zmiany='tak']) { scroll-padding-bottom: calc(var(
 .ui-sort:hover { color: var(--kolor-tekst); text-decoration: underline; }
 .ui-sort-znak { font-size: 10px; color: var(--kolor-tekst-3); }
 th[aria-sort] .ui-sort-znak { color: var(--kolor-akcent-tekst); }
+/* sortowanie na telefonie (tabela „cards” chowa nagłówki); na szerokim ekranie ukryte */
+.ui-sort-tel { display: none; }
+.ui-sort-tel .btn[aria-current='true'] { background: var(--kolor-ciemny); border-color: var(--kolor-ciemny); color: var(--kolor-tekst-odwrotny); }
+.ui-sort-tel .btn[aria-current='true'] .ui-sort-znak { color: inherit; }
+@media (max-width: 760px) { .ui-sort-tel { display: flex; flex-wrap: wrap; align-items: center; gap: var(--odstep-2); margin: var(--odstep-2) 0 var(--odstep-3); } }
 .ui-kolumny { position: relative; }
 .ui-kolumny > summary { list-style: none; }
 .ui-kolumny > summary::-webkit-details-marker { display: none; }

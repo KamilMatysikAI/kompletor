@@ -10,6 +10,7 @@ import { hintAllocate, mergeFlags } from './rezerwacja'
 import { wydajZMagazynuWlasnegoInTx } from './rozchod'
 import { advisoryLock, type Db, DEFAULT_WAREHOUSE, orderLockKey, runTx, type Tx } from './stan'
 import { zrodloStanu } from './zrodlo-stanu'
+import { fakturyWWalucie, obcaWaluta, walutaCzekaNaPonowieniePoId, walutaZamowieniaPoId } from './waluta'
 import { zwolnijKoszykPoStatusie } from '../koszyki/zwolnienie'
 import { assertTransition, TransitionError } from './statusy'
 import type { Ctx } from './zamowienia'
@@ -76,6 +77,13 @@ export async function faktyPrzejscia(db: DbLike, o: Pick<Order, 'id' | 'packageN
   const lines = await db.orderLine.findMany({ where: { orderId: o.id, removed: false, productId: { not: null } }, select: { productId: true, qty: true, qtyRejected: true } })
   const ids = [...new Set(lines.map((l) => l.productId!))]
   const digital = new Set(ids.length ? (await db.product.findMany({ where: { id: { in: ids }, kind: 'DIGITAL' }, select: { id: true } })).map((p) => p.id) : [])
+  const zasady = opts.zasady ?? (await zasadyWydania(db, o.id))
+  // zamówienie w obcej walucie nie dostanie dokumentu z Kompletora (faktura ręcznie, waluta.ts), więc
+  // „Dokument przed wysyłką” go nie zatrzymuje: wydanie i statusy idą jak w firmie bez programu do faktur
+  // przy „Faktury w walucie zamówienia” (wFirma) obca waluta czeka na dokument jak PLN, poza zamówieniem
+  // sprzed włączenia (reguła w waluta.ts: wraca do kolejki dopiero po „Ponów fakturę”)
+  const bezDokumentu =
+    zasady.wydanieWlasne && zasady.dokumentWymagany !== false && obcaWaluta(await walutaZamowieniaPoId(db, o.id)) && (!(await fakturyWWalucie(db)) || (await walutaCzekaNaPonowieniePoId(db, o.id)))
   return {
     aktywne: ile('ACTIVE'),
     wFakturze: ile('CONSUMING'),
@@ -83,7 +91,8 @@ export async function faktyPrzejscia(db: DbLike, o: Pick<Order, 'id' | 'packageN
     uslugi: lines.filter((l) => digital.has(l.productId!)).reduce((s, l) => s + Math.max(0, l.qty - l.qtyRejected), 0),
     otwarteBraki: await db.shortage.count({ where: { orderId: o.id, state: { in: ['OPEN', 'SHIP_LATER'] } } }),
     fakturaWystawiona: (await db.invoiceAttempt.count({ where: { orderId: o.id, packageNo: o.packageNo, state: 'ISSUED' } })) > 0,
-    ...(opts.zasady ?? (await zasadyWydania(db, o.id))),
+    ...zasady,
+    ...(bezDokumentu ? { dokumentWymagany: false } : {}),
   }
 }
 

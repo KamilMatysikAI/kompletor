@@ -32,7 +32,8 @@ import { runTx } from '../rdzen/stan'
 import { TransitionError } from '../rdzen/statusy'
 import { enqueue } from '../worker/kolejka'
 import { automatyWysylki, regulyDrogiPrzewoznikow, sledzeniePrzewoznikow, type AutomatyWysylki, type SledzeniePrzewoznikow } from '../wysylka/automaty'
-import { adapterDlaPrzesylki, type DepsNadania, progZawieszenia } from '../wysylka/nadanie'
+import { adapterDlaPrzesylki, type DepsNadania, progZawieszenia, zrodloSekretow } from '../wysylka/nadanie'
+import { SledzenieDpdPrzebiegu } from '../wysylka/sledzenie-dpd'
 import { alert } from '../rdzen/stan'
 import {
   ALERT_PROBLEM_PRZESYLKI,
@@ -44,6 +45,9 @@ import {
   wszystkieDoreczone,
 } from '../wysylka/reguly-drogi'
 import { czasPrzewoznika, jestKoncowy, odstepSledzenia, OPIS_STANU_DROGI, poPrzekazaniu, SLEDZENIE_DO_KONCA_DNI, STANY_DROGI, stanDrogiZeStanu, type StanDrogi } from '../wysylka/stany-przesylki'
+
+/** strojenie klienta DPD w przebiegu śledzenia (testy: adres atrapy, bez czekania między próbami). */
+type OpcjeSledzeniaDpd = ConstructorParameters<typeof SledzenieDpdPrzebiegu>[2]
 
 type Db = PrismaClient
 type Env = Record<string, string | undefined>
@@ -348,8 +352,11 @@ export interface WynikSledzenia {
  * Moduły śledzone od początku automatu (domyślnie włączone). Każdy moduł, który dostaje śledzenie później, jest
  * domyślnie wyłączony: firma włącza go w Ustawienia → Wysyłka i druk → Przewoźnicy → „Automatyczne statusy wysyłki”.
  * Base Courier: śledzony na produkcji od 19.11.2026 (przed listą wyborów na tej gałęzi), więc zostaje domyślnie włączony.
+ * Wysyłam z Allegro: śledzony na produkcji od 22.11.2026 (każdy moduł z `shipment.track` bez listy wyborów), więc też.
+ * DPD bezpośrednio: paczki DPD pyta osobna droga przez konto DPD firmy (lib/wysylka/sledzenie-dpd.ts), niezależnie od
+ * tej listy; moduł DPD na liście (DPDInfoServices z osobnymi danymi) zostaje domyślnie wyłączony.
  */
-export const SLEDZENIE_DOMYSLNIE_WLACZONE: ReadonlySet<string> = new Set([INPOST_SHIPX_ZAPIS_MANIFEST.adapterKey, PP_ZAPIS_MANIFEST.adapterKey, BASE_COURIER_ZAPIS_KEY])
+export const SLEDZENIE_DOMYSLNIE_WLACZONE: ReadonlySet<string> = new Set([INPOST_SHIPX_ZAPIS_MANIFEST.adapterKey, PP_ZAPIS_MANIFEST.adapterKey, BASE_COURIER_ZAPIS_KEY, ALLEGRO_WYSYLAM_ZAPIS_KEY])
 
 export function sledzenieModulu(adapterKey: string, wybory: SledzeniePrzewoznikow = {}): boolean {
   return typeof wybory[adapterKey] === 'boolean' ? wybory[adapterKey] : SLEDZENIE_DOMYSLNIE_WLACZONE.has(adapterKey)
@@ -402,6 +409,8 @@ export function kluczeSledzeniaDoDoreczenia(registry: AdapterRegistry): string[]
  * Jeden przebieg śledzenia: spakowane z numerem nadania, starsze niż SLEDZENIE_PO_MS, których magazyn nie przeniósł
  * do „Wysłane” (nie kliknął przyjazdu). Przewoźnik mówi „u nas” = „Wysłane” tą samą drogą co pkt 1. Przewoźnik bez
  * śledzenia nie jest pytany. Każda przesyłka osobno; błędy razem w wyjątku na końcu (ślad w Job.lastError).
+ * paczka DPD/DPD_EMPIK z numerem listu przy firmie z kompletnym kontem DPD jest pytana prosto w DPD
+ * (DPDInfoServices, lib/wysylka/sledzenie-dpd.ts); brak konta, brak zdarzeń albo błąd DPD = droga modułu przesyłki.
  *
  * Z włączonym „Śledź paczki aż do doręczenia” (domyślnie wyłączone) dodatkowo: przesyłki zamówień po „Wysłane” (i w
  * każdym innym statusie poza kolejką „Wysłane”) do stanu końcowego na osi, najdłużej SLEDZENIE_DO_KONCA_DNI od
@@ -409,7 +418,7 @@ export function kluczeSledzeniaDoDoreczenia(registry: AdapterRegistry): string[]
  * Dla nich bez zmiany statusu zamówienia i bez zdarzenia zamówienia „status przesyłki” (automatyczne akcje widzą
  * śledzenie jak dotąd, tylko przed „Wysłane”). Wyłączone = ten sam wybór i te same zapisy co przed dodaniem osi.
  */
-export async function sledzeniePrzesylek(db: Db, deps: DepsNadania & { env?: Env } = {}): Promise<WynikSledzenia> {
+export async function sledzeniePrzesylek(db: Db, deps: DepsNadania & { env?: Env; dpd?: OpcjeSledzeniaDpd } = {}): Promise<WynikSledzenia> {
   organizationIdOf(db)
   const wynik: WynikSledzenia = { sprawdzone: 0, przeniesione: 0, bledy: [] }
   const automaty = await automatyWysylki(db)
@@ -417,17 +426,23 @@ export async function sledzeniePrzesylek(db: Db, deps: DepsNadania & { env?: Env
   const doKonca = automaty.sledzenieDoDoreczenia
   const registry = deps.registry ?? defaultRegistry()
   const klucze = kluczeSledzenia(registry, await sledzeniePrzewoznikow(db))
-  if (!klucze.length) return wynik
+  // paczki DPD (także nadane przez Base Courier) pytamy prosto w DPD, gdy firma ma kompletne konto DPD;
+  // przewoźnicy z kontem wchodzą do zapytań niezależnie od modułu przesyłki i od listy przewoźników do pytania
+  const dpd = new SledzenieDpdPrzebiegu(db, zrodloSekretow(deps), { fetch: deps.fetch, ...deps.dpd })
+  const przewoznicyDpd = await dpd.przewoznicy()
+  if (!klucze.length && !przewoznicyDpd.length) return wynik
+  const modulLubDpd = (kl: string[]): Prisma.ShipmentWhereInput => ({
+    OR: [{ adapterKey: { in: kl } }, ...(przewoznicyDpd.length ? [{ carrier: { in: przewoznicyDpd }, trackingNumber: { not: null } }] : [])],
+  })
   const now = deps.now?.() ?? new Date()
   const doWyslania = await db.shipment.findMany({
     where: {
       state: 'UTWORZONA',
-      adapterKey: { in: klucze },
       trackingNumber: { not: null },
       externalRef: { not: null },
       trackingStoppedAt: null,
       createdAt: { lte: new Date(now.getTime() - SLEDZENIE_PO_MS), gte: new Date(now.getTime() - OKNO_DNI * 86_400_000) },
-      OR: [{ trackedAt: null }, { trackedAt: { lt: new Date(now.getTime() - SLEDZENIE_CO_MS) } }],
+      AND: [modulLubDpd(klucze), { OR: [{ trackedAt: null }, { trackedAt: { lt: new Date(now.getTime() - SLEDZENIE_CO_MS) } }] }],
       // kolejka „Wysłane” tylko dla głównej przesyłki: odbiór dosyłki nie zmienia statusu zamówienia (dodatkowa
       // spakowanego zamówienia czeka na odczyt po „Wysłane”, w śledzeniu do doręczenia)
       extraNo: 0,
@@ -445,18 +460,17 @@ export async function sledzeniePrzesylek(db: Db, deps: DepsNadania & { env?: Env
   else {
     const doreczenie = new Set(kluczeSledzeniaDoDoreczenia(registry))
     const kluczeDoreczenia = klucze.filter((k) => doreczenie.has(k))
-    if (kluczeDoreczenia.length)
+    if (kluczeDoreczenia.length || przewoznicyDpd.length)
       for (const s of await db.shipment.findMany({
         where: {
           id: { notIn: doWyslania.map((x) => x.id) },
           state: 'UTWORZONA',
-          adapterKey: { in: kluczeDoreczenia },
           externalRef: { not: null },
           trackingStoppedAt: null,
           // tylko główna przesyłka: stan dosyłki nie może zastąpić na karcie stanu głównej paczki
           extraNo: 0,
           createdAt: { gte: new Date(now.getTime() - OKNO_DNI * 86_400_000) },
-          OR: [{ trackedAt: null }, { trackedAt: { lt: new Date(now.getTime() - SLEDZENIE_PO_WYSYLCE_CO_MS) } }],
+          AND: [modulLubDpd(kluczeDoreczenia), { OR: [{ trackedAt: null }, { trackedAt: { lt: new Date(now.getTime() - SLEDZENIE_PO_WYSYLCE_CO_MS) } }] }],
           order: {
             status: 'WYSLANE',
             AND: [
@@ -503,24 +517,28 @@ export async function sledzeniePrzesylek(db: Db, deps: DepsNadania & { env?: Env
     let konto = `${s.adapterKey}|${s.accountSuffix ?? ''}`
     let nazwa = s.adapterKey
     try {
-      let a: ChannelAdapter
-      try {
-        a = await adapterDlaPrzesylki(db, s, deps)
-      } catch (e) {
-        wynik.bledy.push(`${s.reference}: ${krotko(e instanceof Error ? e.message : String(e))}`)
-        await poBledziePrzesylki(s)
-        continue
+      // najpierw DPD (gdy dotyczy); brak wyniku albo błąd DPD = droga modułu przesyłki (np. Base Courier)
+      let t: OdczytPrzesylki | null = await dpd.odczyt(s)
+      if (!t) {
+        let a: ChannelAdapter
+        try {
+          a = await adapterDlaPrzesylki(db, s, deps)
+        } catch (e) {
+          wynik.bledy.push(`${s.reference}: ${krotko(e instanceof Error ? e.message : String(e))}`)
+          await poBledziePrzesylki(s)
+          continue
+        }
+        konto = `${s.adapterKey}|${kluczKonta(a) ?? s.accountSuffix ?? ''}`
+        nazwa = `${a.manifest.displayName}${s.accountSuffix ? ` (konto ${s.accountSuffix})` : ''}`
+        // konto przerwane w tym przebiegu (błąd konta, kilka błędów sieci z rzędu): przesyłka czeka do następnego
+        if (przerwane.has(konto)) {
+          await odlozNiepytana(s.id)
+          continue
+        }
+        if (!hasShipmentTracker(a)) throw new BladKontaSledzenia(BEZ_SLEDZENIA)
+        t = await a.trackShipment(s.externalRef!)
+        bledySieci.set(konto, 0)
       }
-      konto = `${s.adapterKey}|${kluczKonta(a) ?? s.accountSuffix ?? ''}`
-      nazwa = `${a.manifest.displayName}${s.accountSuffix ? ` (konto ${s.accountSuffix})` : ''}`
-      // konto przerwane w tym przebiegu (błąd konta, kilka błędów sieci z rzędu): przesyłka czeka do następnego
-      if (przerwane.has(konto)) {
-        await odlozNiepytana(s.id)
-        continue
-      }
-      if (!hasShipmentTracker(a)) throw new BladKontaSledzenia(BEZ_SLEDZENIA)
-      const t = await a.trackShipment(s.externalRef!)
-      bledySieci.set(konto, 0)
       wynik.sprawdzone++
       const nowyStatus = t.status?.slice(0, 60) ?? null
       // nieznany stan liczony czasem od pierwszego odczytu serii (etykieta w piątek, kurier w poniedziałek = dalej pytamy).
@@ -589,6 +607,8 @@ export async function sledzeniePrzesylek(db: Db, deps: DepsNadania & { env?: Env
     // przesyłki z nieudanymi próbami na końcu: kilkadziesiąt trwale błędnych nie zagłodzi pozostałych
     for (const z of await db.shipment.findMany({ where: { trackRulesPending: true, id: { notIn: [...obsluzone] } }, orderBy: [{ trackRulesFailures: 'asc' }, { updatedAt: 'asc' }], take: REGULY_DROGI_ZALEGLE, select: { id: true } }))
       await regulyDrogi(z.id)
+  const bladDpd = dpd.podsumowanieBledow()
+  if (bladDpd) wynik.bledy.push(bladDpd)
   return wynik
 }
 

@@ -2,15 +2,20 @@
 // w kanale i koszt wysyłki. Nowe zamówienia dostają je przy przyjęciu (lib/rdzen/zamowienia.ts, `opisPozycji`); starsze
 // uzupełnia „Odśwież z kanału” na karcie. Tylko odczyt kanału (zdolność dziennika zamówień, `getOrder`) — bez danych
 // klienta, więc działa też na koncie w cieniu. Zapis idempotentny przez `zapiszOpisZKanalu`: zmienia pola opisowe
-// i wartość zamówienia przy otwartych kwotach, nigdy status, rezerwacje ani rewizję zamówienia.
+// i wartość zamówienia przy otwartych kwotach, a przy otwartych kwotach także ceny pozycji;
+// nigdy rezerwacje ani rewizję zamówienia (cena inna w kanale przy zamkniętych kwotach zostaje bez zmian). Status
+// zmienia wyłącznie uzupełnienie pustego sposobu dostawy (`dostawaZKanalu`): wyjście z „Do wyjaśnienia”,
+// gdy brak dostawy był jedynym powodem.
 import type { PrismaClient } from '@prisma/client'
 import { createAccountAdapter, loadChannelAccounts } from '../adaptery/konta'
-import { AdapterError, hasOrderFeed } from '../adaptery/kontrakt'
+import { AdapterError, type ChannelOrder, hasOrderFeed } from '../adaptery/kontrakt'
 import type { AdapterRegistry } from '../adaptery/rejestr'
+import { zapisKlientaWlaczony, zaplanujZapisKlienta } from '../klienci/kolejka'
 import type { SecretSource } from '../sekrety'
 import type { FetchLike } from '../zrodla/http'
+import { hintAllocate } from '../rdzen/rezerwacja'
 import { runTx } from '../rdzen/stan'
-import { zapiszOpisZKanalu } from '../rdzen/zamowienia'
+import { dostawaZKanalu, type WynikDostawyZKanalu, zapiszOpisZKanalu } from '../rdzen/zamowienia'
 
 export interface OdswiezOpisDeps {
   registry: AdapterRegistry
@@ -52,9 +57,24 @@ export async function odswiezOpisZKanalu(db: PrismaClient, orderId: string, deps
     return { wynik: 'BLAD', powod: `Odczyt z kanału nie powiódł się (${rodzaj}).` }
   }
   if (!zamowienie) return { wynik: 'BRAK_W_KANALE' }
-  // także wartość zamówienia, dopóki kwoty są otwarte (bez faktury, wpłaty w Kompletorze, edycji, pakowania)
-  const zmian = await runTx(db, (tx) =>
-    zapiszOpisZKanalu(tx, o.id, { channelNumber: zamowienie.number ?? null, shippingCostGross: zamowienie.shippingCostGross ?? null, totalGross: zamowienie.totalGross, lines: zamowienie.lines }, { actorId: deps.actorId ?? 'system:opis-z-kanalu' }),
-  )
+  const { zmian } = await zapiszOdczytZKanalu(db, o.id, zamowienie, deps.actorId ?? 'system:opis-z-kanalu', deps.now?.() ?? new Date())
   return { wynik: 'OK', zmian }
+}
+
+/**
+ * Zapis jednego odczytu zamówienia z kanału do istniejącego zamówienia, bez nowej rewizji (karta „Odśwież z kanału”,
+ * ponowny odczyt świeżego zamówienia z pustym sposobem dostawy). Jedna transakcja: opis, wartość i ceny
+ * pozycji przy otwartych kwotach oraz pusty sposób dostawy z przewoźnikiem z reguł firmy
+ * (`dostawaZKanalu`; po uzupełnieniu dane klienta, w tym punkt odbioru, idą do ponownego zapisu, gdy zapis jest włączony).
+ */
+export async function zapiszOdczytZKanalu(db: PrismaClient, orderId: string, zamowienie: ChannelOrder, actorId: string, now: Date): Promise<{ zmian: number; dostawa: WynikDostawyZKanalu | null }> {
+  return runTx(db, async (tx) => {
+    const zmian = await zapiszOpisZKanalu(tx, orderId, { channelNumber: zamowienie.number ?? null, shippingCostGross: zamowienie.shippingCostGross ?? null, totalGross: zamowienie.totalGross, lines: zamowienie.lines }, { actorId, ceny: 'otwarte' })
+    const dostawa = await dostawaZKanalu(tx, orderId, zamowienie.deliveryMethod, actorId)
+    if (dostawa) {
+      await hintAllocate(tx, orderId, now)
+      if (zapisKlientaWlaczony(process.env)) await zaplanujZapisKlienta(tx, orderId, now)
+    }
+    return { zmian: zmian + (dostawa ? 1 : 0), dostawa }
+  })
 }

@@ -117,7 +117,8 @@ describe('statusy firmy w menu „Zamówienia” (×)', () => {
     const l = await licznikiPanelu(b)
     expect(l.firmy).toBeUndefined()
     const p = pozycjeStatusow(l)
-    for (const g of GRUPY_PANELU) expect(p.find((x) => x.widok?.widok === g.klucz && !x.widok.przewoznik)?.licznik, g.klucz).toBe(l.grupy[g.klucz])
+    // „Wszystkie” bez licznika; reszta grup = dawny panel
+    for (const g of GRUPY_PANELU) expect(p.find((x) => x.widok?.widok === g.klucz && !x.widok.przewoznik)?.licznik, g.klucz).toBe(g.klucz === 'wszystkie' ? undefined : l.grupy[g.klucz])
     expect(await sprawdzKlikniecia(b, p)).toBeGreaterThan(8)
   })
 

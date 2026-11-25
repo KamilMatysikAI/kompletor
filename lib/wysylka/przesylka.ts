@@ -114,13 +114,32 @@ function wymiary(input: ShipmentInput, u: UstawieniaPrzesylki): { sides: readonl
   return { sides: [w.sideXCm, w.sideYCm, w.sideZCm], problemy: [ostrzezenie('wymiary_domyslne', `Wymiary robocze ${w.sideXCm}×${w.sideYCm}×${w.sideZCm} cm: firma nie ustawiła domyślnych wymiarów DPD.`)] }
 }
 
-export function waga(input: ShipmentInput, u: UstawieniaPrzesylki): { gramy: number; problemy: ShipmentProblem[] } {
+/** Ekran, na którym firma ustawia wagę domyślną paczki (pole konta przewoźnika „waga paczki w kg…”). */
+export const GDZIE_WAGA_DOMYSLNA = 'Ustawienia → Wysyłka i druk → Przewoźnicy → Konta przewoźników'
+/** Ekran wagi produktu (pole „Waga (g)” na karcie produktu). */
+export const GDZIE_WAGA_PRODUKTU = 'Produkty → karta produktu, pole „Waga (g)”'
+
+const kg = (gramy: number) => `${(gramy / 1000).toLocaleString('pl-PL')} kg`
+
+/**
+ * Waga paczki: ze składu, a gdy produkty nie mają wagi, domyślna (nie mniej niż znana część). Tekst mówi
+ * pakującemu, z jaką wagą paczka pójdzie i gdzie to zmienić. Poziom zależy od tego, czy wagę domyślną ustawiła firma:
+ *  - ustawiona (`defaultWeightKg` konta albo reguły) = INFO, bez potwierdzania przy każdej paczce;
+ *  - nieustawiona (wbudowane 1 kg) albo waga niepełna (znana część większa od domyślnej) = OSTRZEZENIE do potwierdzenia.
+ * Kod zawsze `waga_domyslna`; liczba, która idzie do przewoźnika, bez zmian. `gdzieUstawienie: null` = moduł, w którym
+ * panel nie ustawia wagi domyślnej (Wysyłam z Allegro bierze ją z reguły).
+ */
+export function waga(input: ShipmentInput, u: UstawieniaPrzesylki, o: { gdzieUstawienie?: string | null } = {}): { gramy: number; problemy: ShipmentProblem[] } {
   if (input.weightComplete && input.weightG !== null && input.weightG > 0) return { gramy: input.weightG, problemy: [] }
   const zaKg = u.weightKg ?? WBUDOWANE_USTAWIENIA.weightKg
   const znane = input.weightG ?? 0
   const gramy = Math.max(Math.round(zaKg * 1000), znane)
-  const tekst = znane > 0 && gramy === znane ? `Waga niepełna: ${gramy / 1000} kg znanych pozycji plus sztuki bez wagi.` : `Waga domyślna ${gramy / 1000} kg: produkty w zamówieniu nie mają wagi.`
-  return { gramy, problemy: [ostrzezenie('waga_domyslna', tekst)] }
+  const gdzie = o.gdzieUstawienie === undefined ? GDZIE_WAGA_DOMYSLNA : o.gdzieUstawienie
+  if (znane > 0 && gramy === znane)
+    return { gramy, problemy: [ostrzezenie('waga_domyslna', `Paczka pójdzie z wagą ${kg(gramy)}: tyle ważą produkty z wpisaną wagą, część produktów nie ma wagi. Brakującą wagę wpiszesz w: ${GDZIE_WAGA_PRODUKTU}.`)] }
+  if (u.weightKg !== null)
+    return { gramy, problemy: [{ kod: 'waga_domyslna', poziom: 'INFO', tekst: `Paczka pójdzie z wagą ${kg(gramy)} z ustawień przewoźnika (produkty nie mają wpisanej wagi).${gdzie ? ` Zmienisz ją w: ${gdzie}.` : ''}` }] }
+  return { gramy, problemy: [ostrzezenie('waga_domyslna', `Paczka pójdzie z wagą ${kg(gramy)}: produkty nie mają wpisanej wagi, a firma nie ustawiła wagi domyślnej.${gdzie ? ` Ustawisz ją w: ${gdzie}.` : ''}`)] }
 }
 
 /** Parametry przesyłki z danych zamówienia. Bez efektów ubocznych; `problems` z poziomem BLAD = nie do nadania. */

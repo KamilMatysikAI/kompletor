@@ -15,8 +15,12 @@ jest potrzebna: firma bez wFirmy i bez BaseLinkera zakłada w panelu towar ze st
 | Powiązania produktu (oferty, towar wFirmy) | karta produktu → zakładka **„Powiązania”** | `/produkty/<id>#powiazania` | podgląd: każdy zalogowany; zmiany: `produkty.dodawanie` (biuro) |
 | Łączenie ofert z produktami (masowo) | **Ustawienia → Sprzedaż i kanały → Kanały sprzedaży** → konto → sekcja **„Łączenie ofert z produktami”** | `/ustawienia/kanaly/<konto>#laczenie` | `ustawienia` |
 | Produkty bez stanu | **Produkty** → przycisk **„Produkty bez stanu”** (także w menu pod „Produkty”) | `/produkty/bez-stanu` | `produkty.dodawanie` |
+| Sortowanie listy produktów | **Produkty** → kliknięcie nagłówka kolumny nad listą; na telefonie przyciski **„Sortuj:”** nad listą ([opis](#sortowanie-listy)) | `/produkty?sort=dostepne&kier=rosnaco` | każdy zalogowany |
 | Kafle kompletności (braki danych) | **Produkty** → rząd kafli nad listą; kafel filtruje listę ([opis](#kafle-kompletnosci)) | `/produkty?filtr=bez_ean` (i `bez_wagi`, `bez_oferty`, `bez_strefy`) | każdy zalogowany |
 | Import i eksport CSV | **Produkty** → przycisk **„Import i eksport CSV”** (prawy górny róg) | `/produkty/csv` | `produkty.dodawanie` (także sam plik eksportu `/api/produkty/eksport`, bo zawiera ceny zakupu) |
+| Kategorie produktów | **Produkty** → przycisk **„Kategorie”** (prawy górny róg) | `/produkty/kategorie` | każdy zalogowany (podgląd); zmiany: `produkty.dodawanie` |
+| Kategoria produktu | karta produktu → sekcja **„Kategoria”**; masowo: **Produkty** → pola wyboru przy produktach → **„Przypisz kategorię”** na pasku nad listą | `/produkty/<id>#kategoria`, `/produkty` | podgląd: każdy zalogowany; zmiany: `produkty.dodawanie` |
+| Wyłączenie i włączenie produktu | karta produktu → przycisk **„Wyłącz produkt”** / **„Włącz produkt”** (prawy górny róg); masowo: **Produkty** → pola wyboru przy produktach → **„Wyłącz / włącz (N)”** na pasku nad listą; wyłączone: zakładka **„Wyłączone”** nad listą ([opis](#wylaczanie-i-wlaczanie-produktu)) | `/produkty/<id>`, `/produkty?filtr=nieaktywne` | `produkty.dodawanie` |
 | Warianty | karta produktu → **Produkt** → pole **„Grupa wariantów”**; lista wariantów w sekcji **„Warianty”** | `/produkty/<id>#warianty` | jak karta produktu |
 | Zdjęcia z feedu | **Produkty** → przycisk **„Zdjęcia z feedu”** (prawy górny róg) | `/produkty/zdjecia-z-feedu` | `produkty.dodawanie` (także lista bez dopasowania `/api/produkty/feed-bez-dopasowania`) |
 | Publikacja: podgląd ofert i „Wystaw” | karta produktu → zakładka **„Publikacja”** ([Oferty](oferty.md)) | `/produkty/<id>/publikacja` | każdy zalogowany; „Wystaw”: `produkty.dodawanie` |
@@ -151,7 +155,7 @@ gdzie go włączyć.
 ### Import i eksport CSV
 
 **Produkty → „Import i eksport CSV”.** **„Pobierz plik CSV”** zapisuje cały katalog (SKU, nazwa, EAN, cena brutto, VAT,
-cena zakupu, waga, wymiary, próg niskiego stanu, lokalizacja, grupa wariantów, stan, opis, a na końcu rodzaj, źródło
+cena zakupu, waga, wymiary, próg niskiego stanu, lokalizacja, grupa wariantów, kategoria, stan, opis, a na końcu rodzaj, źródło
 danych i czy aktywny). Plik otworzysz w Excelu (separator „;”, polskie znaki, przecinek w liczbach).
 
 **Import** przyjmuje ten sam układ kolumn (pierwsza linia: nagłówki; kolejność dowolna, wielkość liter i polskie znaki
@@ -163,9 +167,66 @@ w nagłówkach bez znaczenia):
 - zły wiersz (np. zły EAN, SKU drugi raz w pliku) jest pominięty i opisany w raporcie pod formularzem z numerem linii;
   reszta się zapisuje,
 - plik: CSV w UTF-8 do 5 MB, najwyżej 5 000 produktów na raz; inne pliki (Excel .xlsx, HTML) są odrzucane.
+- kolumna **„Aktywny”** (w eksporcie ostatnia: „tak” albo „nie”) wyłącza albo włącza produkt, z tymi samymi zasadami co
+  przycisk na karcie ([Wyłączanie i włączanie](#wylaczanie-i-wlaczanie-produktu)); pusta komórka nic nie zmienia, inna
+  wartość niż „tak” / „nie” (albo 1 / 0) to błąd wiersza; produkt, którego nie wolno teraz wyłączyć, zapisuje resztę
+  pól, a w raporcie dostaje uwagę z powodem,
+- kolumna **„Kategoria”** to ścieżka w drzewie kategorii, poziomy oddzielone znakiem „>” (np. `Napoje > Soki`);
+  wielkość liter bez znaczenia, pusta komórka nic nie zmienia, `(brak)` usuwa kategorię produktu. Brakujące kategorie
+  import zakłada sam, gdy zaznaczone jest **„Twórz brakujące kategorie”** (domyślnie tak); bez tego wiersz z nieznaną
+  kategorią jest pominięty i opisany w raporcie. Nowe kategorie powstają tylko dla wierszy, które się zapisały: wiersz
+  pominięty z innego powodu (np. nowy produkt bez nazwy) nie zostawia w drzewie pustej kategorii. Nazwy „brak” i „(brak)”
+  są zajęte (filtr i plik CSV oznaczają nimi produkty bez kategorii).
 
 Firma prowadząca stany w wFirmie zakłada nowe towary ze stanem w wFirmie; import zmienia u niej tylko pola, które
 nie przychodzą z wFirmy.
+
+### Kategorie
+
+**Produkty → „Kategorie”.** Drzewo kategorii firmy, do 5 poziomów (np. `Napoje > Soki > Jabłkowe`). Nazwy, układ
+i przypisania to dane firmy: Kompletor nie narzuca żadnej kategorii. Produkt ma **jedną** kategorię (albo żadnej);
+filtr **„Kategoria”** nad listą produktów pokazuje kategorię razem z jej podkategoriami, a opcja „Bez kategorii” produkty
+jeszcze nieprzypisane. Liczba przy kategorii to produkty całej gałęzi; kliknięcie otwiera przefiltrowaną listę.
+
+Na ekranie (z uprawnieniem `produkty.dodawanie`):
+
+- **„Dodaj kategorię”**: nazwa do 80 znaków bez znaku „>”, kategoria nadrzędna opcjonalna; na jednym poziomie nazwa nie może
+  się powtórzyć,
+- strzałki **↑ ↓** zmieniają kolejność kategorii na jednym poziomie,
+- **„Zmień”** otwiera okno: nowa nazwa, przeniesienie pod inną kategorię (razem z podkategoriami; produkty zostają
+  w swoich kategoriach) i usunięcie,
+- usunąć można kategorię bez podkategorii; jej produkty przechodzą do kategorii nadrzędnej albo do wskazanej kategorii
+  (albo zostają bez kategorii, gdy to wybierzesz) w jednym kroku, z wpisem w historii każdego produktu. Na karcie
+  produktu widać wtedy źródło „przeniesiona przy usunięciu kategorii”.
+
+Kategorię jednego produktu zmienia karta produktu (sekcja **„Kategoria”**, przy niej źródło: ręcznie, z pliku CSV),
+wielu naraz pasek nad listą (**„Przypisz kategorię”**, do 1 000 produktów), a cały katalog kolumna „Kategoria” w pliku
+CSV. Każda zmiana trafia do historii produktu.
+
+### Wyłączanie i włączanie produktu
+
+**Karta produktu → przycisk „Wyłącz produkt”** (prawy górny róg, po potwierdzeniu w oknie). Wyłączony produkt ma przycisk
+**„Włącz produkt”**, który cofa zmianę. Masowo: **Produkty** → zaznacz produkty → **„Wyłącz / włącz (N)”** na pasku
+nad listą → wybór i **„Zapisz”** (najwyżej 1 000 naraz; wyłączone znajdziesz w zakładce **„Wyłączone”**). Trzecia droga:
+kolumna „Aktywny” w imporcie CSV. Każda zmiana trafia do historii produktu. Zmienia osoba z uprawnieniem
+`produkty.dodawanie`.
+
+Wyłączony produkt znika z domyślnej listy, z kafli kompletności, z raportu dziennego i alertów niskiego stanu; nie da się
+go dodać do zamówienia ręcznie, wybrać jako zamiennika ani powiązać z ofertą. **Nic nie jest kasowane**: stan
+magazynowy, historia, zdjęcia, kategoria i stare zamówienia zostają. Import ofert, BaseLinker i odczyt stanów z wFirmy
+nie włączają produktu z powrotem.
+
+Produktu **nie da się wyłączyć**, gdy:
+
+- ma aktywną ofertę w kanale (stan dalej szedłby do sklepu, a zamówienia trafiałyby na wyłączony produkt): najpierw
+  odłącz ofertę na karcie produktu (**Powiązania** → „Odłącz”) albo wyłącz ją w sklepie,
+- ma rezerwację w toku albo jest w otwartym zamówieniu (nie wysłanym, nie odebranym, nie anulowanym): poczekaj na
+  spakowanie albo anuluj zamówienie,
+- jest składnikiem aktywnego zestawu: wyłącz zestaw (także razem ze składnikiem, w jednym zaznaczeniu) albo zmień skład.
+
+Przycisk na karcie jest wtedy nieaktywny, a podpowiedź mówi dlaczego. Masowo produkty z przeszkodą zostają włączone,
+a komunikat wymienia je z powodem; pozostałe się wyłączają. Stan na magazynie nie blokuje wyłączenia (okno
+potwierdzenia o nim przypomina).
 
 ### Warianty
 
@@ -291,6 +352,24 @@ Zaznacz oferty z „Połączy” i **„Połącz zaznaczone”**: łączy tylko 
 zapisane przy pobraniu ofert albo imporcie z BaseLinkera, wyłączone do czasu potwierdzenia (stan na te oferty nie
 wychodzi): zaznacz i **„Zatwierdź zaznaczone”**.
 
+## Sortowanie listy
+
+Kliknięcie nagłówka kolumny na liście **Produkty** sortuje całą listę (wszystkie strony, nie tylko bieżącą) rosnąco,
+drugie kliknięcie tej samej kolumny malejąco. Strzałka przy nagłówku pokazuje kierunek (▲ rosnąco, ▼ malejąco).
+Na telefonie nagłówków nie widać, więc te same kolumny stoją nad listą jako przyciski po słowie „Sortuj:”.
+
+- Sortować można po kolumnach: Produkt (nazwa), Kategoria (gdy firma ma kategorie), Lokalizacja, Fizycznie,
+  Zarezerwowane, Dostępne i Oferty. Bez wybranej kolumny lista idzie po nazwie od A do Z.
+- „Dostępne” sortuje dokładnie tę liczbę, którą widać w kolumnie: fizycznie minus zarezerwowane, zsumowane ze
+  wszystkich magazynów, a gdy rezerwacji jest więcej niż towaru, 0. Tak samo „Fizycznie” i „Zarezerwowane” (suma magazynów).
+- Zestawy, produkty bez stanu (e-booki, usługi) i produkty bez wiersza stanu nie mają liczby w tych kolumnach, więc
+  stoją na końcu listy w obu kierunkach. Puste „Kategoria” i „Lokalizacja” też idą na koniec.
+- Liczby są w jednostce produktu (sztuki albo gramy), sortowanie ich nie przelicza: rosnąco 1 kg (1 000 g) stoi za 900 szt.
+- Przy równych wartościach kolejność ustala nazwa, więc produkt nie przeskakuje między stronami.
+- Sortowanie zostaje przy przechodzeniu między stronami, zmianie zakładki, kategorii i wyszukiwania; zmiana sortowania
+  wraca na pierwszą stronę. Kafel kompletności zaczyna listę od nowa, tak jak wcześniej czyścił wyszukiwanie.
+  Kolejność jest w adresie strony (`?sort=dostepne&kier=malejaco`), więc link do posortowanej listy można zapisać.
+
 ## Kafle kompletności
 
 Nad listą produktów stoi rząd kafli z brakami danych w aktywnych produktach. Każdy kafel to link: lista pokazuje wtedy tylko te produkty, a liczba na kaflu i liczba wierszy listy liczą się z tego samego zbioru. Drugie kliknięcie w zaznaczony kafel wraca do pełnej listy; wyszukiwanie zawęża dalej w obrębie kafla.
@@ -363,7 +442,11 @@ Produkt bez stanu dodany ekranem „Dodaj produkt” trafia na tę listę sam.
 - nie zmieniają rodzaju ani jednostki istniejącego produktu,
 - nie łączą wariantów w jedną ofertę w sklepie (warianty to grupa produktów w Kompletorze),
 - niczego nie zapisują w wFirmie (towar ze stanem w firmie z wFirmą dodaje się w wFirmie ręcznie),
-- nie usuwają produktu (produkt wyłącza import albo kanał),
+- nie usuwają produktu (produkt można tylko wyłączyć: przycisk „Wyłącz produkt” na karcie, lista albo kolumna „Aktywny” w CSV),
+- nie wyłączają oferty w sklepie (oferta zostaje w sklepie; odłączenie oferty od produktu: karta produktu → **Powiązania**),
+- nie pobierają kategorii ze sklepu ani nie zapisują ich w sklepie (kategorie ustawia się w Kompletorze: ekran „Kategorie”, karta, lista albo CSV),
+- nie dają produktowi kilku kategorii naraz (jedna kategoria na produkt),
+- nie zapamiętują sortowania listy na koncie: kolejność żyje w adresie strony, wejście z menu pokazuje listę po nazwie,
 - nie zapisują niczego w feedzie ani w sklepie i nie wymieniają zdjęć produktom, które już je mają („Zdjęcia z feedu”;
   zdjęcie zmienia się na karcie produktu → **Zdjęcia**),
 - nie robią zdjęć lifestyle (packshot tak, za wyłącznikiem, sekcja „Packshot (AI)”),

@@ -32,3 +32,15 @@
 }
 .rap-mobile { display: none; }
 @media (max-width: 640px) { .rap-mobile { display: block; } .rap-przewin .tbl th, .rap-przewin .tbl td { padding-left: 6px; padding-right: 6px; } }
+/* wybór okresu porównania; własny zakres to dwie daty w jednej grupie (bez ramki fieldset) */
+.rap-wlasny { display: flex; flex-wrap: wrap; gap: var(--s3); align-items: flex-end; border: 0; margin: 0; padding: 0; min-width: 0; flex: 2 1 300px; max-width: 480px; }
+.rap-wlasny legend { padding: 0; margin-bottom: 2px; }
+.rap-wlasny .field { margin: 0; flex: 1 1 130px; min-width: 130px; }
+.rap-porownanie { margin: var(--s4) 0 0; }
+@media (max-width: 640px) { .rap-wlasny { max-width: none; } }
+/* daty własnego zakresu tylko przy wybranym „Własny zakres”; bez obsługi :has zostają widoczne (formularz działa bez JS) */
+@supports selector(:has(*)) {
+  .rap-filtry:not(:has(#rap-porownaj option[value="wlasny"]:checked)) .rap-wlasny { display: none; }
+}
+/* opis okresu porównania pod kwotą w tabeli łamie się w wierszu zamiast poszerzać kolumnę (390 px). */
+.tbl td.right .rap-por { white-space: normal; min-width: 9em; }

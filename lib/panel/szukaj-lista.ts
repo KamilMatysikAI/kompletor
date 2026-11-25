@@ -15,7 +15,7 @@ import { otworzFraze, otworzTokenFrazy } from '../klienci/fraza-token'
 import { szukajKlientaPoFrazie, szukajPoSkrocie } from '../klienci/odczyt'
 import { FRAZA_MIN, normalizujTekst, zamowieniaKlientaFragmentem } from '../klienci/szukaj-fragment'
 import type { Env } from '../sekrety'
-import { filtryZ, type FiltryListy } from './zamowienia-lista'
+import { filtryZ, warunkiNumeru, type FiltryListy } from './zamowienia-lista'
 
 type Parametry = Record<string, string | string[] | undefined>
 const one = (v: string | string[] | undefined) => (Array.isArray(v) ? v[0] : v)
@@ -60,7 +60,8 @@ export function komunikatZ(kb: string | undefined): string | null {
 async function trafiaWNumer(db: PrismaClient, fraza: string): Promise<boolean> {
   const q = fraza.trim()
   if (!/^\d{9}$/.test(q)) return false
-  const o = await db.order.findFirst({ where: { OR: [{ externalId: { contains: q } }, { channelNumber: { contains: q } }] }, select: { id: true } })
+  // także numer zamówienia BL (numer główny na liście i karcie Empiku), żeby nie szukać go jako telefonu
+  const o = await db.order.findFirst({ where: { OR: warunkiNumeru(q) }, select: { id: true } })
   return !!o
 }
 

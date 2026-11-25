@@ -5,7 +5,7 @@
 // i pyta bazę, więc działa tak samo przy 30 i przy 30 000 wierszach.
 import Link from 'next/link'
 import type { ReactNode } from 'react'
-import { adresSortu, adresZ, ILE_NA_STRONE, zakresStrony, type SortTabeli } from '@/lib/panel/tabela'
+import { adresSortu, adresZ, ILE_NA_STRONE, zakresStrony, type Kierunek, type SortTabeli } from '@/lib/panel/tabela'
 import { KlikalneWiersze, MenuWiecej, PasekAkcjiMasowych, PoleZaznaczenia, WyborKolumn, ZaznaczanieTabeli, ZaznaczWszystkie } from './tabela-klient'
 
 export interface KolumnaTabeli {
@@ -136,15 +136,10 @@ export function Tabela({
                     data-kol={k.klucz}
                     className={k.wyrownanie === 'prawo' ? 'right' : undefined}
                     style={k.szerokosc ? { width: k.szerokosc } : undefined}
-                    aria-sort={sort?.klucz === k.klucz ? (sort.kierunek === 'rosnaco' ? 'ascending' : 'descending') : undefined}
+                    aria-sort={ariaSortu(sort, k.klucz)}
                   >
                     {k.sortowalna && adres ? (
-                      <Link className="ui-sort" href={adresSortu(adres.sciezka, adres.parametry, sort, k.klucz)}>
-                        {k.etykieta}
-                        <span className="ui-sort-znak" aria-hidden="true">
-                          {sort?.klucz === k.klucz ? (sort.kierunek === 'rosnaco' ? '▲' : '▼') : '↕'}
-                        </span>
-                      </Link>
+                      <LinkSortu etykieta={k.etykieta} href={adresSortu(adres.sciezka, adres.parametry, sort, k.klucz)} kierunek={sort?.klucz === k.klucz ? sort.kierunek : undefined} />
                     ) : (
                       k.etykieta
                     )}
@@ -175,6 +170,58 @@ export function Tabela({
     </>
   )
   return <div className="ui-tabela-blok">{zaznaczanie ? <ZaznaczanieTabeli ids={wiersze.map((w) => w.id)}>{tresc}</ZaznaczanieTabeli> : tresc}</div>
+}
+
+// ───: nagłówek sortowalny wspólny dla `Tabela` i tabel pisanych ręcznie (lista produktów) ─────────────
+
+/** Wartość `aria-sort`: tylko kolumna, po której lista jest teraz posortowana. */
+export function ariaSortu(sort: SortTabeli | undefined, klucz: string): 'ascending' | 'descending' | undefined {
+  return sort?.klucz === klucz ? (sort.kierunek === 'rosnaco' ? 'ascending' : 'descending') : undefined
+}
+
+const znakSortu = (kierunek: Kierunek | undefined) => (kierunek === 'rosnaco' ? '▲' : kierunek === 'malejaco' ? '▼' : '↕')
+
+/** Link w nagłówku kolumny: etykieta i strzałka kierunku (▲ rosnąco, ▼ malejąco, ↕ kolumna nieaktywna). */
+export function LinkSortu({ etykieta, href, kierunek }: { etykieta: string; href: string; kierunek?: Kierunek }) {
+  return (
+    <Link className="ui-sort" href={href}>
+      {etykieta}
+      <span className="ui-sort-znak" aria-hidden="true">
+        {znakSortu(kierunek)}
+      </span>
+    </Link>
+  )
+}
+
+/** Komórka nagłówka sortowalnej kolumny dla tabeli pisanej ręcznie: `<th>` z `aria-sort` i linkiem (zwykły GET, bez JS). */
+export function NaglowekSortu({ etykieta, href, kierunek, className }: { etykieta: string; href: string; kierunek?: Kierunek; className?: string }) {
+  return (
+    <th scope="col" className={className} aria-sort={kierunek === 'rosnaco' ? 'ascending' : kierunek === 'malejaco' ? 'descending' : undefined}>
+      <LinkSortu etykieta={etykieta} href={href} kierunek={kierunek} />
+    </th>
+  )
+}
+
+/**
+ * Tabela `cards` na telefonie chowa wiersz nagłówków, więc te same linki sortowania stoją nad listą jako przyciski
+ * (pełny cel dotykowy). Na szerokim ekranie pasek jest ukryty.
+ */
+export function SortNaTelefonie({ opcje }: { opcje: { klucz: string; etykieta: string; href: string; kierunek?: Kierunek }[] }) {
+  return (
+    <nav className="ui-sort-tel" aria-label="Sortowanie listy">
+      <span className="small muted">Sortuj:</span>
+      {opcje.map((o) => (
+        <Link key={o.klucz} className="btn" href={o.href} aria-current={o.kierunek ? 'true' : undefined}>
+          {o.etykieta}
+          <span className="ui-sort-znak" aria-hidden="true">
+            {' '}
+            {znakSortu(o.kierunek)}
+          </span>
+          {o.kierunek && <span className="sr">{o.kierunek === 'rosnaco' ? ', rosnąco' : ', malejąco'}</span>}
+        </Link>
+      ))}
+    </nav>
+  )
 }
 
 export function Paginacja({ strona, ile, razem, adres }: { strona: number; ile: number; razem: number; adres: { sciezka: string; parametry: Parametry } }) {

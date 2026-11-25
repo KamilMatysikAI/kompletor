@@ -8,7 +8,7 @@ import { LEGACY_ZONES } from '@/lib/pakowanie/strefy'
 import { StrefyError, ustawieniaStref, zapiszStrefy } from '@/lib/pakowanie/strefy-dane'
 import { carrierFromRules, DEFAULT_CARRIER_RULES, loadCarrierRules } from '@/lib/rdzen/przewoznicy'
 import { listSecrets } from '@/lib/sekrety'
-import { kontaPrzewoznikow, PRZEWOZNIK_TEST_JOB, wykonajTestKonta, zapiszKontaPrzewoznikow, zlecTestKonta } from '@/lib/wysylka/konta'
+import { dodajKontoPrzewoznika, kontaPrzewoznikow, PRZEWOZNIK_TEST_JOB, wykonajTestKonta, zapiszKontaPrzewoznikow, zlecTestKonta } from '@/lib/wysylka/konta'
 import { regulyPrzewoznikow, RegulyError, testRegul, zapiszRegulyPrzewoznikow } from '@/lib/wysylka/reguly'
 import { ACME_CARRIER_RULES, ACME_EXAMPLE_ZONE_RULES, ACME_PRESET } from '@/tests/preset-testowy'
 import { ORG_A, ORG_B, testDb, testSystemDb, truncateAll } from './db'
@@ -183,11 +183,15 @@ describe('konta przewoźników z panelu', () => {
     expect(nazwy).toEqual(expect.arrayContaining(['basecourier', 'dpd', 'inpost']))
     expect(nazwy.some((n) => n.startsWith('allegro'))).toBe(false)
     const dpd = konta.find((k) => k.id === 'dpd')!
-    expect(dpd.sekrety.map((s) => [s.name, s.ustawiony])).toEqual([
-      ['DPD_LOGIN', false],
-      ['DPD_PASSWORD', false],
-      ['DPD_MYPUDO_KEY', false],
+    // jedno konto DPD dla obu modułów (odczyt i zapis mają ten sam zestaw kluczy); dane DPDInfoServices opcjonalne
+    expect(dpd.sekrety.map((s) => [s.name, s.ustawiony, s.wymagany])).toEqual([
+      ['DPD_LOGIN', false, true],
+      ['DPD_PASSWORD', false, true],
+      ['DPD_MYPUDO_KEY', false, false],
+      ['DPD_SLEDZENIE_LOGIN', false, false],
+      ['DPD_SLEDZENIE_HASLO', false, false],
     ])
+    expect(nazwy.filter((n) => n === 'dpd')).toHaveLength(1)
     expect(dpd.reguly).toEqual([{ id: dpdRule.id, priority: 70, carrier: 'DPD', adapterKey: 'dpd.services.zapis.v1', nadawanie: false }])
     expect(dpd.pola.map((p) => p.key)).toContain('payerFid')
     // reguły ACME (Base Courier) przypięte do konta Base Courier
@@ -195,8 +199,10 @@ describe('konta przewoźników z panelu', () => {
 
     await expect(zapiszKontaPrzewoznikow(a, registry, [{ id: 'dpd', sekrety: {}, pola: { payerFid: 'zly fid' }, nadawanie: {} }], { actorId: 'u', env: ENV })).rejects.toThrow(/zły format/)
     const r = await zapiszKontaPrzewoznikow(a, registry, [{ id: 'dpd', sekrety: { DPD_LOGIN: 'login-testowy', DPD_PASSWORD: '' }, pola: { payerFid: '1495' }, nadawanie: { [dpdRule.id]: true } }], { actorId: 'u', env: ENV })
-    expect(r).toEqual({ klucze: 1, reguly: 1 })
-    expect((await a.carrierRule.findUniqueOrThrow({ where: { id: dpdRule.id } })).config).toEqual({ payerFid: '1495', zapisWlaczony: true })
+    expect(r).toEqual({ klucze: 1, reguly: 1, konta: 1 })
+    // ustawienie konta przy koncie (nie w regule), wyłącznik nadawania w regule
+    expect((await a.carrierRule.findUniqueOrThrow({ where: { id: dpdRule.id } })).config).toEqual({ zapisWlaczony: true })
+    expect((await kontaPrzewoznikow(a, registry)).find((k) => k.id === 'dpd')!.pola.find((p) => p.key === 'payerFid')!.wartosc).toBe('1495')
     expect((await listSecrets(a)).map((s) => s.name)).toContain('DPD_LOGIN')
     konta = await kontaPrzewoznikow(a, registry)
     expect(konta.find((k) => k.id === 'dpd')!.sekrety.find((s) => s.name === 'DPD_LOGIN')!.ustawiony).toBe(true)
@@ -205,9 +211,49 @@ describe('konta przewoźników z panelu', () => {
     expect(JSON.stringify(log)).not.toContain('login-testowy')
     // wyłączenie nadawania usuwa flagę
     await zapiszKontaPrzewoznikow(a, registry, [{ id: 'dpd', sekrety: {}, pola: {}, nadawanie: { [dpdRule.id]: false } }], { actorId: 'u', env: ENV })
-    expect((await a.carrierRule.findUniqueOrThrow({ where: { id: dpdRule.id } })).config).toEqual({ payerFid: '1495' })
+    expect((await a.carrierRule.findUniqueOrThrow({ where: { id: dpdRule.id } })).config).toEqual({})
     // druga firma nie widzi kluczy ani konfiguracji
     expect((await kontaPrzewoznikow(b, registry)).find((k) => k.id === 'dpd')!.sekrety.every((s) => !s.ustawiony)).toBe(true)
+  })
+
+  it('Wysyłam z Allegro: karta bez kluczy i testu połączenia, wyłącznik nadawania tylko dla modułu z nadawaniem', async () => {
+    const allegro = await a.carrierRule.findFirstOrThrow({ where: { shippingModule: 'WYSYLAM_Z_ALLEGRO' } })
+    await a.carrierRule.update({ where: { id: allegro.id }, data: { adapterKey: 'allegro.wysylam.zapis.v1', config: { defaultWeightKg: 1 } } })
+    const podglad = await a.carrierRule.create({ data: { priority: 95, channel: 'ALLEGRO', pattern: 'podgląd', carrier: 'ALLEGRO', shippingModule: 'WYSYLAM_Z_ALLEGRO', adapterKey: 'allegro.wysylam.v1', config: {} } })
+    const bazowe = async () => (await a.carrierRule.findMany({ where: { NOT: { shippingModule: 'WYSYLAM_Z_ALLEGRO' } }, orderBy: { priority: 'asc' } })).map((r) => [r.id, r.config])
+    const przed = await bazowe()
+
+    // pozostałe wywołania (kolumna „Konto” w regułach, Integracje, test połączenia) dalej nie widzą Allegro
+    expect((await kontaPrzewoznikow(a, registry)).some((k) => k.id.startsWith('allegro'))).toBe(false)
+    const konta = await kontaPrzewoznikow(a, registry, undefined, { zWysylamZAllegro: true })
+    const k = konta.find((x) => x.id === 'allegro')!
+    expect(k).toMatchObject({ nazwa: 'Wysyłam z Allegro', bezKluczy: true, sekrety: [], sufiks: null, test: null })
+    // pola konta: tylko zamawianie kuriera (włącznik domyślnie pusty = wyłączony)
+    expect(k!.pola.map((p) => [p.key, p.wartosc])).toEqual([['zamawianieKuriera', ''], ['przewoznikOdbioru', '']])
+    expect(k.reguly).toEqual([
+      { id: allegro.id, priority: allegro.priority, carrier: 'ALLEGRO', adapterKey: 'allegro.wysylam.zapis.v1', nadawanie: false },
+      { id: podglad.id, priority: 95, carrier: 'ALLEGRO', adapterKey: 'allegro.wysylam.v1', nadawanie: null },
+    ])
+    expect(konta.filter((x) => x.id !== 'allegro').every((x) => !x.bezKluczy)).toBe(true)
+
+    // zapis całego ekranu bez żadnych kluczy: włącza nadawanie Allegro, inne reguły i pola bez zmian, ślad w AuditLog
+    const zmiany = (nad: boolean) => konta.map((x) => ({ id: x.id, sekrety: {}, pola: {}, nadawanie: x.id === 'allegro' ? { [allegro.id]: nad, [podglad.id]: true } : {} }))
+    expect(await zapiszKontaPrzewoznikow(a, registry, zmiany(true), { actorId: 'u', env: ENV })).toEqual({ klucze: 0, reguly: 1, konta: 0 })
+    expect((await a.carrierRule.findUniqueOrThrow({ where: { id: allegro.id } })).config).toEqual({ defaultWeightKg: 1, zapisWlaczony: true })
+    expect((await a.carrierRule.findUniqueOrThrow({ where: { id: podglad.id } })).config).toEqual({})
+    expect(await bazowe()).toEqual(przed)
+    const log = await a.auditLog.findFirstOrThrow({ where: { entity: 'CarrierRule.config' }, orderBy: { createdAt: 'desc' } })
+    expect(log.after).toMatchObject({ reguly: [{ id: allegro.id, config: { defaultWeightKg: 1, zapisWlaczony: true } }], klucze: [] })
+    expect((await kontaPrzewoznikow(a, registry, undefined, { zWysylamZAllegro: true })).find((x) => x.id === 'allegro')!.reguly[0]!.nadawanie).toBe(true)
+    // karta nie przyjmuje kluczy
+    await expect(zapiszKontaPrzewoznikow(a, registry, [{ id: 'allegro', sekrety: { ALLEGRO_CLIENT_ID: 'x' }, pola: {}, nadawanie: {} }], { actorId: 'u', env: ENV })).rejects.toThrow(/nieznany klucz/)
+    // wyłączenie zdejmuje flagę
+    expect(await zapiszKontaPrzewoznikow(a, registry, zmiany(false), { actorId: 'u', env: ENV })).toEqual({ klucze: 0, reguly: 1, konta: 0 })
+    expect((await a.carrierRule.findUniqueOrThrow({ where: { id: allegro.id } })).config).toEqual({ defaultWeightKg: 1 })
+    expect(await bazowe()).toEqual(przed)
+    // bez testu połączenia i bez drugiego konta
+    await expect(zlecTestKonta(a, registry, 'allegro')).rejects.toThrow(/Nie ma takiego konta/)
+    await expect(dodajKontoPrzewoznika(a, registry, { konto: 'allegro', nazwa: 'Drugie' }, 'u')).rejects.toThrow(/Wybierz przewoźnika/)
   })
 
   it('test połączenia: zadanie w kolejce, drugie kliknięcie od razu = za często, wynik w ustawieniach firmy', async () => {

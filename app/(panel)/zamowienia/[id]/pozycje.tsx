@@ -277,7 +277,7 @@ export function Pozycje({ d, uprawnienia, edytuj = false }: { d: DaneKarty; upra
                     <input type="hidden" name={`cena_bylo_${l.id}`} value={Number(l.unitPriceGross).toFixed(2).replace('.', ',')} />
                   </>
                 ) : (
-                  money(l.unitPriceGross)
+                  money(l.unitPriceGross, d.waluta)
                 )}
                 {(per > 1 || jednostka === 'KG') && <span className="sub">{zaCo}</span>}
                 {zmienCene && per === 1 && jednostka === 'KG' && <span className="sub">cena za gram, nie za opakowanie</span>}
@@ -381,17 +381,17 @@ export function Pozycje({ d, uprawnienia, edytuj = false }: { d: DaneKarty; upra
           <>
             <div>
               <dt>Razem netto</dt>
-              <dd className="num">{money(podsumowanie.nettoGr / 100)}</dd>
+              <dd className="num">{money(podsumowanie.nettoGr / 100, d.waluta)}</dd>
             </div>
             <div>
               <dt>VAT</dt>
-              <dd className="num">{money((podsumowanie.vatGr ?? 0) / 100)}</dd>
+              <dd className="num">{money((podsumowanie.vatGr ?? 0) / 100, d.waluta)}</dd>
             </div>
           </>
         )}
         <div className="kz-suma-brutto">
           <dt>Razem brutto</dt>
-          <dd className="num">{money(d.sumaPozycjiGr / 100)}</dd>
+          <dd className="num">{money(d.sumaPozycjiGr / 100, d.waluta)}</dd>
         </div>
       </dl>
       <p className="muted small kz-bez-marginesu">

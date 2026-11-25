@@ -154,6 +154,17 @@ export default async function DokumentySprzedazy() {
               </span>
             </span>
           </label>
+          <input type="hidden" name="walutaZamowieniaPole" value="tak" />
+          <label className="checkrow">
+            <input type="checkbox" name="walutaZamowienia" value="tak" defaultChecked={v.walutaZamowienia} disabled={u.program !== 'wfirma'} />
+            <span>
+              Faktury w walucie zamówienia
+              <span className="sub">
+                Zamówienie w innej walucie niż złotówki (np. Allegro w Czechach) dostaje fakturę w wFirmie w tej walucie, z cenami i wysyłką jak w zamówieniu. Wyłączone: takie zamówienie czeka na fakturę wystawioną ręcznie. Zamówienia sprzed włączenia: sprawdź w wFirmie, czy mają fakturę, i kliknij „Ponów fakturę” na karcie.
+                {u.program !== 'wfirma' ? ' Dostępne tylko z programem wFirma.' : ''}
+              </span>
+            </span>
+          </label>
         </Karta>
 
         <Karta tytul="Pozycja wysyłki na dokumencie" opis="Nazwa i stawka VAT kosztu wysyłki na fakturze (w każdym programie)">

@@ -86,7 +86,7 @@ export interface PozycjaZamowienia {
    * Wartość części = `wartoscCzesciGr(ilość, przesuniecie, …)`. Brak pola = 0 (pozycja bez zamian: wartość jak zawsze).
    */
   przesuniecie?: number
-  /** Pozycja pierwotna z zamiennikami: jednostki bazowe pokryte przez całą rodzinę (cel bezpiecznika,/). */
+  /** Pozycja pierwotna z zamiennikami: jednostki bazowe pokryte przez całą rodzinę (cel bezpiecznika). */
   pokryte?: number
   /** Pozycja pierwotna: błąd rodziny zamian (np. usunięty zamiennik) — problem `zamiennik-<kod>`, dokument staje. */
   bladZamiany?: BladZamiany

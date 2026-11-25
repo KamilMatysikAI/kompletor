@@ -192,8 +192,9 @@ export async function zlecZPanelu(
         if (!dane) throw new BladDruku('Brak zamówień do wydruku', 404)
         return { pliki: { pdf: await listaWysylkowa(dane) }, opis: `Lista wysyłkowa: ${z.ids.length} zam.` }
       }
-      // etykieta przewoźnika, gdy zamówienie ma utworzoną przesyłkę; atrapa próbna tylko bez przesyłki
-      const e = await (opcje.etykiety ?? etykietaZamowienia).etykieta(db, z.ids[0]!, now)
+      // etykieta przewoźnika, gdy zamówienie ma utworzoną przesyłkę; atrapa próbna tylko bez przesyłki;
+      // odbiór osobisty = etykieta odbioru (dane odbiorcy wg uprawnień zlecającego)
+      const e = await (opcje.etykiety ?? etykietaZamowienia).etykieta(db, z.ids[0]!, now, { userId: kto.userId })
       return { pliki: { pdf: e.pdf, zpl: e.zpl }, opis: e.opis }
     },
   })

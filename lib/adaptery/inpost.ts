@@ -15,7 +15,7 @@ export const DOMYSLNY_SENDING_METHOD = 'dispatch_order'
 /** Pola konfiguracji wspólne dla klucza odczytu i zapisu. */
 export const INPOST_CONFIG: readonly ConfigField[] = [
   { key: 'baseUrl', type: 'string', required: true, description: 'adres API: https://api-shipx-pl.easypack24.net albo sandbox https://sandbox-api-shipx-pl.easypack24.net', pattern: INPOST_URL_RE, envSuffix: 'BASE_URL' },
-  { key: 'organizationId', type: 'string', required: true, description: 'id organizacji w ShipX (Manager Paczek, ustawienia API)', pattern: INPOST_ID_RE, envSuffix: 'ORGANIZATION_ID' },
+  { key: 'organizationId', type: 'string', required: true, description: 'id organizacji w ShipX (Manager Paczek, ustawienia API)', pattern: INPOST_ID_RE, envSuffix: 'ORGANIZATION_ID', zKontaPrzewoznika: true },
   { key: 'sendingMethod', type: 'string', required: false, description: 'sposób nadania (domyślnie dispatch_order, czyli odbiór przez kuriera)', pattern: SENDING_METHOD_RE },
   { key: 'defaultSideXCm', type: 'number', required: false, description: 'domyślna długość paczki kurierskiej w cm' },
   { key: 'defaultSideYCm', type: 'number', required: false, description: 'domyślna szerokość paczki kurierskiej w cm' },

@@ -2,9 +2,13 @@
 // „Popraw adres i punkt odbioru”: przed nadaniem, dla osób z `klienci.dane`. Otwarcie formularza pobiera
 // obecne wartości (wpis w dzienniku podglądów), zapis idzie jako poprawka człowieka (automat z kanału jej nie nadpisze).
 // Po utworzeniu przesyłki formularza nie ma: adres zmienia się wtedy w panelu przewoźnika.
-import { useRef, useState, useTransition } from 'react'
+// zapis przez `onSubmit`, nie `<form action={fn}>`: React 19 po akcji funkcyjnej sam czyści formularz
+// (pola wracały do wartości z otwarcia, choć zapis się udał, a po błędzie ginęły wpisane dane). Po udanym zapisie pola
+// startują od zapisanych wartości, a blok nadania obok dostaje sygnał, żeby odświeżyć stan (stary powód blokady znika).
+import { useEffect, useRef, useState, useTransition } from 'react'
 import { WyszukiwarkaPunktow } from './wyszukiwarka-punktow'
 import type { PoprawkaDostawy } from '@/lib/klienci/poprawka'
+import { naPoprawkeAdresu, ogloszPoprawkeAdresu } from '../../_komponenty/poprawka-adresu-zdarzenie'
 import { daneDoPoprawkiAkcja, poprawAdresAkcja, type WynikPrzyciskuPrzesylki } from './akcje-przesylka'
 
 export const POLA: { nazwa: string; klucz: keyof PoprawkaDostawy; etykieta: string; autocomplete?: string }[] = [
@@ -21,24 +25,60 @@ export const POLA: { nazwa: string; klucz: keyof PoprawkaDostawy; etykieta: stri
 
 export function PoprawAdres({ orderId }: { orderId: string }) {
   const [dane, setDane] = useState<PoprawkaDostawy | null | undefined>(undefined)
+  // klucz formularza: po udanym zapisie pola startują od zapisanych wartości (defaultValue liczy się tylko przy montażu)
+  const [wersja, setWersja] = useState(0)
   const [wynik, setWynik] = useState<WynikPrzyciskuPrzesylki | null>(null)
   const [pending, start] = useTransition()
   const [zWyszukiwarki, setZWyszukiwarki] = useState(false)
   const punkt = useRef<HTMLInputElement>(null)
+  const szczegoly = useRef<HTMLDetailsElement>(null)
+  // adres zapisany gdzie indziej na karcie („Zatwierdź” podziału przez asystenta AI): formularz otwarty
+  // wczytuje świeże wartości, zamknięty wczyta je przy otwarciu. Własny zapis też ogłasza zdarzenie, ale wtedy pola mają
+  // już zapisane wartości, więc go pomijamy (bez drugiego wpisu w dzienniku podglądów).
+  const wlasnyZapis = useRef(false)
+  useEffect(
+    () =>
+      naPoprawkeAdresu(orderId, () => {
+        if (wlasnyZapis.current) {
+          wlasnyZapis.current = false
+          return
+        }
+        setWynik(null)
+        if (szczegoly.current?.open) start(async () => {
+          setDane(await daneDoPoprawkiAkcja(orderId))
+          setWersja((v) => v + 1)
+        })
+        else setDane(undefined)
+      }),
+    [orderId],
+  )
   const otworz = (e: React.SyntheticEvent<HTMLDetailsElement>) => {
     if (e.currentTarget.open && dane === undefined) start(async () => setDane(await daneDoPoprawkiAkcja(orderId)))
   }
-  const zapisz = (form: FormData) =>
+  const zapisz = (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault()
+    const form = new FormData(e.currentTarget)
+    setWynik(null)
     start(async () => {
-      setWynik(await poprawAdresAkcja(orderId, form))
+      const w = await poprawAdresAkcja(orderId, form)
+      setWynik(w)
+      if (!w.blad && w.zapisane) {
+        setDane(w.zapisane)
+        setZWyszukiwarki(false)
+        setWersja((v) => v + 1)
+        wlasnyZapis.current = true
+        ogloszPoprawkeAdresu(orderId)
+      }
     })
+  }
+  const bladPola = wynik?.blad && wynik.pole && POLA.some((p) => p.nazwa === wynik.pole) ? wynik.pole : null
   return (
-    <details onToggle={otworz}>
-      <summary className="small">Popraw adres albo punkt odbioru przed nadaniem</summary>
+    <details ref={szczegoly} onToggle={otworz}>
+      <summary className="btn small">Popraw adres albo punkt odbioru przed nadaniem</summary>
       {dane === undefined ? (
         <p className="small muted">Wczytuję…</p>
       ) : (
-        <form action={zapisz} className="stack">
+        <form key={wersja} onSubmit={zapisz} className="stack">
           <div className="grid g2">
             {POLA.map((p) => (
               <div key={p.nazwa} className="field">
@@ -51,7 +91,13 @@ export function PoprawAdres({ orderId }: { orderId: string }) {
                   autoComplete={p.autocomplete ?? 'off'}
                   ref={p.nazwa === 'punkt' ? punkt : undefined}
                   onInput={p.nazwa === 'punkt' ? () => setZWyszukiwarki(false) : undefined}
+                  {...(bladPola === p.nazwa ? { 'aria-invalid': true as const, 'aria-describedby': `pa-${p.nazwa}-blad` } : {})}
                 />
+                {bladPola === p.nazwa && (
+                  <p className="ui-blad" id={`pa-${p.nazwa}-blad`} role="alert">
+                    {wynik!.blad}
+                  </p>
+                )}
               </div>
             ))}
           </div>
@@ -69,7 +115,7 @@ export function PoprawAdres({ orderId }: { orderId: string }) {
               {pending ? 'Zapisuję…' : 'Zapisz poprawkę'}
             </button>
           </div>
-          {wynik?.blad && (
+          {wynik?.blad && !bladPola && (
             <div className="banner red" role="alert">
               {wynik.blad}
             </div>

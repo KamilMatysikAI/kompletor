@@ -1,8 +1,9 @@
 // Punkt cięcia przy przejściu z BaseLinkera (krok przed włączeniem trybu pracy kont). W podglądzie status zamówienia
 // w Kompletorze zostaje na „Do realizacji” także po wysyłce w BaseLinkerze, więc bez tego kroku kolejka pakowania po
 // przełączeniu pokazałaby zamówienia dawno wysłane (druga paczka), a automat „bez paczki” spakowałby stare zamówienia
-// z e-bookiem. Polecenie dzieli otwarte zamówienia kont w podglądzie według kopii statusu z BaseLinkera (odczyt cienia,
-// `BlOrderSnapshot`) i kopii faktur BL:
+// z e-bookiem. Polecenie dzieli otwarte zamówienia kont w podglądzie, a z kont w trybie pracy tylko zamówienia z rozliczoną
+// fakturą BL (zdarzenie FAKTURA_BL; zamykane wyłącznie przy „Wysłane”/„Odebrane” w BL, reszta do sprawdzenia,
+// i), według kopii statusu z BaseLinkera (odczyt cienia, `BlOrderSnapshot`) i kopii faktur BL:
 //   - obsłużone w BaseLinkerze (spakowane, do wysyłki, do odbioru, wysłane, odebrane; e-book z fakturą BL) → w trybie
 //     wykonania zamknięte w Kompletorze: status „Wysłane”, „Odebrane” albo (odbiór osobisty czekający na klienta)
 //     „Do odbioru”, i wpis w historii; bez maila do klienta,
@@ -76,7 +77,7 @@ export interface PozycjaPunktuCiecia {
 export interface WynikPunktuCiecia {
   naSucho: boolean
   konta: { channel: Channel; channelAccountId: string }[]
-  /** Konta w trybie pracy pominięte (zamówienia prowadzi już Kompletor). */
+  /** Konta w trybie pracy: z nich tylko zamówienia z fakturą BL (resztę prowadzi już Kompletor). */
   kontaWPracy: number
   pozycje: PozycjaPunktuCiecia[]
   liczby: Record<GrupaPunktuCiecia, number>
@@ -196,7 +197,14 @@ export function klasyfikuj(z: {
   const family = blStatusFamily(z.statusBl).family
   const na = family === 'DO_ODBIORU' && z.odbiorOsobisty ? 'DO_ODBIORU' : (OBSLUZONE[family] ?? (family === 'EBOOK' && z.fakturaBl ? 'ODEBRANE' : null))
   if (na && z.kontoWPracy && family !== 'WYSLANE' && family !== 'ODEBRANE')
-    return { grupa: 'DO_SPRAWDZENIA', na: null, powod: `konto w trybie pracy: w BaseLinkerze „${z.statusBl}”, nie „Wysłane” ani „Odebrane”; sprawdź, czy paczka wyszła` }
+    return {
+      grupa: 'DO_SPRAWDZENIA',
+      na: null,
+      powod:
+        family === 'EBOOK'
+          ? `konto w trybie pracy: e-book w BaseLinkerze „${z.statusBl}” z fakturą BL; sprawdź, czy klient dostał plik`
+          : `konto w trybie pracy: w BaseLinkerze „${z.statusBl}”, nie „Wysłane” ani „Odebrane”; sprawdź, czy paczka wyszła`,
+    }
   if (na) {
     if (z.pracaKompletora) return { grupa: 'DO_SPRAWDZENIA', na: null, powod: `obsłużone w BaseLinkerze, ale ${z.pracaKompletora}` }
     if (z.pendingAction) return { grupa: 'DO_SPRAWDZENIA', na: null, powod: 'obsłużone w BaseLinkerze, ale czeka odłożona operacja (np. anulowanie)' }
@@ -291,7 +299,8 @@ export async function punktCiecia(db: PrismaClient, opts: OpcjePunktuCiecia): Pr
     }
   }
   wynik.wKolejcePakowania = konta.length ? await db.order.count({ where: { status: { in: [...KOLEJKA] }, OR: konta } }) : 0
-  wynik.wKolejceZFakturaBl = wynik.pozycje.filter((p) => p.grupa === 'NIESKONCZONE_Z_FAKTURA_BL' && KOLEJKA.includes(p.status)).length
+  // tylko konta w podglądzie, jak `wKolejcePakowania` (inaczej „pozostałe do spakowania” < 0)
+  wynik.wKolejceZFakturaBl = wynik.pozycje.filter((p) => p.grupa === 'NIESKONCZONE_Z_FAKTURA_BL' && KOLEJKA.includes(p.status) && konta.some((k) => k.channel === p.channel && k.channelAccountId === p.channelAccountId)).length
   return wynik
 }
 
@@ -334,14 +343,32 @@ const NAZWY_GRUP: Record<GrupaPunktuCiecia, string> = {
   BEZ_PARY_W_BL: 'Bez pary w BaseLinkerze (brak kopii zamówienia)',
 }
 
-/** Raport do terminala albo pliku: liczby per grupa i konto, potem numery zamówień (bez danych klientów). */
+const KROTKIE_GRUPY: Record<GrupaPunktuCiecia, string> = {
+  DO_ZAMKNIECIA: 'do zamknięcia',
+  CZEKA_NA_ROZLICZENIE: 'czeka na rozliczenie',
+  NIESKONCZONE_Z_FAKTURA_BL: 'nieskończone w BaseLinkerze',
+  NIESKONCZONE_BEZ_FAKTURY: 'nieskończone bez faktury',
+  DO_SPRAWDZENIA: 'do sprawdzenia',
+  BEZ_PARY_W_BL: 'bez pary w BaseLinkerze',
+}
+
+/** Raport do terminala albo pliku:liczby per grupa i konto, potem numery zamówień (bez danych klientów). */
 export function opisPunktuCiecia(w: WynikPunktuCiecia): string {
   const out: string[] = []
   out.push(`# Punkt cięcia zamówień ${w.naSucho ? '(na sucho: nic nie zapisano; zapis: --zapisz)' : '(wykonanie)'}`)
   out.push('')
   out.push(`Konta w podglądzie: ${w.konta.map((k) => `${k.channel}/${k.channelAccountId}`).join(', ') || 'brak'}${w.kontaWPracy ? `; konta w trybie pracy: ${w.kontaWPracy} (tylko zamówienia z rozliczoną fakturą BaseLinkera)` : ''}`)
+  if (w.kontaWPracy) {
+    // osobna linia dla zamówień kont w trybie pracy (wyłącznie z fakturą BL), do porównania z ramką na ekranie Pakowanie
+    const zPracy = w.pozycje.filter((p) => !w.konta.some((k) => k.channel === p.channel && k.channelAccountId === p.channelAccountId))
+    const ile = (Object.keys(KROTKIE_GRUPY) as GrupaPunktuCiecia[]).flatMap((g) => {
+      const n = zPracy.filter((p) => p.grupa === g).length
+      return n ? [`${KROTKIE_GRUPY[g]} ${n}`] : []
+    })
+    out.push(`Konta w trybie pracy, zamówienia z fakturą BaseLinkera: ${zPracy.length}${ile.length ? ` (${ile.join(', ')})` : ''}`)
+  }
   const s = w.swiezosc
-  const kiedy = (d: Date | null) => (d ? czas(d) : 'nigdy')
+  const kiedy =(d: Date | null) => (d ? czas(d) : 'nigdy')
   const stare = new Set(stareZrodla(s, w.sprawdzonoO))
   const zrodla = ZRODLA.map((z) => `${NAZWY_ZRODEL[z]} ${kiedy(s[z])}${stare.has(z) ? ' (za stare: blokuje zapis)' : ''}`).join(', ')
   out.push(`Ostatni udany odczyt z BaseLinkera (wszystkie konta firmy): ${zrodla}; zapis wymaga każdego z nich nie starszego niż ${Math.round(s.maksWiekMs / 60_000)} min`)

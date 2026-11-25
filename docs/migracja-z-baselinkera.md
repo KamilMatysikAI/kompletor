@@ -217,6 +217,15 @@ Co robi biuro:
 
 **Sklep nie odpowiada** (błąd 5xx, przekroczony czas): Kompletor traktuje to jako błąd przejściowy. Stany wysyła ponownie z odstępem do kilku minut, statusy i numery nadania do kilku prób, potem zostawia powiadomienie i czeka na „Wypchnij teraz” na ekranie konta. Zamówienia odczyta po powrocie sklepu. Włączenie zapisu do takiego sklepu odłóż, aż znowu odpowiada.
 
+### Status w BaseLinkerze dla zamówień z Kompletora
+
+BaseLinker dalej pobiera zamówienia ze sklepów, więc zamówienia prowadzone w Kompletorze stoją tam w „Nowe zamówienia”. Żeby to nie myliło (np. bota, który czyta statusy z BaseLinkera), Kompletor może ustawić im w BaseLinkerze jeden status, gdy zamówienie zostanie w Kompletorze wysłane albo wydane przy odbiorze osobistym.
+
+1. W BaseLinkerze utwórz status (np. „Kompletor”) i sprawdź, że **nie jest powiązany** z żadną automatyczną akcją ani ze statusem w ustawieniach integracji sklepów i marketplace’ów (inaczej jego ustawienie wyśle coś do klienta albo do kanału).
+2. W Kompletorze: menu **Przejście z BaseLinkera** → **Przeprowadzka z BaseLinkera** (`/ustawienia/przeprowadzka`) → sekcja „6. Status w BaseLinkerze po wysłaniu”: numer statusu i przełącznik „Ustawiaj ten status po wysłaniu albo wydaniu w Kompletorze” → „Zapisz” (uprawnienie `ustawienia`). Domyślnie wyłączone.
+
+Co pięć minut Kompletor bierze zamówienia kont w trybie pracy, wysłane albo odebrane w ostatnich 7 dniach i połączone z zamówieniem w BaseLinkerze, i ustawia im ten status jedną metodą API `setOrderStatus`. **Nie nadpisuje** zamówień zamkniętych punktem cięcia, zamówień, które w BaseLinkerze są już spakowane, wysłane, odebrane, anulowane albo w reklamacji, zamówień z fakturą z BaseLinkera i zamówień z przesyłką utworzoną w BaseLinkerze (ta ostatnia sytuacja daje alert `BL_STATUS_KOMPLETOR`: sprawdź, czy paczka nie poszła podwójnie). Wynik jest w historii zamówienia (`STATUS_BL_USTAWIONY`, `STATUS_BL_POMINIETY` z powodem). Błąd BaseLinkera Kompletor ponawia najwyżej 3 razy co co najmniej 15 minut, potem zostawia alert `BL_STATUS_KOMPLETOR` i status ustawiasz ręcznie w BaseLinkerze. Numer statusu, którego nie ma w BaseLinkerze, daje jeden alert i żadnego zapisu. Firma bez klucza BaseLinkera tej funkcji nie ma.
+
 ## Powrót do BaseLinkera
 
 **Przed przełączeniem** w BaseLinkerze nic się nie zmienia, więc nie ma do czego wracać. Wystarczy zatrzymać Kompletora (`docker compose stop`). Dla porządku możesz usunąć klucz REST, który utworzyłeś dla Kompletora w WooCommerce, i aplikację Allegro.

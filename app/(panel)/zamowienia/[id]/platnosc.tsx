@@ -4,21 +4,56 @@
 // akcje płatności są zawsze widoczne, gdy pasują do stanu zamówienia; konto poza trybem PRACA albo osoba bez
 // uprawnienia widzi je nieaktywne z jednym powodem pod grupą (bramki serwera w akcje-platnosc.ts bez zmian).
 // nagłówek sekcji w pasku (app/ui/sekcja.tsx); sposób płatności słowem jest w karcie „Szczegóły zamówienia”.
+// Zmiana płatności (lib/karta/pobranie.ts): „Zmień na pobranie” albo „Zmień na nieopłacone”, zawsze widoczna, nieaktywna
+// z powodem, gdy nie pasuje do zamówienia. Pobranie bez zapisanej wpłaty to „Do zapłaty przy odbiorze”, nie „Zapłacono”.
 import { Odznaka, PoleTekstowe, Przycisk, Sekcja, Wybor, StanPlatnosci } from '@/app/ui'
 import type { DaneKarty } from '@/lib/karta/dane'
 import { METODY_PLATNOSCI, RODZAJ_LABEL } from '@/lib/karta/platnosci'
-import { money, when } from '@/lib/panel/format'
+import { jednostkaWaluty, money, when } from '@/lib/panel/format'
 import { toWarsaw } from '@/lib/rdzen/kalendarz'
-import { oznaczOplaconeKarta, zapiszDoplateKarta, zwrotRoznicyKarta } from './akcje-platnosc'
+import { oznaczOplaconeKarta, zapiszDoplateKarta, zmienPlatnoscKarta, zwrotRoznicyKarta } from './akcje-platnosc'
 
-function FormularzWplaty({ orderId, akcja, etykieta, kwota, potwierdz, klucz }: { orderId: string; akcja: (f: FormData) => Promise<void>; etykieta: string; kwota: number; potwierdz?: string; klucz: string }) {
+const ZMIANA = {
+  NA_POBRANIE: {
+    etykieta: 'Zmień na pobranie',
+    potwierdz: 'Zmienić płatność na pobranie? Kurier pobierze od klienta kwotę zamówienia, zamówienie przejdzie do realizacji, a przypomnienie o płatności i termin anulowania znikną. W sklepie płatność zostaje bez zmian.',
+    przycisk: 'Tak, zmień na pobranie',
+  },
+  NA_NIEOPLACONE: {
+    etykieta: 'Zmień na nieopłacone (przelew)',
+    potwierdz: 'Zmienić pobranie na nieopłacone? Zamówienie wróci do „Nowe” i poczeka na wpłatę; przypomnienie o płatności i termin anulowania liczą się od teraz. W sklepie płatność zostaje bez zmian.',
+    przycisk: 'Tak, zmień na nieopłacone',
+  },
+} as const
+
+/** Zmiana płatności z potwierdzeniem (rozwijane jak formularz wpłaty). */
+function ZmianaPlatnosci({ orderId, kierunek }: { orderId: string; kierunek: keyof typeof ZMIANA }) {
+  const t = ZMIANA[kierunek]
+  return (
+    <details className="kz-dodaj">
+      <summary className="btn">{t.etykieta}</summary>
+      <form action={zmienPlatnoscKarta} className="kz-zmien-pola">
+        <input type="hidden" name="zamowienie" value={orderId} />
+        <input type="hidden" name="kierunek" value={kierunek} />
+        <p className="small kz-bez-marginesu">{t.potwierdz}</p>
+        <div>
+          <Przycisk type="submit" wariant="glowny">
+            {t.przycisk}
+          </Przycisk>
+        </div>
+      </form>
+    </details>
+  )
+}
+
+function FormularzWplaty({ orderId, akcja, etykieta, kwota, potwierdz, klucz, waluta }: { orderId: string; akcja: (f: FormData) => Promise<void>; etykieta: string; kwota: number; potwierdz?: string; klucz: string; waluta?: string }) {
   const dzis = toWarsaw(new Date()).day
   return (
     <details className="kz-dodaj">
       <summary className="btn">{etykieta}</summary>
       <form action={akcja} className="kz-zmien-pola">
         <input type="hidden" name="zamowienie" value={orderId} />
-        <PoleTekstowe id={`${klucz}-kwota`} etykieta="Kwota (zł)" name="kwota" inputMode="decimal" required defaultValue={kwota > 0 ? (kwota / 100).toFixed(2).replace('.', ',') : ''} pattern="[0-9]+([,.][0-9]{1,2})?" />
+        <PoleTekstowe id={`${klucz}-kwota`} etykieta={`Kwota (${jednostkaWaluty(waluta)})`} name="kwota" inputMode="decimal" required defaultValue={kwota > 0 ? (kwota / 100).toFixed(2).replace('.', ',') : ''} pattern="[0-9]+([,.][0-9]{1,2})?" />
         <PoleTekstowe id={`${klucz}-data`} etykieta="Data" name="data" type="date" defaultValue={dzis} max={dzis} />
         <Wybor id={`${klucz}-metoda`} etykieta="Metoda" name="metoda" defaultValue="przelew" opcje={METODY_PLATNOSCI.map((m) => ({ wartosc: m, etykieta: m }))} />
         {potwierdz && <p className="small kz-bez-marginesu">{potwierdz}</p>}
@@ -44,6 +79,8 @@ function Nieaktywny({ etykieta, powod }: { etykieta: string; powod: string }) {
   )
 }
 
+const tryb0 = (d: DaneKarty): string | null => (d.praca ? null : (d.podglad?.powody.platnosc ?? d.cien ?? 'Konto sklepu jest w trybie „Tylko podgląd”.'))
+
 export function Platnosc({ d, uprawnienia }: { d: DaneKarty; uprawnienia: ReadonlySet<string> }) {
   const { o, platnosc: p } = d
   const now = new Date()
@@ -53,27 +90,38 @@ export function Platnosc({ d, uprawnienia }: { d: DaneKarty; uprawnienia: Readon
   const naOplacone = nieoplacone && o.status !== 'ANULOWANE'
   const naDoplate = o.paymentState !== 'COD'
   const naZwrot = p.roznicaGr < 0
+  const powodZmiany = tryb0(d) ?? (uprawnienia.has('zamowienia.oznacz_oplacone') ? null : BEZ_OPLACONE) ?? p.zmiana.powod
+  const etykietaZmiany = ZMIANA[p.zmiana.kierunek].etykieta
+  const doOdbioru = p.pobranie && p.zaplaconoGr === 0
   // powód nieaktywności (null = działa): tryb konta ma pierwszeństwo przed uprawnieniem
-  const tryb = d.praca ? null : (d.podglad?.powody.platnosc ?? d.cien ?? 'Konto sklepu jest w trybie „Tylko podgląd”.')
+  const tryb = tryb0(d)
   const powodWplaty = tryb ?? (uprawnienia.has('zamowienia.oznacz_oplacone') ? null : BEZ_OPLACONE)
   const powodZwrotu = tryb ?? (uprawnienia.has('zwroty.pieniadze') ? null : BEZ_ZWROTOW)
-  const akcje = naOplacone || naDoplate || naZwrot
-  const powody = [...new Set([naOplacone || naDoplate ? powodWplaty : null, naZwrot ? powodZwrotu : null].filter((x): x is string => !!x))]
+  const powody = [...new Set([naOplacone || naDoplate ? powodWplaty : null, naZwrot ? powodZwrotu : null, powodZmiany].filter((x): x is string => !!x))]
   return (
     <Sekcja id="platnosc" tytul="Płatność" akcje={<StanPlatnosci stan={o.paymentState} />}>
       <dl className="dl">
-        <dt>Zapłacono</dt>
-        <dd className="num">
-          <Odznaka ton={oplacone ? 'sukces' : 'neutralny'}>{money(p.zaplaconoGr / 100)}</Odznaka> z {money(p.zamowienieGr / 100)}
-        </dd>
+        {doOdbioru ? (
+          <>
+            <dt>Do zapłaty przy odbiorze</dt>
+            <dd className="num">{money(p.zamowienieGr / 100, d.waluta)}</dd>
+          </>
+        ) : (
+          <>
+            <dt>Zapłacono</dt>
+            <dd className="num">
+              <Odznaka ton={oplacone ? 'sukces' : 'neutralny'}>{money(p.zaplaconoGr / 100, d.waluta)}</Odznaka> z {money(p.zamowienieGr / 100, d.waluta)}
+            </dd>
+          </>
+        )}
         {p.pokaz && (
           <>
             <dt>Różnica</dt>
             <dd className="num">
               {p.roznicaGr > 0 ? (
-                <Odznaka ton="ostrzezenie">Do dopłaty {money(p.roznicaGr / 100)}</Odznaka>
+                <Odznaka ton="ostrzezenie">Do dopłaty {money(p.roznicaGr / 100, d.waluta)}</Odznaka>
               ) : p.roznicaGr < 0 ? (
-                <Odznaka ton="blad">Do zwrotu {money(-p.roznicaGr / 100)}</Odznaka>
+                <Odznaka ton="blad">Do zwrotu {money(-p.roznicaGr / 100, d.waluta)}</Odznaka>
               ) : (
                 <Odznaka ton="sukces">rozliczone</Odznaka>
               )}
@@ -111,34 +159,33 @@ export function Platnosc({ d, uprawnienia }: { d: DaneKarty; uprawnienia: Readon
         <ul className="timeline kz-odstep-gora">
           {p.wpisy.map((w) => (
             <li key={w.id}>
-              <span className="mono small muted">{when(w.kiedy, now)}</span> {RODZAJ_LABEL[w.rodzaj]} {money(w.kwota)}
+              <span className="mono small muted">{when(w.kiedy, now)}</span> {RODZAJ_LABEL[w.rodzaj]} {money(w.kwota, d.waluta)}
               {w.metoda ? <span className="muted small"> · {w.metoda}</span> : null}
             </li>
           ))}
         </ul>
       )}
-      {akcje && (
-        <div className="kz-poz-akcje kz-odstep-gora">
-          {naOplacone &&
-            (powodWplaty ? (
-              <Nieaktywny etykieta="Oznacz jako opłacone" powod={powodWplaty} />
-            ) : (
-              <form action={oznaczOplaconeKarta}>
-                <input type="hidden" name="zamowienie" value={o.id} />
-                <Przycisk type="submit">Oznacz jako opłacone</Przycisk>
-              </form>
-            ))}
-          {naDoplate &&
-            (powodWplaty ? <Nieaktywny etykieta="Zapisz dopłatę" powod={powodWplaty} /> : <FormularzWplaty klucz="dp" orderId={o.id} akcja={zapiszDoplateKarta} etykieta="Zapisz dopłatę" kwota={Math.max(0, p.roznicaGr)} />)}
-          {naZwrot &&
-            (powodZwrotu ? (
-              <Nieaktywny etykieta="Zwrot różnicy" powod={powodZwrotu} />
-            ) : (
-              <FormularzWplaty klucz="zr" orderId={o.id} akcja={zwrotRoznicyKarta} etykieta="Zwrot różnicy" kwota={-p.roznicaGr} potwierdz="Zapisać zwrot różnicy? Przelew zrobisz w banku: Kompletor zapisuje zwrot i dokłada go do eksportu przelewów." />
-            ))}
-        </div>
-      )}
-      {akcje && powody.length > 0 && (
+      <div className="kz-poz-akcje kz-odstep-gora">
+        {naOplacone &&
+          (powodWplaty ? (
+            <Nieaktywny etykieta="Oznacz jako opłacone" powod={powodWplaty} />
+          ) : (
+            <form action={oznaczOplaconeKarta}>
+              <input type="hidden" name="zamowienie" value={o.id} />
+              <Przycisk type="submit">Oznacz jako opłacone</Przycisk>
+            </form>
+          ))}
+        {naDoplate &&
+          (powodWplaty ? <Nieaktywny etykieta="Zapisz dopłatę" powod={powodWplaty} /> : <FormularzWplaty klucz="dp" waluta={d.waluta} orderId={o.id} akcja={zapiszDoplateKarta} etykieta="Zapisz dopłatę" kwota={Math.max(0, p.roznicaGr)} />)}
+        {naZwrot &&
+          (powodZwrotu ? (
+            <Nieaktywny etykieta="Zwrot różnicy" powod={powodZwrotu} />
+          ) : (
+            <FormularzWplaty klucz="zr" waluta={d.waluta} orderId={o.id} akcja={zwrotRoznicyKarta} etykieta="Zwrot różnicy" kwota={-p.roznicaGr} potwierdz="Zapisać zwrot różnicy? Przelew zrobisz w banku: Kompletor zapisuje zwrot i dokłada go do eksportu przelewów." />
+          ))}
+        {powodZmiany ? <Nieaktywny etykieta={etykietaZmiany} powod={powodZmiany} /> : <ZmianaPlatnosci orderId={o.id} kierunek={p.zmiana.kierunek} />}
+      </div>
+      {powody.length > 0 && (
         <div id="plat-powod">
           {powody.map((t) => (
             <p key={t} className="ui-akcja-powod kz-odstep-gora">

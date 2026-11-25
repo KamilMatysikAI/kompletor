@@ -6,12 +6,15 @@
 // osobowe; system nie przechowuje adresów klientów). Nadpisujemy w nim wyłącznie `packages` i `cashOnDelivery`.
 // Bez `deliveryMethodId` i `credentialsId` (przestarzałe: Allegro bierze metodę z zamówienia). Błędy bez wartości pól.
 import type { PreparedParcel } from '../adaptery/kontrakt'
+import type { WymiaryPaczkiCm } from './allegro'
 
 export interface OpcjeKomendyAllegro {
   /** UUID komendy (klucz idempotencji, np. deriveReference z lib/adaptery/rejestr.ts). */
   commandId: string
   referenceNumber?: string | null
   labelFormat: 'PDF' | 'ZPL'
+  /** Wymiary po dopasowaniu do limitu metody dostawy (dopasujWymiaryDoLimitu); bez nich idą wymiary gabarytu. */
+  wymiary?: WymiaryPaczkiCm
 }
 
 const UUID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/
@@ -28,15 +31,17 @@ export function buildCreateCommandPayload(draft: PreparedParcel, suggestedInput:
   if (!isRecord(suggestedInput) || !isRecord(suggestedInput['sender']) || !isRecord(suggestedInput['receiver'])) throw new Error('suggestedInput bez nadawcy albo odbiorcy (sender, receiver)')
   if (draft.sideXCm === null || draft.sideYCm === null || draft.sideZCm === null || draft.weightKg === null || !(draft.weightKg > 0)) throw new Error('Przesyłka bez wymiarów albo wagi')
   const { deliveryMethodId: _metoda, credentialsId: _konto, packages: _paczki, cashOnDelivery: staryCod, ...reszta } = suggestedInput
+  // kolejność jak w gabarycie: wysokość (A/B/C), szerokość, długość
+  const wym = opcje.wymiary ?? { length: draft.sideZCm, width: draft.sideYCm, height: draft.sideXCm }
+  if (!(wym.length > 0 && wym.width > 0 && wym.height > 0)) throw new Error('Przesyłka z wymiarem zerowym albo nieczytelnym')
   const input: Record<string, unknown> = {
     ...reszta,
     packages: [
       {
         type: 'PACKAGE',
-        // kolejność jak w gabarycie: wysokość (A/B/C), szerokość, długość
-        length: cm(draft.sideZCm),
-        width: cm(draft.sideYCm),
-        height: cm(draft.sideXCm),
+        length: cm(wym.length),
+        width: cm(wym.width),
+        height: cm(wym.height),
         weight: { value: draft.weightKg, unit: 'KILOGRAMS' },
       },
     ],

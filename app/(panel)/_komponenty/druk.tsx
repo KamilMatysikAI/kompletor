@@ -256,3 +256,17 @@ export function DrukujEtykieteProbna({ orderId }: { orderId: string }) {
     </div>
   )
 }
+
+/** etykieta odbioru osobistego (do naklejenia na paczkę) na karcie zamówienia: ponowny druk albo pierwszy. */
+export function DrukujEtykieteOdbioru({ orderId }: { orderId: string }) {
+  const stanowiska = useStanowiskaDruku()
+  if (!stanowiska?.length) return null
+  return (
+    <div style={{ marginTop: 10 }}>
+      <DrukujNaStanowisku typ="etykieta" ids={[orderId]} etykieta="Drukuj etykietę odbioru" stanowiska={stanowiska} />
+      <div className="muted small" style={{ marginTop: 4 }}>
+        Etykieta 100 × 150 mm na paczkę na półce odbiorów: numer zamówienia z kodem kreskowym, odbiorca, płatność. Po „Spakowano” na stanowisku drukuje się sama.
+      </div>
+    </div>
+  )
+}

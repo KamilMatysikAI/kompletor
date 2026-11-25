@@ -93,6 +93,9 @@ export function linkSledzeniaDoMaila(carrier: string | null | undefined, numer: 
     case 'DPD':
     case 'DPD_EMPIK':
       return `https://tracktrace.dpd.com.pl/parcelDetails?typ=1&p1=${n}`
+    // Wysyłam z Allegro (każdy przewoźnik Allegro), strona śledzenia Allegro
+    case 'ALLEGRO':
+      return `https://allegro.pl/allegrodelivery/sledzenie-paczki?numer=${n}`
     default:
       return null
   }

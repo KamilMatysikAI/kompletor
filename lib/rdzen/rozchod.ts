@@ -14,6 +14,7 @@ import { zrodloStanu } from './zrodlo-stanu'
 import { blokadaPakowaniaFakturaBl, brakiJakoWydanePoFakturzeBlInTx, fakturaZBl, kontoWPodgladzie, odmowaPakowaniaFakturaBl, oznaczPominietaFaktureBl, PRZED_SPAKOWANIEM, zglosDwieFaktury, zglosFaktureBlPoSpakowaniu, zglosFaktureBlWKolejce, zglosTowarPoFakturzeBl } from './faktura-bl'
 import { chwilaAutomatuWz } from '../dokumenty/ustawienia'
 import { zwolnijKoszykPoStatusie } from '../koszyki/zwolnienie'
+import { blokadaFakturyWaluta, FAKTURA_OBCA_WALUTA, FAKTURA_WALUTA_PONOWIONA, walutaCzekaNaPonowienie } from './waluta'
 import type { Ctx } from './zamowienia'
 
 export interface InvoiceLine {
@@ -27,7 +28,7 @@ export interface InvoiceLine {
 }
 
 export type IssueResult =
-  | { kind: 'OK'; docId: string; wz: Record<string, number | null>; number?: string | null } // wz: ilość WZ per productId (null = odczyt WZ nieudany); number: numer z wFirmy
+  | { kind: 'OK'; docId: string; wz: Record<string, number | null>; number?: string | null; limitPoZapisie?: { retryAfterMs?: number } } // wz: ilość WZ per productId (null = odczyt WZ nieudany); number: numer z wFirmy; limitPoZapisie: dokument powstał, ale odczyt po zapisie dostał limit wFirmy (kolejka staje jak przy limicie)
   | { kind: 'ERROR'; message: string } // jednoznaczny błąd: dokument nie powstał
   | { kind: 'TIMEOUT' }
   | { kind: 'LIMIT'; message: string; retryAfterMs?: number } // limit wFirmy: żądanie odrzucone przed przetworzeniem, kolejka wstrzymana (3.4)
@@ -185,7 +186,8 @@ async function serviceUnits(tx: Tx, orderId: string): Promise<number> {
 
 /** INNE_ZRODLO: magazyn nie jest lustrem wFirmy — faktura z rozchodem nie idzie. */
 /** FAKTURA_BL: zamówienie ma fakturę z BaseLinkera (lib/rdzen/faktura-bl.ts) — druga z Kompletora nie idzie nigdy. */
-export type InvoiceOutcome = 'WYSTAWIONA' | 'JUZ_WYSTAWIONA' | 'W_TOKU' | 'BLAD' | 'TIMEOUT' | 'NIC_DO_FAKTURY' | 'LIMIT_PROB' | 'LIMIT' | 'INNE_ZRODLO' | 'POZA_MOMENTEM' | 'FAKTURA_BL'
+/** OBCA_WALUTA: zamówienie w walucie innej niż PLN (lib/rdzen/waluta.ts) — faktura tylko ręcznie, bez ruchu stanu. */
+export type InvoiceOutcome = 'WYSTAWIONA' | 'JUZ_WYSTAWIONA' | 'W_TOKU' | 'BLAD' | 'TIMEOUT' | 'NIC_DO_FAKTURY' | 'LIMIT_PROB' | 'LIMIT' | 'INNE_ZRODLO' | 'POZA_MOMENTEM' | 'FAKTURA_BL' | 'OBCA_WALUTA'
 
 /** Próby liczone do limitu: bez odrzuconych limitem wFirmy i bez prób sprzed ręcznego „Ponów fakturę”. */
 function liczoneProby(o: Pick<Order, 'flags'>, attempts: { state: string; lastError: string | null; attemptNo: number }[]) {
@@ -197,6 +199,16 @@ function liczoneProby(o: Pick<Order, 'flags'>, attempts: { state: string; lastEr
 async function limitProb(tx: Tx, o: Order, n: number, ile: number): Promise<void> {
   await tx.order.update({ where: { id: o.id }, data: { flags: mergeFlags(o, { fakturaBlad: true }) } })
   await alert(tx, 'FAKTURA_BLAD', o.id, `Faktura paczki ${n}: ${ile} nieudanych prób — sprawdź w programie do faktur i kliknij „Ponów fakturę” na karcie zamówienia albo wystaw ręcznie`, `faktura-limit:${o.parentOrderId ?? o.id}/${n}`)
+}
+
+/**
+ * zamówienie w obcej walucie — ślad w historii i alert (raz), odmowa dokumentu z Kompletora, bez ruchu stanu
+ * i bez żądania. Wspólne dla faktury z rozchodem (`beginInvoice`) i dokumentu bez rozchodu (`beginDocument`), czyli dla
+ * kolejki, ponowienia po timeoucie i ponowienia z karty albo automatu (te idą przez kolejkę).
+ */
+async function pominPoObcejWalucie(tx: Tx, o: Order, ctx: Ctx): Promise<boolean> {
+  // przy włączonym „Faktury w walucie zamówienia” bezpiecznik przepuszcza obcą walutę (droga wFirmy)
+  return (await blokadaFakturyWaluta(tx, o, { oznacz: { actorId: ctx.actorId ?? 'system:faktury' }, wfirma: true })) !== null
 }
 
 /** Zamówienie z fakturą BL: ślad w historii (raz) i odmowa faktury z Kompletora, bez ruchu stanu i bez żądania. */
@@ -317,6 +329,7 @@ export async function beginInvoice(
     if (attempts.some((a) => a.state === 'ISSUED')) return { outcome: 'JUZ_WYSTAWIONA' as const }
     if (attempts.some((a) => a.state === 'SENDING' || a.state === 'UNKNOWN')) return { outcome: 'W_TOKU' as const }
     if (await pominPoFakturzeBl(tx, o, ctx)) return { outcome: 'FAKTURA_BL' as const }
+    if (await pominPoObcejWalucie(tx, o, ctx)) return { outcome: 'OBCA_WALUTA' as const }
     if (o.status !== 'SPAKOWANE') throw new PackError(`Faktura tylko dla spakowanego zamówienia (jest ${o.status})`)
     const counted = liczoneProby(o, attempts)
     if (counted.length >= MAX_INVOICE_ATTEMPTS) {
@@ -622,6 +635,7 @@ export async function beginDocument(db: Db, orderId: string, ctx: Ctx & { status
     if (attempts.some((a) => a.state === 'ISSUED')) return { outcome: 'JUZ_WYSTAWIONA' as const }
     if (attempts.some((a) => a.state === 'SENDING' || a.state === 'UNKNOWN')) return { outcome: 'W_TOKU' as const }
     if (await pominPoFakturzeBl(tx, o, ctx)) return { outcome: 'FAKTURA_BL' as const }
+    if (await pominPoObcejWalucie(tx, o, ctx)) return { outcome: 'OBCA_WALUTA' as const }
     if (!ctx.statusy.includes(o.status)) return { outcome: 'POZA_MOMENTEM' as const }
     const counted = liczoneProby(o, attempts)
     if (counted.length >= MAX_INVOICE_ATTEMPTS) {
@@ -658,12 +672,25 @@ export async function ponowFaktureRecznie(db: Db, orderId: string, ctx: Ctx = {}
     // zamówienie z fakturą z BaseLinkera: kolejka i tak nie wystawi drugiej, więc odmowa z powodem zamiast ciszy
     const bl = await fakturaZBl(tx, o)
     if (bl !== null) throw new PackError(`Zamówienie ma już fakturę z BaseLinkera (${bl}): Kompletor nie wystawi drugiej. Gdy tej faktury w BaseLinkerze nie ma, wystaw fakturę ręcznie w programie do faktur.`)
-    if (!flagsOf(o).fakturaBlad && !attempts.some((a) => a.state === 'FAILED')) throw new PackError('Ta faktura nie ma błędu do ponowienia')
+    // obca waluta — kolejka i tak nie wystawi, więc odmowa z powodem zamiast „W kolejce” bez końca
+    // przy włączonym „Faktury w walucie zamówienia” samo kliknięcie przechodzi (`ponowienie`), także dla
+    // zamówienia sprzed włączenia
+    const waluta = await blokadaFakturyWaluta(tx, o, { wfirma: true, ponowienie: true })
+    if (waluta) throw new PackError(waluta.powod)
+    // zamówienie w obcej walucie sprzed włączenia (ze śladem blokady albo bez) kolejka sama nie
+    // weźmie (biuro mogło już wystawić fakturę ręcznie); wraca dopiero tym kliknięciem (ślad ponowienia)
+    const zatrzymanaWaluta = await walutaCzekaNaPonowienie(tx, o)
+    if (!flagsOf(o).fakturaBlad && !attempts.some((a) => a.state === 'FAILED') && !zatrzymanaWaluta) throw new PackError('Ta faktura nie ma błędu do ponowienia')
     if (o.status === 'ANULOWANE') throw new PackError('Zamówienie jest anulowane')
     const po = Math.max(0, ...attempts.map((a) => a.attemptNo))
     await tx.order.update({ where: { id: orderId }, data: { flags: mergeFlags(o, { fakturaBlad: false, lastError: null, fakturaPonowionaPo: po }) } })
     await closeInvoiceAlerts(tx, orderId, now)
     await tx.orderEvent.create({ data: { orderId, kind: 'FAKTURA_PONOWIONA', actorId: ctx.actorId ?? 'panel', data: { poProbie: po } } })
+    if (zatrzymanaWaluta) {
+      await tx.orderEvent.create({ data: { orderId, kind: FAKTURA_WALUTA_PONOWIONA, actorId: ctx.actorId ?? 'panel', data: {} } })
+      // alert „wystaw ręcznie” tej paczki już nie obowiązuje (klucz zwolniony jak w closeInvoiceAlerts)
+      await tx.alert.updateMany({ where: { kind: FAKTURA_OBCA_WALUTA, ref: orderId, closedAt: null }, data: { closedAt: now, dedupeKey: null } })
+    }
   })
 }
 
@@ -681,6 +708,12 @@ async function issueStarted(db: Db, b: Started, wf: FakturyWfirma, ctx: QueueCtx
   const receivedAt = ctx.clock ? ctx.clock() : ctx.now ? ctx.now : new Date()
   if (r.kind === 'OK') {
     await completeInvoice(db, b.attemptId, r.docId, r.wz, { ...ctx, now: receivedAt, number: r.number ?? null })
+    // faktura rozliczona, ale wFirma odpowiedziała limitem na odczyt po zapisie: kolejka firmy
+    // staje jak przy każdym limicie (bez kolejnych żądań w trakcie blokady)
+    if (r.limitPoZapisie) {
+      ctx.onLimit?.(r.limitPoZapisie.retryAfterMs)
+      return 'LIMIT'
+    }
     return 'WYSTAWIONA'
   }
   if (r.kind === 'ERROR') {

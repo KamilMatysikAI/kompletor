@@ -1,7 +1,7 @@
 // Ustawienia → Przewoźnicy → Konta przewoźników: klucze kont przewoźników (szyfrowane,
 // panel widzi tylko „ustawiony / brak”), ustawienia kont z manifestu adaptera, wyłączniki nadawania i test połączenia.
 // Wejście: przycisk „Konta przewoźników” na ekranie Przewoźnicy. Tylko z uprawnieniem `ustawienia`.
-// Wysyłam z Allegro nie ma tu konta: działa na koncie Allegro z Kanałów sprzedaży.
+// Wysyłam z Allegro: karta bez kluczy (działa na koncie Allegro z Kanałów sprzedaży), tylko wyłącznik nadawania.
 import { Baner, NaglowekStrony, PrzyciskLink } from '@/app/ui'
 import { defaultRegistry } from '@/lib/adaptery/domyslne'
 import { CARRIER_LABEL } from '@/lib/panel/format'
@@ -22,7 +22,7 @@ const one = (v: string | string[] | undefined) => (Array.isArray(v) ? v[0] : v)
 export default async function KontaPrzewoznikow({ searchParams }: Props) {
   const ctx = await requirePermission('ustawienia')
   const sp = await searchParams
-  const [konta, reguly, wylaczone] = await Promise.all([kontaPrzewoznikow(ctx.db, registry, zrodloKluczyPanelu()), regulyPrzewoznikow(ctx.db), wylaczoneKonta(ctx.db)])
+  const [konta, reguly, wylaczone] = await Promise.all([kontaPrzewoznikow(ctx.db, registry, zrodloKluczyPanelu(), { zWysylamZAllegro: true }), regulyPrzewoznikow(ctx.db), wylaczoneKonta(ctx.db)])
   const now = new Date()
   const test = one(sp.test)
   const blad = one(sp.blad)?.slice(0, 200)
@@ -63,13 +63,10 @@ export default async function KontaPrzewoznikow({ searchParams }: Props) {
             {blad}
           </Baner>
         )}
-        <Baner ton="info" rola="note">
-          Wysyłam z Allegro korzysta z konta Allegro w Kanałach sprzedaży, więc nie ma tu osobnych kluczy.
-        </Baner>
         <FormularzKont konta={konta} przewoznicy={CARRIER_LABEL} priorytety={reguly.map((r) => r.priority)} />
-        <DodajKonto glowne={konta.filter((k) => !k.sufiks).map((k) => ({ wartosc: k.id, etykieta: k.nazwa }))} />
+        <DodajKonto glowne={konta.filter((k) => !k.sufiks && !k.bezKluczy).map((k) => ({ wartosc: k.id, etykieta: k.nazwa }))} />
       </div>
-      {konta.map((k) => (
+      {konta.filter((k) => !k.bezKluczy).map((k) => (
         <form key={k.id} id={`test-${k.id}`} action={sprawdzKonto} hidden>
           <input type="hidden" name="konto" value={k.id} />
         </form>

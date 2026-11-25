@@ -94,6 +94,15 @@ export function imieNazwiskoMiasto(k: RekordKlienta): { imie: string; nazwisko: 
   return { imie, nazwisko: reszta.join(' '), miasto }
 }
 
+/**
+ * kolumna „Klient” na liście zamówień (jak w BaseLinkerze): firma, gdy jest, inaczej imię i nazwisko
+ * (nabywca, potem dostawa), na końcu nazwa z danych do faktury. Tylko dla osoby z `klienci.dane`. Brak = null.
+ */
+export function klientNaLiscie(k: RekordKlienta): string | null {
+  const t = (v: string | null | undefined) => (v ?? '').trim()
+  return t(k.nabywca?.firma) || t(k.dostawa?.firma) || t(k.nabywca?.imieNazwisko) || t(k.dostawa?.imieNazwisko) || t(k.faktura?.nazwa) || null
+}
+
 /** Skrót dla Magazynu i list: imię, pierwsza litera nazwiska z kropką i miasto, bez pełnego nazwiska. */
 export function skrotRekordu(k: RekordKlienta): SkrotKlienta | null {
   const p = imieNazwiskoMiasto(k)

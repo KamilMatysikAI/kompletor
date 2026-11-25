@@ -248,6 +248,18 @@ zamówienia, paczka, przewoźnik, gabaryt, waga, pobranie), ZPL `^CI28` i PDF 10
 „PRÓBA: NIE NADAWAĆ”, **bez kodu kreskowego**. Bez sieci i Base Courier, bez zmian w zamówieniu, rezerwacjach,
 stanach i `PreparedShipment`. Prawdziwa etykieta w trybie PRACA = późniejsza implementacja tego interfejsu.
 
+### Etykieta odbioru osobistego
+
+`lib/druk/etykieta-odbioru.ts`: przy przewoźniku `OSOBISTY` źródło etykiety panelu (`etykietaZamowienia`,
+`lib/wysylka/etykieta-przewoznika.ts`) zwraca etykietę odbioru zamiast etykiety przewoźnika albo atrapy. Ten sam typ
+zlecenia „etykieta” i ta sama drukarka. PDF i ZPL 100×150 mm, tylko czerń i biel; kod Code 128 z tych samych szerokości
+co karta (`kreskiKodu128`), w ZPL jako kreski `^GB`, moduł w całych punktach 203 dpi (najwyżej 4), strefa ciszy 10
+modułów. Treść kodu: kod najnowszej karty (`OrderCardPrint`), bez karty numer z przedrostkiem konta. Dane odbiorcy
+(`odbiorcaNaEtykieteOdbioru`, `lib/klienci/wydruk.ts`): osoba = cel `WYDRUK` z jej uprawnieniami, reguła automatu
+(`automat:<id>`) = `system:etykieta-odbioru`, cel `PRZESYLKA`. Opis zlecenia ma tylko numer zamówienia. Stanowisko po
+„Spakowane” woła `etykietaOdbioruPoSpakowaniu` (klucz `odbior-<id zamówienia>-auto`), karta ma przycisk
+„Drukuj etykietę odbioru”, krok automatu `drukujEtykiete` przy `OSOBISTY` nie wymaga przesyłki, ale wymaga trybu pracy.
+
 ### Paczka programu (`AGENT_DRUKU_KATALOG`, `AGENT_DRUKU_URL`)
 
 ```

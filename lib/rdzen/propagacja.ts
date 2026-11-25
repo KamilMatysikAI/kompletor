@@ -43,6 +43,11 @@ export interface PushResult {
    * Job czeka `retryAfterMs` bez liczenia próby i bez alertu (nic nie zginęło, nic nie wysłano).
    */
   odlozone?: boolean
+  /**
+   * kanał odmówił czegoś, czego powtórka nie zmieni (zakończenie albo wznowienie oferty, dobowy limit
+   * zakończeń): job od razu odstawiony (jak po TRWALY_MAX próbach) z alertem, bez ponowień co 5 min.
+   */
+  odstaw?: boolean
 }
 
 export interface AdapterStanow {
@@ -385,14 +390,16 @@ export async function runStockPush(
         const error = (r?.error ?? 'brak wyniku').slice(0, 1000)
         // NIEJEDNOZNACZNY: nie wiadomo, czy kanał zapisał — bez ponowienia, alert; TRWALY: najdłuższy odstęp
         // trwały błąd po TRWALY_MAX próbach też odstawiony (bez ponawiania żądań do sklepu co 5 min) i z alertem
-        const parked = r?.kind === 'NIEJEDNOZNACZNY' || (r?.kind === 'TRWALY' && attempts >= TRWALY_MAX)
+        const parked = r?.kind === 'NIEJEDNOZNACZNY' || !!r?.odstaw || (r?.kind === 'TRWALY' && attempts >= TRWALY_MAX)
         // Retry-After z kanału dłuższy niż własny odstęp wygrywa, inaczej druga próba znowu dostanie 429
         const delay = parked ? PARKED_MS : Math.max(r?.retryAfterMs ?? 0, r?.kind === 'TRWALY' ? BACKOFF_MS[BACKOFF_MS.length - 1]! : BACKOFF_MS[Math.min(attempts - 1, BACKOFF_MS.length - 1)]!)
         await db.stockSyncJob.updateMany({
           where: { offerId: x.job.offerId, computedAt: x.job.computedAt },
           data: { attempts, lastError: r?.kind ? `${r.kind}: ${error}`.slice(0, 1000) : error, nextAttemptAt: new Date(now.getTime() + delay) },
         })
-        if (r?.kind === 'TRWALY' && attempts === TRWALY_MAX)
+        if (r?.odstaw)
+          await alert(db, 'KANAL_STAN_BLAD', accLabel(acc), `Kanał ${accLabel(acc)}: oferta ${x.item.externalId}: ${error}. Kompletor nie ponawia; kolejne takie oferty są na ekranie konta („Oferty z błędem”). Po wyjaśnieniu kliknij „Wypchnij teraz”.`, `stan-odstaw:${accLabel(acc)}:${now.toISOString().slice(0, 10)}`)
+        else if (r?.kind === 'TRWALY' && attempts === TRWALY_MAX)
           await alert(db, 'KANAL_STAN_BLAD', accLabel(acc), `Kanał ${accLabel(acc)}: stan oferty ${x.item.externalId} nie zapisuje się (${attempts} prób): ${error}. Popraw i kliknij „Wypchnij teraz”.`, `stan-blad:${x.job.offerId}:${x.job.computedAt.toISOString()}`)
         if (r?.kind === 'NIEJEDNOZNACZNY')
           await alert(db, 'KANAL_STAN_NIEJEDNOZNACZNY', accLabel(acc), `Kanał ${accLabel(acc)}: nie wiadomo, czy stan oferty ${x.item.externalId} (${x.item.targetQty} szt.) zapisał się w sklepie: ${error}. Sprawdź i kliknij „Wypchnij teraz”.`, `stan-niejednoznaczny:${x.job.offerId}:${x.job.computedAt.toISOString()}`)

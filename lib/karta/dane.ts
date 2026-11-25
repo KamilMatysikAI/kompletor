@@ -9,10 +9,12 @@ import { grosze, KOMUNIKAT_PRZESYLKA_POZYCJE, KOMUNIKAT_PRZESYLKA_POZYCJE_BEZ_AN
 import { flagsOf } from '@/lib/rdzen/rezerwacja'
 import { przelicznikiPozycji, wartoscCzesciGr } from '@/lib/rdzen/zamiana'
 import { availableOf } from '@/lib/rdzen/stan'
+import { walutaZamowienia } from '@/lib/rdzen/waluta'
 import { KOMUNIKAT_CIEN, kontoKarty, powodyPodgladu, pracaKarty, ustawieniaKarty, type PowodyPodgladu } from './bramka'
 import { historiaZamowienia, type WpisHistorii } from './historia'
 import { linkDoKanalu, linkDoOferty } from './link-kanalu'
 import { type Notatka, notatkiZamowienia } from './notatki'
+import { stanZmianyPlatnosci, type KierunekZmiany } from './pobranie'
 import { rozliczenie, type Rozliczenie } from './platnosci'
 import { type PowiazanieOferty, powiazaniaOfert } from './powiaz'
 import { glowneZdjecia } from '../produkty/zdjecia'
@@ -58,7 +60,11 @@ export interface DaneKarty {
   usunieteLokalnie: Set<string>
   paczki: Paczka[]
   linkKanalu: string | null
-  platnosc: Rozliczenie & { wpisy: { id: string; rodzaj: 'WPLATA' | 'DOPLATA' | 'ZWROT'; kwota: string; metoda: string | null; kiedy: Date }[] }
+  platnosc: Rozliczenie & {
+    wpisy: { id: string; rodzaj: 'WPLATA' | 'DOPLATA' | 'ZWROT'; kwota: string; metoda: string | null; kiedy: Date }[]
+    /** „Zmień na pobranie” / „Zmień na nieopłacone”: kierunek i powód nieaktywności z danych zamówienia (null = działa). */
+    zmiana: { kierunek: KierunekZmiany; powod: string | null }
+  }
   zwroty: { id: string; kind: 'ZWROT' | 'KOREKTA' | 'REKLAMACJA'; status: string; createdAt: Date; moneyRefundedAt: Date | null }[]
   notatki: Notatka[]
   historia: WpisHistorii[]
@@ -80,6 +86,8 @@ export interface DaneKarty {
   zdjecia: Map<string, string>
   /** stan produktów pozycji (suma magazynów): na półce i dostępne (bez rezerwacji); brak w mapie = bez stanu. */
   stanyProduktow: Map<string, { fizycznie: number; dostepne: number }>
+  /** waluta zamówienia z kopii kanału (lib/rdzen/waluta.ts); kwoty karty są w tej walucie. Bez kopii = PLN. */
+  waluta: string
 }
 
 export async function daneKarty(db: Db, id: string, osoba: { userId: string; uprawnienia: ReadonlySet<string> }, opts: { tylkoLudzie?: boolean; env?: Env; now?: Date } = {}): Promise<DaneKarty | null> {
@@ -155,6 +163,7 @@ export async function daneKarty(db: Db, id: string, osoba: { userId: string; upr
     platnosc: {
       ...rozliczenie(o, wpisy),
       wpisy: wpisy.map((w) => ({ id: w.id, rodzaj: w.kind, kwota: w.amount.toString(), metoda: w.method, kiedy: w.paidAt })),
+      zmiana: await stanZmianyPlatnosci(db, o),
     },
     zwroty,
     notatki,
@@ -168,5 +177,6 @@ export async function daneKarty(db: Db, id: string, osoba: { userId: string; upr
     ostatniaZmiana: o.events[0]?.createdAt ?? null,
     zdjecia: await glowneZdjecia(db, o.lines.map((l) => l.productId).filter((x): x is string => !!x)),
     stanyProduktow,
+    waluta: await walutaZamowienia(db, o),
   }
 }

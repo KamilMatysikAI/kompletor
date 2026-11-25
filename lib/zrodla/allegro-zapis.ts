@@ -6,6 +6,8 @@
 // Ścieżki:
 //   PUT  /sale/offer-quantity-change-commands/{uuid}          stany ofert (komenda z deterministycznym commandId)
 //   GET  /sale/offer-quantity-change-commands/{uuid}[/tasks]  wynik komendy stanów
+//   PUT  /sale/offer-publication-commands/{uuid}              zakończenie (END) i wznowienie (ACTIVATE) ofert
+//   GET  /sale/offer-publication-commands/{uuid}[/tasks]      wynik komendy publikacji
 //   PUT  /order/checkout-forms/{uuid}/fulfillment             status realizacji
 //   POST /order/checkout-forms/{uuid}/shipments               numer nadania w zamówieniu
 //   POST /shipment-management/shipments/create-commands       Wysyłam z Allegro: utworzenie przesyłki
@@ -13,6 +15,9 @@
 //   POST /shipment-management/shipments/cancel-commands       Wysyłam z Allegro: anulowanie przesyłki
 //   GET  /shipment-management/shipments/cancel-commands/{uuid}
 //   POST /shipment-management/label                           etykieta (plik binarny)
+//   POST /shipment-management/pickup-proposals                Wysyłam z Allegro: propozycje terminów odbioru przez kuriera
+//   POST /shipment-management/pickups/create-commands         Wysyłam z Allegro: zamówienie odbioru przez kuriera
+//   GET  /shipment-management/pickups/create-commands/{uuid}
 //   POST /sale/product-offers                                 wystawienie oferty (za `wystawianieOfertWlaczone`)
 //
 // Zapis NIGDY nie jest ponawiany w tym kliencie: brak odpowiedzi (sieć, timeout) = SourceError, a o powtórce decyduje
@@ -30,11 +35,18 @@ type Method = 'GET' | 'PUT' | 'POST'
 const WRITE_PATHS: readonly { method: Method; re: RegExp }[] = [
   { method: 'PUT', re: new RegExp(`^/sale/offer-quantity-change-commands/${UUID}$`) },
   { method: 'GET', re: new RegExp(`^/sale/offer-quantity-change-commands/${UUID}(/tasks)?$`) },
+  // zakończenie oferty przy stanie 0 i wznowienie oferty zakończonej przez Kompletor (END / ACTIVATE)
+  { method: 'PUT', re: new RegExp(`^/sale/offer-publication-commands/${UUID}$`) },
+  { method: 'GET', re: new RegExp(`^/sale/offer-publication-commands/${UUID}(/tasks)?$`) },
   { method: 'PUT', re: new RegExp(`^/order/checkout-forms/${FORM}/fulfillment$`) },
   { method: 'POST', re: new RegExp(`^/order/checkout-forms/${FORM}/shipments$`) },
   { method: 'POST', re: /^\/shipment-management\/shipments\/(create|cancel)-commands$/ },
   { method: 'GET', re: new RegExp(`^/shipment-management/shipments/(create|cancel)-commands/${UUID}$`) },
   { method: 'POST', re: /^\/shipment-management\/label$/ },
+  // zamawianie kuriera (osobny wyłącznik konta „Zamawianie kuriera z Kompletora”); propozycje to POST, ale niczego nie zamawiają
+  { method: 'POST', re: /^\/shipment-management\/pickup-proposals$/ },
+  { method: 'POST', re: /^\/shipment-management\/pickups\/create-commands$/ },
+  { method: 'GET', re: new RegExp(`^/shipment-management/pickups/create-commands/${UUID}$`) },
   // wystawienie oferty (osobny wyłącznik konta `wystawianieOfertWlaczone`, lib/oferty/wystawianie.ts)
   { method: 'POST', re: /^\/sale\/product-offers$/ },
 ]
@@ -51,6 +63,8 @@ export interface AllegroWriteResult {
   status: number
   /** JSON odpowiedzi (obiekt), także dla błędów 4xx (kody błędów Allegro); null = brak albo nie JSON. */
   body: Record<string, unknown> | null
+  /** JSON odpowiedzi, gdy jest tablicą (propozycje terminów odbioru); null = brak, obiekt albo nie JSON. */
+  lista?: unknown[] | null
   /** Plik (etykieta), gdy żądanie prosiło o odpowiedź binarną i status 2xx. */
   bytes: Buffer | null
   contentType: string | null
@@ -126,14 +140,16 @@ export class AllegroWriter {
       // bez treści
     }
     let json: Record<string, unknown> | null = null
+    let lista: unknown[] | null = null
     if (text) {
       try {
         const v = JSON.parse(text) as unknown
         json = v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : null
+        lista = Array.isArray(v) ? v : null
       } catch {
         json = null
       }
     }
-    return { status: res.status, body: json, bytes: null, contentType, retryAfterMs }
+    return { status: res.status, body: json, lista, bytes: null, contentType, retryAfterMs }
   }
 }

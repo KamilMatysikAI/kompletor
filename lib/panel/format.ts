@@ -15,11 +15,21 @@ function group(s: string): string {
   return s.replace(/^(-?\d+)(\d{3})([,\s]|$)/, (_m, a: string, b: string, c: string) => `${a}${NBSP}${b}${c}`).replace(/ /g, NBSP)
 }
 
-export function money(v: number | string | { toString(): string } | null | undefined): string {
+/**
+ * Kwota z jednostką. `waluta`: kod waluty zamówienia; brak albo PLN = „zł”, inna = kod („957,00 CZK”).
+ * Kwot zamówienia w obcej walucie nie wolno pokazywać bez niej (`Order` nie ma waluty, bierze się ją z kopii kanału).
+ */
+export function money(v: number | string | { toString(): string } | null | undefined, waluta?: string | null): string {
   if (v === null || v === undefined) return '—'
   const n = typeof v === 'number' ? v : Number(v.toString())
   if (!Number.isFinite(n)) return '—'
-  return `${group(plMoney.format(n))}${NBSP}zł`
+  return `${group(plMoney.format(n))}${NBSP}${jednostkaWaluty(waluta)}`
+}
+
+/** „zł” dla PLN i braku waluty, inaczej kod waluty wielkimi literami. */
+export function jednostkaWaluty(waluta?: string | null): string {
+  const w = (waluta ?? '').trim().toUpperCase()
+  return !w || w === 'PLN' ? 'zł' : w
 }
 
 export function int(n: number): string {
@@ -150,6 +160,9 @@ const EVENT_LABEL: Record<string, string> = {
   FAKTURA: 'Faktura wystawiona',
   FAKTURA_BL: 'Faktura z BaseLinkera',
   FAKTURA_BL_POMINIETA: 'Bez faktury z Kompletora: zamówienie ma już fakturę z BaseLinkera',
+  FAKTURA_OBCA_WALUTA: 'Bez faktury z Kompletora: zamówienie w obcej walucie, faktura ręcznie w programie do faktur',
+  FAKTURA_WALUTA_PONOWIONA: 'Faktura w walucie zamówienia: „Ponów fakturę” zamówienia sprzed włączenia',
+  FAKTURA_WALUTA: 'Faktura w walucie zamówienia sprawdzona w wFirmie (waluta, kwota, kurs NBP)',
   ZAMKNIETE_PRZY_PRZEJSCIU: 'Zamknięte przy przejściu z BaseLinkera (obsłużone w BaseLinkerze)',
   WZ_WFIRMY: 'Rozliczone dokumentem WZ z wFirmy',
   WZ_WYSTAWIONE: 'WZ wystawione w wFirmie',
@@ -158,6 +171,7 @@ const EVENT_LABEL: Record<string, string> = {
   WZ_PO_NUMERZE_WFIRMY: 'Faktura z BaseLinkera rozliczona dokumentem WZ z wFirmy (numer z wFirmy dopisany po skopiowaniu faktury)',
   PARA_BL: 'Połączone z zamówieniem BaseLinkera',
   PUNKT_ODBIORU_ZMIENIONY: 'Punkt odbioru zmieniony przed nadaniem', // (bez kodów punktu: dane dostawy)
+  ADRES_PODZIELONY_PRZEZ_ASYSTENTA: 'Adres rozdzielony przez asystenta AI i zatwierdzony', // (bez treści adresu)
   SPOSOB_WYSYLKI_ZMIENIONY: 'Sposób wysyłki zmieniony na karcie', // przewoźnik i moduł przed i po, bez danych dostawy
   DANE_KLIENTA_ZMIENIONE: 'Dane klienta zmienione na karcie', // kupujący albo dane do faktury: same nazwy pól, bez wartości
   FAKTURA_BLAD: 'Faktura się nie wystawiła',
@@ -203,10 +217,15 @@ const EVENT_LABEL: Record<string, string> = {
   RABAT_ROZLOZONY: 'Rabat sklepu na całe zamówienie rozłożony na ceny pozycji',
   KOSZT_WYSYLKI_ZE_SKLEPU: 'Koszt wysyłki uzupełniony ze sklepu', // runda 2
   KWOTA_Z_KANALU: 'Wartość zamówienia poprawiona ze sklepu',
+  CENA_Z_KANALU: 'Ceny pozycji poprawione ze sklepu',
+  CENA_W_KANALE_INNA: 'Cena pozycji zmieniona w sklepie, w Kompletorze bez zmian',
+  DOSTAWA_Z_KANALU: 'Sposób dostawy uzupełniony ze sklepu',
   ZMIANA_W_KANALE_PO_EDYCJI: 'Zmiana w kanale po edycji w Kompletorze',
   PODZIAL: 'Podział zamówienia',
   PODZIAL_NOWA_PACZKA: 'Nowa paczka z podziału',
   DOPLATA_ZAPISANA: 'Dopłata zapisana',
+  PLATNOSC_NA_POBRANIE: 'Płatność zmieniona na pobranie na karcie',
+  PLATNOSC_POBRANIE_COFNIETE: 'Pobranie zmienione na nieopłacone na karcie',
   ZWROT_ROZNICY: 'Zwrot różnicy zapisany',
   // przyjmowanie zamówień Empiku
   EMPIK_ZAAKCEPTOWALBYM: 'Empik: zaakceptowałbym zamówienie (podgląd, nic nie wysłane)',

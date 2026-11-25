@@ -17,6 +17,7 @@ import { kluczRdzenia, warunekStatusuFirmy, type GrupaStatusowT, type StatusFirm
 import { statusyFirmy, wierszeStatusow, zlozLicznikiStatusow, zlozPrzewoznikowStatusow, type StatusyFirmy } from './statusy-firmy-dane'
 import { warunekPoTerminie } from './termin-wysylki'
 import { daneTerminowNaZadanie, type DaneTerminow } from './termin-wysylki-dane'
+import { WALUTA_DOMYSLNA, walutyZamowien } from '../rdzen/waluta'
 import { linkSledzeniaPanelu } from '@/lib/wysylka/link-sledzenia'
 
 type Db = PrismaClient
@@ -264,6 +265,26 @@ export function ileFiltrow(f: FiltryListy): number {
 
 const DOBA_MS = 24 * 60 * 60_000
 
+/** Największa wartość kolumny `Int` w Postgresie (numer zamówienia BL). */
+const INT_MAX = 2_147_483_647
+
+/**
+ * zamówienie po każdym ze swoich numerów: identyfikator z kanału, numer widoczny w kanale i numer zamówienia
+ * BL (lista i karta pokazują go jako numer główny, np. Empik „EMP 165103969”). Numer BL tylko całą liczbą, bo to `Int`.
+ */
+export function warunkiNumeru(fraza: string): Prisma.OrderWhereInput[] {
+  const q = fraza.trim()
+  if (!q) return []
+  const out: Prisma.OrderWhereInput[] = []
+  // numer przepisany z listy razem z przedrostkiem kanału („EMP 165103969”): szukamy też samego numeru
+  const bezPrzedrostka = /^\p{L}{2,4}\s+(\S+)$/u.exec(q)?.[1]
+  for (const n of bezPrzedrostka ? [q, bezPrzedrostka] : [q]) {
+    out.push({ externalId: { contains: n, mode: 'insensitive' } }, { channelNumber: { contains: n, mode: 'insensitive' } })
+    if (/^\d{1,10}$/.test(n) && Number(n) > 0 && Number(n) <= INT_MAX) out.push({ blOrderId: Number(n) })
+  }
+  return out
+}
+
 /** Warunek zapytania z filtrów (wyszukiwanie po produkcie i numerze nadania w osobnych krokach, z limitem). */
 /** `statusy`: statusy firmy już czytane na tym żądaniu (przeglądu: lista nie czyta ich drugi raz). */
 export async function warunekListy(db: Db, f: FiltryListy, accs: AccountRef[], statusy?: Promise<StatusyFirmy>): Promise<Prisma.OrderWhereInput> {
@@ -276,8 +297,7 @@ export async function warunekListy(db: Db, f: FiltryListy, accs: AccountRef[], s
     ])
     and.push({
       OR: [
-        { externalId: { contains: q, mode: 'insensitive' } },
-        { channelNumber: { contains: q, mode: 'insensitive' } },
+        ...warunkiNumeru(q),
         ...(prods.length ? [{ lines: { some: { productId: { in: prods.map((p) => p.id) } } } }] : []),
         ...(przesylki.length ? [{ id: { in: [...new Set(przesylki.map((p) => p.orderId))] } }] : []),
         ...(f.idsKlienta?.length ? [{ id: { in: [...f.idsKlienta] } }] : []),
@@ -337,6 +357,8 @@ export interface WierszListy {
   externalId: string
   /** numer zamówienia w BL (termin wysyłki konta w podglądzie wg statusu BL) */
   blOrderId: number | null
+  /** paczka dodatkowa bierze dane klienta zamówienia głównego (kolumna „Klient”). */
+  parentOrderId?: string | null
   /** numer widoczny w kanale (Woo z numeracją wtyczki), gdy inny niż externalId */
   channelNumber: string | null
   sourceLabel: string | null
@@ -370,6 +392,8 @@ export interface WierszListy {
   towarPoFakturzeBl?: boolean
   /** konto w trybie pracy, przed spakowaniem, faktura z BaseLinkera = kończy BL (numer faktury). */
   fakturaBl?: string | null
+  /** waluta zamówienia z kopii kanału (lib/rdzen/waluta.ts); `totalGross` jest w tej walucie. */
+  waluta: string
 }
 
 /** Statusy, w których zamówienie jeszcze nie wyszło (znacznik ma sens tylko tu). */
@@ -403,7 +427,7 @@ export async function stronaListy(db: Db, f: FiltryListy, o: { sort: SortTabeli;
   // Konto bez konfiguracji jak w rdzeniu (`kontoWPodgladzie`): tryb pracy.
   const wPracy = (z: (typeof lista)[number]) => konta.find((k) => k.channel === z.channel && k.channelAccountId === z.channelAccountId)?.statusMode !== 'CIEN'
   const przed = lista.filter((z) => PRZED_WYSYLKA.includes(z.status) && wPracy(z))
-  const [czekalNaTowar, zFakturaBl] = await Promise.all([
+  const [czekalNaTowar, zFakturaBl, waluty] = await Promise.all([
     przed.length
       ? db.shortage.findMany({ where: { orderId: { in: przed.map((z) => z.id) }, resolvedBy: 'system:faktura-bl' }, select: { orderId: true }, distinct: ['orderId'] })
       : [],
@@ -411,6 +435,7 @@ export async function stronaListy(db: Db, f: FiltryListy, o: { sort: SortTabeli;
       db,
       lista.filter((z) => PRZED_SPAKOWANIEM.includes(z.status as (typeof PRZED_SPAKOWANIEM)[number]) && wPracy(z)),
     ),
+    walutyZamowien(db, lista), // jedno zapytanie na stronę, po kluczu unikalnym kopii kanału
   ])
   const czekal = new Set(czekalNaTowar.map((s) => s.orderId))
   return {
@@ -422,6 +447,7 @@ export async function stronaListy(db: Db, f: FiltryListy, o: { sort: SortTabeli;
       channelAccountId: z.channelAccountId,
       externalId: z.externalId,
       blOrderId: z.blOrderId,
+      parentOrderId: z.parentOrderId,
       channelNumber: z.channelNumber,
       sourceLabel: z.sourceLabel,
       status: z.status,
@@ -444,6 +470,7 @@ export async function stronaListy(db: Db, f: FiltryListy, o: { sort: SortTabeli;
       zwrot: z.returns[0] ? { status: z.returns[0].status, korekta: z.returns[0].correctionState } : null,
       ...(czekal.has(z.id) ? { towarPoFakturzeBl: true } : {}),
       ...(zFakturaBl.has(z.id) ? { fakturaBl: zFakturaBl.get(z.id)! } : {}),
+      waluta: waluty.get(z.id) ?? WALUTA_DOMYSLNA,
     })),
   }
 }

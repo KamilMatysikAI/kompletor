@@ -19,6 +19,8 @@ const KIND_GROUP: Readonly<Record<string, AlertGroup>> = {
   FAKTURA_BEZ_WZ: 'FAKTURY',
   DUBLET_FAKTURY: 'FAKTURY',
   FAKTURA_DO_KOREKTY: 'FAKTURY',
+  FAKTURA_OBCA_WALUTA: 'FAKTURY', // zamówienie w obcej walucie, faktura ręcznie
+  FAKTURA_WALUTA_SPRAWDZ: 'FAKTURY', // faktura w obcej walucie niezgodna z odczytem wFirmy
   WFIRMA_LIMIT: 'FAKTURY',
   WFIRMA_KONFIGURACJA: 'FAKTURY',
   KOREKTA_BLAD: 'FAKTURY',
@@ -54,6 +56,7 @@ const KIND_GROUP: Readonly<Record<string, AlertGroup>> = {
   // zapis na kanały (stany, statusy, numery nadania)
   KANAL_STAN_NIEJEDNOZNACZNY: 'KANAL_STANY',
   KANAL_STAN_BLAD: 'KANAL_STANY',
+  KANAL_LIMIT_ZAKONCZEN: 'KANAL_STANY',
   KANAL_ZAPIS_BLAD: 'KANAL_STANY',
   KANAL_ZAPIS_NIEJEDNOZNACZNY: 'KANAL_STANY',
   // wynik importu stanów w kanale (Empik)
@@ -101,6 +104,7 @@ const KIND_LABEL: Readonly<Record<string, string>> = {
   KANAL_NIEDOSTEPNY: 'Kanał nie przyjmuje stanów',
   KANAL_STAN_NIEJEDNOZNACZNY: 'Niepewny zapis stanu w sklepie',
   KANAL_STAN_BLAD: 'Stan oferty nie zapisuje się w sklepie',
+  KANAL_LIMIT_ZAKONCZEN: 'Dobowy limit zakończeń ofert przy stanie 0 wyczerpany',
   KANAL_ZAPIS_BLAD: 'Status albo numer nadania nie zapisał się w sklepie',
   KANAL_ZAPIS_NIEJEDNOZNACZNY: 'Niepewny zapis statusu albo numeru nadania w sklepie',
   KANAL_IMPORT_STANOW_ODRZUCONE: 'Sklep odrzucił część stanów z importu',

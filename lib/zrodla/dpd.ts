@@ -1,7 +1,8 @@
 // DPD Polska bezpośrednio — klient DPDServices REST TYLKO DO ODCZYTU. Specyfikacja: OpenAPI 3.0.1, wersja
 // 5.27.0 (https://dpdservices.dpd.com.pl/api-docs, sprawdzone 02.11.2026). Basic Auth + nagłówek `x-dpd-fid` (numer
-// płatnika; [NIEPEWNE]: nazwa nagłówka jest w opisie API, a schematy nie mają go wśród parametrów). Wszystko idzie
-// POST-em, więc metoda HTTP niczego tu nie mówi: o odczycie decyduje lista ścieżek. Numery paczek (`generate*`),
+// płatnika, w specyfikacji parametr nagłówka każdej ścieżki). Odczyt (`postalCode`, `courierOrderAvailability`) idzie
+// GET-em z parametrami w adresie, jak w specyfikacji: POST z treścią na tę ścieżkę zapora DPD odrzuca stroną HTML
+// „Request Rejected” przy HTTP 200 (żywe konto, 20.11.2026). O odczycie decyduje lista ścieżek. Numery paczek (`generate*`),
 // etykiety, protokoły, dopisywanie paczek i zamawianie kuriera kończą się wyjątkiem jeszcze przed wysyłką. Zapis ma
 // osobny klient (lib/zrodla/dpd-zapis.ts) za wyłącznikiem. Login i hasło nie trafiają do komunikatów błędów.
 import { fetchWithTimeout, ReadOnlyViolation, type RetryOptions, SourceError, Throttle, withRetry, type FetchLike } from './http'
@@ -9,7 +10,8 @@ import { fetchWithTimeout, ReadOnlyViolation, type RetryOptions, SourceError, Th
 /** Tylko produkcja i demo DPD: nagłówek Basic Auth nie może pójść pod inny adres. */
 export const DPD_URL_RE = /^https:\/\/dpdservices(demo)?\.dpd\.com\.pl\/?$/
 
-// `courierOrderAvailability` to POST bez skutku (sprawdza dostępność odbioru) [NIEPEWNE: do potwierdzenia na demo].
+// `courierOrderAvailability` to GET bez skutku (wolne przedziały podjazdu kuriera dla kodu nadawcy; okno
+// „Zamów kuriera” z krótkim limitem czasu i bez ponawiania).
 const READ_ONLY_PATHS = new Set(['/public/routing/v1/postalCode', '/public/courierorder/v1/courierOrderAvailability'])
 
 export function assertDpdReadOnly(path: string): void {
@@ -38,6 +40,14 @@ export class DpdHttpError extends SourceError {
   }
 }
 
+/** komunikat dla strony zapory DPD (WAF) zamiast „nieczytelna odpowiedź”; treści strony nie przepisujemy. */
+export const DPD_ZAPORA = 'zapora DPD odrzuciła żądanie (strona „Request Rejected”), żądanie nie dotarło do DPD; zgłoś DPD albo administratorowi Kompletora'
+
+/** Strona HTML zapory DPD („Request Rejected … support ID”), którą DPD zwraca z kodem HTTP 200 zamiast JSON. */
+export function czyStronaZapory(text: string): boolean {
+  return /^\s*</.test(text) && /request rejected|support id/i.test(text)
+}
+
 /** Wspólne dla odczytu i zapisu: adres, nagłówki i czyszczenie sekretów z komunikatów. */
 export class DpdPolaczenie {
   constructor(
@@ -59,11 +69,12 @@ export class DpdPolaczenie {
     return [this.basic, this.auth.password, this.auth.login].reduce((m, s) => m.split(s).join('***'), message)
   }
 
-  url(path: string): string {
-    return `${this.baseUrl.replace(/\/$/, '')}${path}`
+  url(path: string, query?: Readonly<Record<string, string>>): string {
+    const q = query && Object.keys(query).length ? `?${new URLSearchParams(query).toString()}` : ''
+    return `${this.baseUrl.replace(/\/$/, '')}${path}${q}`
   }
 
-  /** `redirect: 'error'`: przekierowanie zaniosłoby nagłówek z hasłem pod adres spoza listy. */
+  /** `redirect: 'error'`: przekierowanie zaniosłoby nagłówek z hasłem pod adres spoza listy. Zapis: POST z JSON. */
   init(body: unknown): RequestInit {
     return {
       method: 'POST',
@@ -71,6 +82,11 @@ export class DpdPolaczenie {
       headers: { 'Content-Type': 'application/json', Accept: 'application/json', Authorization: `Basic ${this.basic}`, 'x-dpd-fid': this.auth.fid },
       body: JSON.stringify(body),
     }
+  }
+
+  /** odczyt wg specyfikacji to GET bez treści (parametry w adresie). */
+  initGet(): RequestInit {
+    return { method: 'GET', redirect: 'error', headers: { Accept: 'application/json', Authorization: `Basic ${this.basic}`, 'x-dpd-fid': this.auth.fid } }
   }
 }
 
@@ -89,14 +105,17 @@ export class DpdReadOnly {
     this.throttle = new Throttle(minIntervalMs)
   }
 
-  /** Odpowiedź JSON; pusta treść = `null` (parser wołającego decyduje, czy to błąd). */
-  async post<T = unknown>(path: string, body: unknown = {}): Promise<T | null> {
+  /**
+   * GET z parametrami w adresie; odpowiedź JSON, pusta treść = `null` (parser wołającego decyduje, czy to błąd).
+   * `opcje.timeoutMs` + `jednaProba`: odczyt dla ekranu, który przy błędzie wraca do wpisania ręcznego.
+   */
+  async get<T = unknown>(path: string, query: Readonly<Record<string, string>> = {}, opcje: { timeoutMs?: number; jednaProba?: boolean } = {}): Promise<T | null> {
     assertDpdReadOnly(path)
     return withRetry(async () => {
       await this.throttle.wait()
       let res: Response
       try {
-        res = await fetchWithTimeout(this.conn.fetchImpl, this.conn.url(path), this.conn.init(body), 60_000)
+        res = await fetchWithTimeout(this.conn.fetchImpl, this.conn.url(path, query), this.conn.initGet(), opcje.timeoutMs ?? 60_000)
       } catch (e) {
         if (e instanceof SourceError) throw new DpdHttpError(`DPD ${path}: ${this.conn.clean(e.message)}`, e.retryable, null)
         throw e
@@ -108,8 +127,9 @@ export class DpdReadOnly {
       try {
         return JSON.parse(text) as T
       } catch {
+        if (czyStronaZapory(text)) throw new DpdHttpError(`DPD ${path}: ${DPD_ZAPORA}`, false, res.status)
         throw new DpdHttpError(`DPD ${path}: nieczytelna odpowiedź`, false, res.status)
       }
-    }, this.retry)
+    }, opcje.jednaProba ? { attempts: 1, baseDelayMs: 0 } : this.retry)
   }
 }

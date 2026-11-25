@@ -6,7 +6,10 @@
 //     nie woła `createShipment`: pilnuje test). Bez `zapisWlaczony` żadne żądanie zapisu nie wychodzi.
 // Dane odbiorcy wchodzą tylko w `createShipment` (w pamięci) i nigdzie nie są zapisywane. Nadawca to dane firmy.
 import { DPD_URL_RE, DpdHttpError, DpdReadOnly, type DpdLogowanie } from '../zrodla/dpd'
-import { DPD_SCIEZKA_ETYKIETY, DPD_SCIEZKA_NUMERY, DpdZapis } from '../zrodla/dpd-zapis'
+import { bezWartosciZadania, czyPewnyStatusOdmowyKuriera, DPD_SCIEZKA_ETYKIETY, DPD_SCIEZKA_NUMERY, DpdZapis } from '../zrodla/dpd-zapis'
+import { DpdKurier } from '../zrodla/dpd-kurier'
+import { opisStatusu } from '../zrodla/basecourier-zapis'
+import { dostepnoscKuriera, odpowiedzZamowieniaKuriera, sprawdzZamowienieKuriera, trescZamowieniaKuriera } from '../wysylka/zlecenie-kuriera-dpd'
 import { ustawieniaDpd, wyliczPrzesylkeDpd, type UstawieniaDpd } from '../wysylka/dpd'
 import { DPD_PICKUP } from '../wysylka/dpd'
 import { buildPackagesPayload, czyEmpik, odbiorcaDpd, parseNadawca } from '../wysylka/zlecenie-dpd'
@@ -21,6 +24,10 @@ import {
   type ChannelAdapter,
   type ConfigField,
   type ConnectionTest,
+  type DostepnoscOdbioru,
+  type PickupAvailability,
+  type PickupOrderer,
+  type PickupOrderRequest,
   type LabelFormat,
   type PreparedParcel,
   type ReferenceFinder,
@@ -44,11 +51,23 @@ export const DPD_ZAPIS_KEY = 'dpd.services.zapis.v1'
 const FID_RE = /^\d{1,10}$/
 
 const CONFIG: readonly ConfigField[] = [
-  { key: 'baseUrl', type: 'string', required: true, description: 'adres API: https://dpdservices.dpd.com.pl albo demo https://dpdservicesdemo.dpd.com.pl', pattern: DPD_URL_RE, envSuffix: 'BASE_URL' },
+  // panel nie pokazuje adresu API (POLA_UKRYTE), więc konto wpisane w panelu wybiera środowisko (jak GLS)
+  {
+    key: 'srodowisko',
+    type: 'string',
+    required: false,
+    description: 'środowisko DPDServices: demo (domyślnie, osobne dane dostępu od DPD) albo produkcja (prawdziwe paczki)',
+    zKontaPrzewoznika: true,
+    options: [
+      { value: 'demo', label: 'Demo (testowe, bez prawdziwych paczek)' },
+      { value: 'produkcja', label: 'Produkcyjne (prawdziwe paczki)' },
+    ],
+  },
+  { key: 'baseUrl', type: 'string', required: false, description: 'self-host: adres API zamiast środowiska (tylko https://dpdservices.dpd.com.pl albo demo https://dpdservicesdemo.dpd.com.pl)', pattern: DPD_URL_RE, envSuffix: 'BASE_URL' },
   { key: 'envPrefix', type: 'string', required: false, description: 'self-host: przedrostek zmiennych env (np. DPD)', pattern: /^[A-Z][A-Z0-9_]{0,40}$/ },
-  { key: 'masterFid', type: 'string', required: false, description: 'FID konta głównego do nagłówka x-dpd-fid; brak = payerFid', pattern: FID_RE, envSuffix: 'MASTER_FID' },
-  { key: 'payerFid', type: 'string', required: true, description: 'FID płatnika przesyłek (numer klienta DPD z umowy)', pattern: FID_RE, envSuffix: 'PAYER_FID' },
-  { key: 'empikPayerFid', type: 'string', required: false, description: 'FID płatnika dla dostaw do salonu Empik, gdy inny; brak = payerFid', pattern: FID_RE },
+  { key: 'masterFid', type: 'string', required: false, description: 'FID konta głównego do nagłówka x-dpd-fid; brak = payerFid', pattern: FID_RE, envSuffix: 'MASTER_FID', zKontaPrzewoznika: true },
+  { key: 'payerFid', type: 'string', required: true, description: 'FID płatnika przesyłek (numer klienta DPD z umowy)', pattern: FID_RE, envSuffix: 'PAYER_FID', zKontaPrzewoznika: true },
+  { key: 'empikPayerFid', type: 'string', required: false, description: 'FID płatnika dla dostaw do salonu Empik, gdy inny; brak = payerFid', pattern: FID_RE, zKontaPrzewoznika: true },
   { key: 'labelFormat', type: 'string', required: false, description: 'format strony etykiety: LBL_PRINTER (domyślnie) albo A4', pattern: /^(A4|LBL_PRINTER)$/ },
   { key: 'defaultSideXCm', type: 'number', required: false, description: 'domyślna długość paczki DPD w cm (1–300)' },
   { key: 'defaultSideYCm', type: 'number', required: false, description: 'domyślna szerokość paczki DPD w cm (1–300)' },
@@ -63,6 +82,12 @@ const SECRETS: AdapterManifest['secrets'] = [
   { name: 'DPD_PASSWORD', required: true, description: 'hasło API DPDServices', envSuffix: 'PASSWORD' },
   // Zadeklarowany na przyszłe sprawdzanie punktów; dziś żaden kod go nie używa (docs/integracje/dpd.md)
   { name: 'DPD_MYPUDO_KEY', required: false, description: 'klucz MyPudo API (punkty DPD Pickup), gdy firma go dostała; dziś nieużywany', envSuffix: 'MYPUDO_KEY' },
+  // Dane DPDInfoServices dla modułu DPD na liście „Których przewoźników pytać” (domyślnie wyłączony). Paczki DPD
+  // w kolejce „Wysłane” Kompletor sprawdza danymi DPDServices z kluczy wyżej (lib/wysylka/sledzenie-dpd.ts), bez nich.
+  // W obu modułach DPD (odczyt i zapis): jeden zestaw kluczy = jedno konto przewoźnika w panelu (lib/wysylka/konta.ts).
+  // Nazwy z przedrostkiem DPD: sekrety firmy są czytane po samej nazwie, a Poczta Polska ma własne SLEDZENIE_LOGIN/HASLO.
+  { name: 'DPD_SLEDZENIE_LOGIN', required: false, description: 'login usługi śledzenia DPDInfoServices, tylko gdy DPD dało osobny (moduł DPD na liście przewoźników do pytania); zwykłe śledzenie paczek DPD działa bez niego', envSuffix: 'SLEDZENIE_LOGIN' },
+  { name: 'DPD_SLEDZENIE_HASLO', required: false, description: 'hasło usługi śledzenia DPDInfoServices, tylko gdy DPD dało osobne', envSuffix: 'SLEDZENIE_HASLO' },
 ]
 
 // Limitów API nie ma w specyfikacji: ostrożnie, adapter odczytu woła tylko test połączenia.
@@ -86,22 +111,31 @@ export const DPD_ZAPIS_MANIFEST: AdapterManifest = {
   displayName: 'DPD Polska (bezpośrednio, zapis za wyłącznikiem)',
   kind: 'carrier',
   // reference.find tylko potwierdza paczkę (nigdy nie wyklucza) — patrz `findByReference` niżej
-  // shipment.track: zdarzenia z DPDInfoServices (osobne dane logowania; bez nich śledzenie jest wyłączone)
-  capabilities: ['shipment.prepare', 'shipment.create', 'reference.find', 'shipment.track'],
+  // shipment.pickup: zamówienie kuriera po paczki dnia, za osobnym polem konta `zamawianieKuriera`
+  // shipment.track: zdarzenia z DPDInfoServices (osobne dane logowania; bez nich śledzenie modułem jest wyłączone).
+  // Paczki DPD przy koncie DPD firmy pyta też osobna droga lib/wysylka/sledzenie-dpd.ts (danymi konta DPDServices).
+  capabilities: ['shipment.prepare', 'shipment.create', 'reference.find', 'shipment.track', 'shipment.pickup'],
   rateLimit: RATE,
   config: [
     ...CONFIG,
     { key: 'zapisWlaczony', type: 'boolean', required: false, description: 'wyłącznik: true = adapter może tworzyć przesyłki i etykiety; brak = nic nie wysyła' },
+    {
+      key: 'zamawianieKuriera',
+      type: 'boolean',
+      required: false,
+      description: 'Zamawianie kuriera z Kompletora: tak = przycisk „Zamów kuriera” przy pasku DPD w kolejce pakowania zamawia podjazd przez API DPD; firma ze stałymi odbiorami zostawia wyłączone',
+    },
+    {
+      key: 'zamawianieKurieraAutomat',
+      type: 'boolean',
+      required: false,
+      description: 'Zamawiaj kuriera automatycznie: tak = Kompletor sam zamawia podjazd DPD raz na dzień odbioru z harmonogramu, kilka minut po pierwszej paczce z numerem listu (przycisk „Zamów kuriera” zostaje); działa tylko z włączonym „Zamawianie kuriera z Kompletora”. Ma sens, gdy podjazdy zamawiasz w Kompletorze albo magazyn klika „Przyjechał”: kuriera zamówionego telefonicznie albo w panelu DPD Kompletor nie widzi, więc bez takiego śladu paczek sprzed dzisiejszego dnia automat nie liczy',
+    },
     { key: 'nadawca', type: 'string', required: false, description: 'JSON z Organization.settings.nadawca (wstawia host przy tworzeniu adaptera)' },
     { key: 'sledzenieUrl', type: 'string', required: false, description: 'adres usługi śledzenia DPDInfoServices z danych od DPD (https w domenie dpd.com.pl); brak = śledzenie wyłączone', pattern: DPD_INFO_URL_RE, envSuffix: 'SLEDZENIE_URL' },
     { key: 'sledzenieKanal', type: 'string', required: false, description: 'kanał kliencki DPDInfoServices z danych od DPD (opcjonalny przy śledzeniu po numerze listu)', pattern: /^[A-Za-z0-9._-]{1,64}$/, envSuffix: 'SLEDZENIE_KANAL' },
   ],
-  secrets: [
-    ...SECRETS,
-    // nazwy z przedrostkiem DPD: sekrety firmy są czytane po samej nazwie, a Poczta Polska ma własne SLEDZENIE_LOGIN/HASLO
-    { name: 'DPD_SLEDZENIE_LOGIN', required: false, description: 'login usługi śledzenia DPDInfoServices (inny niż DPDServices); brak = śledzenie wyłączone', envSuffix: 'SLEDZENIE_LOGIN' },
-    { name: 'DPD_SLEDZENIE_HASLO', required: false, description: 'hasło usługi śledzenia DPDInfoServices; brak = śledzenie wyłączone', envSuffix: 'SLEDZENIE_HASLO' },
-  ],
+  secrets: SECRETS,
   readOnly: false,
 }
 
@@ -127,8 +161,9 @@ export const DPD_PRZEKAZANA: ReadonlySet<string> = new Set(
 /** „Zarejestrowano dane przesyłki, nie nadano” (PARCEL_REGISTERED_NOT_DISPATCHED). */
 export const DPD_PRZED_NADANIEM: ReadonlySet<string> = new Set(['030103'])
 /**
- * Kody, które mogą się pojawić i przed, i po odbiorze przez kuriera (np. mail do odbiorcy po rejestracji): nie
- * rozstrzygają stanu, przy ocenie są pomijane (zostają w statusie do historii).
+ * Kody, które mogą się pojawić i przed, i po odbiorze przez kuriera: nie rozstrzygają stanu, przy ocenie są pomijane
+ * (zostają w statusie do historii). 170310 to PARCEL_EMAIL_NOTIFICATION_SENT („Powiadomienie mail”), wysyłany np. zaraz
+ * po odbiorze przez kuriera (odczyt 20.11.2026: 040101 o 14:32, 170310 o 14:35), więc NIGDY nie znaczy doręczenia.
  */
 export const DPD_NEUTRALNE: ReadonlySet<string> = new Set(['170310', '250301', '330438', '400133'])
 
@@ -206,10 +241,10 @@ const SLEDZENIE_WYLACZONE = 'śledzenie DPD wyłączone: brak adresu, loginu alb
 
 const isRecord = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v)
 
-/** Zapytanie testowe: stały kod pocztowy, bez danych klienta. Kształt treści [NIEPEWNE], do sprawdzenia na demo. */
+/** Zapytanie testowe: stały kod pocztowy, bez danych klienta; GET z parametrami w adresie (sprawdzone na demo i produkcji 20.11.2026). */
 const TEST_KOD = { countryCode: 'PL', zipCode: '02274' }
 
-/** Kształt odpowiedzi nie jest potwierdzony: odmowa albo pusta odpowiedź to brak połączenia, treści nie przepisujemy. */
+/** Odpowiedź `{status: 'OK', traceId}` (żywe konto 20.11.2026); odmowa albo pusta odpowiedź to brak połączenia, treści nie przepisujemy. */
 function postalCodeProblem(r: unknown): string | null {
   if (r === null || r === undefined) return 'pusta odpowiedź zapytania o kod pocztowy'
   if (Array.isArray(r)) return r.length ? null : 'pusta odpowiedź zapytania o kod pocztowy'
@@ -218,6 +253,17 @@ function postalCodeProblem(r: unknown): string | null {
   if ((status && status !== 'OK') || r['error'] || r['errors'] || r['success'] === false) return 'DPD odrzucił zapytanie o kod pocztowy'
   return null
 }
+
+export const DPD_PRODUKCJA = 'https://dpdservices.dpd.com.pl'
+export const DPD_DEMO_URL = 'https://dpdservicesdemo.dpd.com.pl'
+
+/** adres API: jawny `baseUrl` (self-host) albo środowisko konta; brak = demo (pomyłka nie tworzy prawdziwej paczki). */
+export function adresDpd(config: Readonly<Record<string, unknown>>): string {
+  if (typeof config['baseUrl'] === 'string' && config['baseUrl']) return config['baseUrl']
+  return config['srodowisko'] === 'produkcja' ? DPD_PRODUKCJA : DPD_DEMO_URL
+}
+
+const opisSrodowiska = (config: Readonly<Record<string, unknown>>) => (adresDpd(config).replace(/\/$/, '') === DPD_PRODUKCJA ? 'środowisko produkcyjne' : 'środowisko demo')
 
 function logowanie(ctx: AdapterContext): DpdLogowanie {
   return { login: ctx.secrets['DPD_LOGIN']!, password: ctx.secrets['DPD_PASSWORD']!, fid: String(ctx.config['masterFid'] ?? ctx.config['payerFid']) }
@@ -229,15 +275,15 @@ class DpdAdapter implements ChannelAdapter, ShipmentPreparer {
   private readonly ustawienia: UstawieniaDpd
 
   constructor(protected readonly ctx: AdapterContext) {
-    this.api = new DpdReadOnly(String(ctx.config['baseUrl']), logowanie(ctx), ctx.fetch, ctx.http?.minIntervalMs, ctx.http?.retry)
+    this.api = new DpdReadOnly(adresDpd(ctx.config), logowanie(ctx), ctx.fetch, ctx.http?.minIntervalMs, ctx.http?.retry)
     this.ustawienia = ustawieniaDpd(ctx.config)
   }
 
   /** 401 i 403 = TRWALY (login, hasło, FID), 429 i 5xx = PRZEJSCIOWY; `details.rodzaj` mówi to hostowi. */
   async testConnection(): Promise<ConnectionTest> {
     try {
-      const problem = postalCodeProblem(await this.api.post('/public/routing/v1/postalCode', TEST_KOD))
-      return problem ? { ok: false, message: problem, details: { rodzaj: 'TRWALY' } } : { ok: true, message: 'zapytanie o kod pocztowy działa' }
+      const problem = postalCodeProblem(await this.api.get('/public/routing/v1/postalCode', TEST_KOD))
+      return problem ? { ok: false, message: problem, details: { rodzaj: 'TRWALY' } } : { ok: true, message: `zapytanie o kod pocztowy działa (${opisSrodowiska(this.ctx.config)})` }
     } catch (e) {
       const rodzaj = e instanceof DpdHttpError && e.retryable ? 'PRZEJSCIOWY' : 'TRWALY'
       return { ok: false, message: e instanceof DpdHttpError ? e.message : 'błąd zapytania o kod pocztowy', details: { rodzaj } }
@@ -279,7 +325,7 @@ function wynikNumerow(body: unknown, reference: string): WriteOutcome {
 
 const CONTENT_TYPE: Record<LabelFormat, string> = { PDF: 'application/pdf', ZPL: 'text/plain', EPL: 'text/plain' }
 
-class DpdZapisAdapter extends DpdAdapter implements ShipmentCreator, ReferenceFinder, ShipmentTracker {
+class DpdZapisAdapter extends DpdAdapter implements ShipmentCreator, ReferenceFinder, ShipmentTracker, PickupOrderer, PickupAvailability {
   override readonly manifest: AdapterManifest = DPD_ZAPIS_MANIFEST
   private klient: DpdZapis | null = null
 
@@ -316,7 +362,7 @@ class DpdZapisAdapter extends DpdAdapter implements ShipmentCreator, ReferenceFi
 
   /** Klient zapisu powstaje dopiero przy pierwszym użyciu i tylko przy włączonym zapisie. */
   private zapis(): DpdZapis {
-    this.klient ??= new DpdZapis({ baseUrl: String(this.ctx.config['baseUrl']), auth: logowanie(this.ctx), fetchImpl: this.ctx.fetch, wylacznik: true })
+    this.klient ??= new DpdZapis({ baseUrl: adresDpd(this.ctx.config), auth: logowanie(this.ctx), fetchImpl: this.ctx.fetch, wylacznik: true })
     return this.klient
   }
 
@@ -343,6 +389,70 @@ class DpdZapisAdapter extends DpdAdapter implements ShipmentCreator, ReferenceFi
     const r = await this.zapis().post(DPD_SCIEZKA_NUMERY, payload)
     if (!r.ok) return { kind: r.kind, reference, message: r.kind === 'NIEJEDNOZNACZNY' ? `${r.message}; sprawdź paczkę w panelu DPD po referencji, bez ponawiania` : r.message }
     return wynikNumerow(r.body, reference)
+  }
+
+  /**
+   * Zamówienie kuriera po paczki dnia (`packagesPickupCall`). Dwa warunki konta: zapis włączony i „Zamawianie kuriera z
+   * Kompletora” = tak; inaczej odmowa bez żądania. Płatnik = FID płatnika konta. Jedno żądanie bez ponawiania:
+   * niepewny wynik = NIEJEDNOZNACZNY (drugie żądanie zamówiłoby drugi podjazd).
+   */
+  async zamowOdbior(req: PickupOrderRequest, reference: string): Promise<WriteOutcome & { sumaKontrolna?: string | null }> {
+    if (!this.wlaczony || this.ctx.config['zamawianieKuriera'] !== true) return { kind: 'TRWALY', reference, message: 'Zamawianie kuriera DPD z Kompletora jest wyłączone w ustawieniach konta DPD.' }
+    let surowy: unknown = null
+    try {
+      surowy = typeof this.ctx.config['nadawca'] === 'string' ? (JSON.parse(this.ctx.config['nadawca']) as unknown) : null
+    } catch {
+      return { kind: 'TRWALY', reference, message: 'nieczytelne dane nadawcy w konfiguracji' }
+    }
+    const n = parseNadawca({ nadawca: surowy as never })
+    if (!n.nadawca) return { kind: 'TRWALY', reference, message: `brak danych nadawcy firmy: ${n.braki.join(', ')}` }
+    // wymiary paczek bez własnych: domyślne wymiary paczki DPD z konta (Shipment nie przechowuje wymiarów)
+    const u = ustawieniaDpd(this.ctx.config)
+    const domyslne = u.sideXCm && u.sideYCm && u.sideZCm ? ([u.sideXCm, u.sideYCm, u.sideZCm] as const) : null
+    if (req.paczki.some((p) => !p.wymiaryCm) && !domyslne) return { kind: 'TRWALY', reference, message: 'brak domyślnych wymiarów paczki DPD: ustaw długość, szerokość i wysokość w koncie DPD (Zaawansowane)' }
+    const paczki = req.paczki.map((p) => ({ wagaKg: p.wagaKg, wymiaryCm: p.wymiaryCm ?? domyslne! }))
+    const zlecenie = { data: req.data, odMin: req.odMin, doMin: req.doMin, fid: String(this.ctx.config['payerFid'] ?? ''), nadawca: n.nadawca, paczki }
+    const braki = sprawdzZamowienieKuriera(zlecenie)
+    if (braki.length) return { kind: 'TRWALY', reference, message: `zamówienie kuriera niegotowe: ${braki.join(', ')}` }
+    const tresc = trescZamowieniaKuriera(zlecenie)
+    const r = await new DpdKurier({ baseUrl: adresDpd(this.ctx.config), auth: logowanie(this.ctx), fetchImpl: this.ctx.fetch, wylacznik: true }).zamow(tresc)
+    if (!r.ok) return { kind: r.kind, reference, message: r.message }
+    const w = odpowiedzZamowieniaKuriera(r.body, tresc)
+    if (w.ok) return { kind: 'OK', reference, externalRef: w.numer, sumaKontrolna: w.sumaKontrolna }
+    // status OK bez numeru zlecenia: DPD mógł przyjąć zlecenie, a numeru nie znamy
+    if (w.powod === 'DPD nie zwrócił numeru zlecenia' || w.powod === 'nieczytelna odpowiedź DPD')
+      return { kind: 'NIEJEDNOZNACZNY', reference, message: `DPD: ${w.powod}; nie wiadomo, czy kurier jest zamówiony, sprawdź w panelu DPD albo telefonicznie, nie zamawiaj drugi raz` }
+    // status spoza listy pewnych odmów (np. UNKNOWN_ERROR, SERVICE_UNAVAILABLE) z numerem zlecenia: DPD mógł je utworzyć
+    if (w.numer && !czyPewnyStatusOdmowyKuriera(w.status ?? ''))
+      return { kind: 'NIEJEDNOZNACZNY', reference, message: `DPD: ${bezWartosciZadania(w.powod, tresc)} z numerem zlecenia w odpowiedzi; nie wiadomo, czy kurier jest zamówiony, sprawdź w panelu DPD albo telefonicznie, nie zamawiaj drugi raz` }
+    return { kind: 'TRWALY', reference, message: `DPD odrzucił zamówienie kuriera: ${bezWartosciZadania(w.powod, tresc)}` }
+  }
+
+  /**
+   * wolne przedziały podjazdu dla kodu pocztowego nadawcy firmy (`GET courierOrderAvailability`, ścieżka z
+   * listy odczytu klienta tylko do odczytu, nie klienta zapisu). Jedna próba z limitem czasu: ekran przy błędzie wraca do
+   * dwóch pól godzin. Wynik bez danych z żądania (kod pocztowy nadawcy nie trafia do komunikatu).
+   */
+  async dostepnoscOdbioru(o: { timeoutMs: number }): Promise<DostepnoscOdbioru> {
+    let surowy: unknown = null
+    try {
+      surowy = typeof this.ctx.config['nadawca'] === 'string' ? (JSON.parse(this.ctx.config['nadawca']) as unknown) : null
+    } catch {
+      throw new AdapterError('nieczytelne dane nadawcy w konfiguracji', 'TRWALY')
+    }
+    const n = parseNadawca({ nadawca: surowy as never })
+    const kod = (n.nadawca?.postalCode ?? '').replace(/[^0-9]/g, '')
+    if (!/^\d{5}$/.test(kod)) throw new AdapterError('brak kodu pocztowego nadawcy firmy', 'TRWALY')
+    let json: unknown
+    try {
+      json = await this.api.get('/public/courierorder/v1/courierOrderAvailability', { countryCode: 'PL', zipCode: kod }, { timeoutMs: o.timeoutMs, jednaProba: true })
+    } catch (e) {
+      throw new AdapterError(e instanceof DpdHttpError ? e.message.split(kod).join('***') : 'błąd odczytu dostępności kuriera DPD', 'PRZEJSCIOWY')
+    }
+    const w = dostepnoscKuriera(json)
+    if (w.stan === 'BLAD') throw new AdapterError(`DPD: dostępność kuriera: ${w.powod}`, 'PRZEJSCIOWY')
+    // DPD nie podaje dni: przedziały obowiązują w każdy dzień odbioru
+    return w.stan === 'BRAK' ? w : { stan: 'OK', przedzialy: w.przedzialy }
   }
 
   async getLabel(externalRef: string, format: LabelFormat): Promise<{ contentType: string; base64: string }> {
@@ -463,6 +573,38 @@ function statusOk(x: unknown): boolean {
     if (v !== undefined && v !== null && v !== '' && !(Array.isArray(v) && !v.length)) return false
   }
   return true
+}
+
+// ─── Śledzenie: zdarzenia DPDInfoServices → stan przesyłki ────────
+
+/**
+ * Zdarzenie do pokazania: ostatnie wg czasu (przy równym czasie wcześniejsze w odpowiedzi, DPD podaje najnowsze
+ * pierwsze), z pominięciem kodów neutralnych (mail do odbiorcy po doręczeniu nie zasłania „Przesyłka doręczona”); same
+ * neutralne = ostatnie z nich.
+ */
+function ostatnieZdarzenie(zdarzenia: readonly ZdarzenieDpd[]): ZdarzenieDpd | undefined {
+  const wg = zdarzenia
+    .map((z, i) => ({ z, i }))
+    .sort((a, b) => (a.z.czas ?? '').localeCompare(b.z.czas ?? '') || b.i - a.i)
+    .map((x) => x.z)
+  return wg.filter((z) => !DPD_NEUTRALNE.has(z.kod)).at(-1) ?? wg.at(-1)
+}
+
+/**
+ * Stan przesyłki z listy zdarzeń DPD. Doręczenie (kod z `DPD_DORECZONA`, bez zwrotu) = DORECZONA; którekolwiek
+ * zdarzenie „u DPD” = PRZEKAZANA; same rejestracje danych i kody neutralne (w tym 170310) = PRZED_NADANIEM; inny kod =
+ * NIEZNANY (host nic nie zmienia). `status` = kod ostatniego zdarzenia (bez neutralnych, gdy są inne), `opis` = jego opis oczyszczony jak w Base
+ * Courier (`opisStatusu`), `czas` = czas zdarzenia u DPD. Pusta lista: tu PRZED_NADANIEM bez statusu (host traktuje ją
+ * jako brak danych i pyta drogą modułu przesyłki).
+ */
+export function stanZdarzenDpd(zdarzenia: readonly ZdarzenieDpd[]): { stan: StanPrzesylki; status: string | null; opis: string | null; czas: string | null } {
+  const ost = ostatnieZdarzenie(zdarzenia)
+  const o = { status: ost?.kod ?? null, opis: opisStatusu(ost?.opis ?? null), czas: ost?.czas ?? null }
+  const zwrot = zdarzenia.some((z) => DPD_ZWROT.has(z.kod))
+  if (!zwrot && zdarzenia.some((z) => DPD_DORECZONA.has(z.kod))) return { stan: 'DORECZONA', ...o }
+  if (zdarzenia.some((z) => DPD_PRZEKAZANA.has(z.kod))) return { stan: 'PRZEKAZANA', ...o }
+  if (zdarzenia.every((z) => DPD_PRZED_NADANIEM.has(z.kod) || DPD_NEUTRALNE.has(z.kod))) return { stan: 'PRZED_NADANIEM', ...o }
+  return { stan: 'NIEZNANY', ...o }
 }
 
 export const DPD_DEFINITION: AdapterDefinition = { manifest: DPD_MANIFEST, create: (ctx) => new DpdAdapter(ctx) }

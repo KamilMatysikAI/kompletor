@@ -36,9 +36,36 @@ Jak Kompletor przyjmuje zamówienia z Empiku, wysyła stany, numer nadania i inf
   dają najwyżej jeden alert dziennie na konto (nowy kod oferty = nowy alert). Każdy import i tak widać w tabeli.
   Ostatnie importy z wynikiem widać na ekranie konta (sekcja „Zapis do sklepu” → „Stany” → „Wynik importów stanów w
   sklepie”).
+- **Czyta punkt odbioru** przy dostawie „Paczkomaty InPost” (kod paczkomatu) i „Dostawa do Salonu Empik” (kod salonu,
+  czyli punktu DPD Pickup). Empik podaje kod w dodatkowym polu zamówienia `delivery-point-name`, a w adresie dostawy
+  zamówienia wpisuje dane PUNKTU (kod punktu zamiast nazwiska, ulica i miasto punktu; sprawdzone na koncie 20.11.2026).
+  Kompletor rozdziela to tak jak BaseLinker:
+  - **punkt odbioru**: kod, opis punktu (przy paczkomacie) i adres punktu;
+  - **odbiorca**: imię i nazwisko klienta, jego telefon i e-mail; adres dostawy = adres punktu;
+  - **dane do faktury**: imię i nazwisko (albo firma) i adres klienta z adresu rozliczeniowego, także dla osoby
+    prywatnej; faktura nigdy nie bierze nabywcy z adresu punktu;
+  - **e-mail**: prawdziwy adres klienta (pole `customer-email`), a gdy go nie ma, adres zastępczy Empiku.
+  Gdy przy dostawie do punktu kodu brakuje, karta pokazuje „brak punktu odbioru”: wpisz go w „Popraw adres albo punkt
+  odbioru” (kod jest w panelu Empiku). Zamówienia do kuriera punktu nie mają i nie dostają tego ostrzeżenia.
+  Zamówienie wczytane przed 20.11.2026 (punkt pusty, kod paczkomatu jako odbiorca) poprawia „Odśwież z kanału” na karcie,
+  o ile nikt wcześniej nie poprawił danych ręcznie (dane wpisane ręcznie nie są nadpisywane). Faktury już wystawione z
+  danymi punktu trzeba poprawić po stronie biura (korekta danych nabywcy); Kompletor ich sam nie zmienia.
 - **Pilnuje limitu Empiku:** wszystkie odczyty i zapisy jednego konta (zamówienia, przyjmowanie, stany) idą razem
   najwyżej 30 żądań na minutę.
-- **Wysyła numer nadania i przewoźnika** oraz informację **„wysłane”**, gdy zamówienie wyjedzie.
+- **Wysyła numer nadania i przewoźnika** oraz informację **„wysłane”**, gdy zamówienie wyjedzie. Najpierw numer
+  nadania, potem „wysłane” (tak chce Empik): „wysłane” czeka, dopóki numer nadania tego zamówienia jest jeszcze w
+  kolejce. Gdy wysłanie numeru skończy się błędem, „wysłane” idzie mimo to.
+- **Przewoźnik idzie do Empiku kodem z listy Empiku** (od 20.11.2026). Empik odrzuca numer nadania z samą
+  nazwą przewoźnika (błąd „HTTP 400” przy numerze nadania), więc Kompletor sam podaje kod: paczkomaty InPost
+  `paczkomatyinpost`, InPost kurier `inpostpaczkakurierska`, DPD i dostawa do salonu Empik `dpd`, GLS `gls`,
+  Orlen Paczka `ORLEN`, Poczta Polska `pocztex` (lista przewoźników Empiku z 20.11.2026). Pole „Kody przewoźników”
+  w ustawieniach konta wypełniasz tylko wtedy, gdy Empik każe użyć innego kodu.
+- **Gdy Empik odrzuci zapis**, alert i historia zapisu pokazują komunikat Empiku (np. „HTTP 400 (VALIDATION_ERROR), Empik: »…«”), bez
+  danych klienta. Po poprawce przyczyny kliknij „Wypchnij teraz” na ekranie konta: zapisy z błędem z ostatnich 2 dni
+  wracają do kolejki.
+- **Status „wysłane” w mapie statusów konta** to `SHIPPED`. Mapa zapisana w panelu przed 20.11.2026 miała go małymi
+  literami („shipped”) i Empik go nie dostawał; od tej poprawki Kompletor czyta go poprawnie bez ponownego zapisu
+  mapy.
 
 ## Tryb podglądu i tryb pracy
 
@@ -93,8 +120,9 @@ wyłącznikiem)” i z włączonym przełącznikiem „Zapis do sklepu” (sekcj
    wysyłka stanów skończy się komunikatem „import stanów Empik (STO01) niedostępny na tym koncie” i trzeba poprosić
    opiekuna Empiku o włączenie `[do potwierdzenia]`.
 2. Wyłącz przyjmowanie zamówień w obecnym systemie (np. w BaseLinkerze), żeby dwa systemy nie decydowały naraz.
-3. Wpisz kody przewoźników z listy Empiku, np. `{"DPD":"dpd"}` `[do potwierdzenia: kody z panelu Empiku]`. Przewoźnik
-   bez kodu idzie do Empiku z nazwą i adresem śledzenia.
+3. Kody przewoźników Kompletor podaje sam (lista wyżej). Pole „Kody przewoźników” wypełniasz tylko, gdy Empik każe
+   użyć innego kodu, np. `{"DPD":"dpd"}`; listę kodów Twojego konta zwraca Empik pod `GET /api/shipping/carriers`
+   (SH21). Przewoźnik spoza listy (np. odbiór osobisty) idzie z nazwą i adresem śledzenia.
 4. Gdy podajesz „Magazyn w Empiku”, wpisz kod magazynu dokładnie jak w panelu Empiku. Zły kod nie blokuje wysyłki,
    ale Empik odrzuci te wiersze: zobaczysz to w wyniku importu stanów i w alercie. Puste pole = stan całej oferty
    `[do potwierdzenia na koncie Empiku: czy puste pole przechodzi bez błędu]`.

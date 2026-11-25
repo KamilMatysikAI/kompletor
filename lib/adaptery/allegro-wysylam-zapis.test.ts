@@ -3,11 +3,13 @@
 // referencji, etykieta, numer nadania, anulowanie, wyłącznik i zakres. Dane fikcyjne (PII_SENTINELS), zero połączeń.
 import { describe, expect, it, vi } from 'vitest'
 import { API, AUTH, deliveryProposal, FAKE_CLIENT_ID, FAKE_CLIENT_SECRET, FakeAllegroZapis, SHIPMENTS_WRITE, UA } from '@/tests/allegro-zapis-atrapa'
+import { defaultOption } from '@/tests/allegro-wysylam-atrapa'
 import { ALLEGRO_SECRETS as S } from './allegro'
 import { ALLEGRO_WYSYLAM_KEY } from './allegro-wysylam'
-import { ALLEGRO_WYSYLAM_ZAPIS_KEY, AllegroWysylamZapisAdapter, commandIdUtworzenia, CZEKAJ_MS, FUNKCJA_WYSYLAM, NADAWANIE_WYLACZONE, odbiorcaAllegro, telefonyAllegro } from './allegro-wysylam-zapis'
+import { klasaBledu } from '../integracje/oslona'
+import { ALLEGRO_WYSYLAM_ZAPIS_KEY, AllegroWysylamZapisAdapter, commandIdUtworzenia, CZEKAJ_MS, FUNKCJA_WYSYLAM, NADAWANIE_WYLACZONE, odbiorcaAllegro, stanAllegro, telefonyAllegro } from './allegro-wysylam-zapis'
 import { defaultRegistry } from './domyslne'
-import { hasReferenceFinder, hasShipmentCanceller, hasShipmentCreator, type PreparedParcel, type RecipientAddress, type ShipmentCreateRequest } from './kontrakt'
+import { hasReferenceFinder, hasShipmentCanceller, hasShipmentCreator, hasShipmentTracker, type PreparedParcel, type RecipientAddress, type ShipmentCreateRequest } from './kontrakt'
 import { PII_SENTINELS } from './suita-kontraktowa'
 import { executeWrite } from './zapis'
 
@@ -75,6 +77,72 @@ describe('utworzenie przesyłki', () => {
     expect(cmd.input['packages']).toEqual([{ type: 'PACKAGE', length: { value: 64, unit: 'CENTIMETER' }, width: { value: 38, unit: 'CENTIMETER' }, height: { value: 8, unit: 'CENTIMETER' }, weight: { value: 1, unit: 'KILOGRAMS' } }])
     expect(cmd.input['receiver']).toMatchObject({ name: 'Odbiorca Poprawiony', street: 'ul. Nowa 2', postalCode: '60-001', city: 'Poznań', point: 'WAW01A' })
     expect(cmd.input).not.toHaveProperty('deliveryMethodId')
+  })
+
+  it('metoda z mniejszą skrytką: wymiary gabarytu przycięte do limitu z propozycji Allegro', async () => {
+    const fake = fakeNow()
+    fake.wys.proposals.set(ORDER, deliveryProposal(ORDER, [defaultOption({ limits: { dimensions: { length: { value: 50, unit: 'CENTIMETER' }, width: { value: 30, unit: 'CENTIMETER' }, height: { value: 45, unit: 'CENTIMETER' } } } })]))
+    const out = await make(fake).createShipment(req(), REF)
+    expect(out.kind).toBe('OK')
+    const cmd = fake.createCommands.get(commandIdUtworzenia(REF, 1))!
+    expect(cmd.input['packages']).toEqual([{ type: 'PACKAGE', length: { value: 50, unit: 'CENTIMETER' }, width: { value: 8, unit: 'CENTIMETER' }, height: { value: 38, unit: 'CENTIMETER' }, weight: { value: 1, unit: 'KILOGRAMS' } }])
+    // ślad dla obsługi: przycięte wymiary i polecenie sprawdzenia kartonu, bez danych osobowych
+    if (out.kind === 'OK') {
+      expect(out.info).toBe('Wymiary przycięte do limitu metody dostawy: 64×38×8 → 50×8×38 cm. Paczka musi się zmieścić w 50×8×38 cm: sprawdź karton, zanim go nadasz.')
+      for (const s of PII_SENTINELS) expect(out.info).not.toContain(s)
+    }
+  })
+
+  it('paczka w limicie: bez informacji o przycięciu', async () => {
+    const out = await make(fakeNow()).createShipment(req(), REF)
+    expect(out).toMatchObject({ kind: 'OK' })
+    if (out.kind === 'OK') expect(out.info).toBeUndefined()
+  })
+
+  it('wymiary bez ostrzeżenia wymiary_domyslne (nie robocze): nie są przycinane', async () => {
+    const fake = fakeNow()
+    fake.wys.proposals.set(ORDER, deliveryProposal(ORDER, [defaultOption({ limits: { dimensions: { length: { value: 50, unit: 'CENTIMETER' }, width: { value: 30, unit: 'CENTIMETER' }, height: { value: 45, unit: 'CENTIMETER' } } } })]))
+    const out = await make(fake).createShipment(req({ parcel: { ...parcel, problems: [] }, potwierdzoneOstrzezenia: [] }), REF)
+    expect(out.kind).toBe('OK')
+    if (out.kind === 'OK') expect(out.info).toBeUndefined()
+    const cmd = fake.createCommands.get(commandIdUtworzenia(REF, 1))!
+    expect(cmd.input['packages']).toEqual([{ type: 'PACKAGE', length: { value: 64, unit: 'CENTIMETER' }, width: { value: 38, unit: 'CENTIMETER' }, height: { value: 8, unit: 'CENTIMETER' }, weight: { value: 1, unit: 'KILOGRAMS' } }])
+  })
+
+  describe('odmowa DIMENSIONS_VALIDATION_ERROR: komunikat z wysłanymi wymiarami i limitem', () => {
+    const dims = (l: unknown, w: unknown, h: unknown) => ({ length: l, width: w, height: h })
+    const odmowa = async (options: unknown[]) => {
+      const fake = fakeNow()
+      fake.wys.proposals.set(ORDER, deliveryProposal(ORDER, options))
+      fake.nextCreateOutcome = ['ERROR']
+      fake.createErrorCode = 'DIMENSIONS_VALIDATION_ERROR'
+      const out = await make(fake).createShipment(req(), REF)
+      expect(out.kind).toBe('TRWALY')
+      const message = out.kind === 'OK' ? '' : out.message
+      for (const s of PII_SENTINELS) expect(message).not.toContain(s)
+      return message
+    }
+
+    it('limit jest (ułamkowy, z milimetrów): wysłane przycięte wymiary i limit z przecinkiem', async () => {
+      const m = await odmowa([defaultOption({ limits: { dimensions: dims({ value: 505, unit: 'MILLIMETER' }, { value: 30, unit: 'CENTIMETER' }, { value: 45, unit: 'CENTIMETER' }) } })])
+      expect(m).toContain('DIMENSIONS_VALIDATION_ERROR')
+      expect(m).toContain('Wysłane wymiary: 50,5×8×38 cm; limit tej metody dostawy wg Allegro: 50,5×30×45 cm')
+    })
+
+    it('limitu brak: wymiary gabarytu i „Allegro nie podało”', async () => {
+      const m = await odmowa([defaultOption({ limits: undefined })])
+      expect(m).toContain('Wysłane wymiary: 64×38×8 cm; limit tej metody dostawy wg Allegro: Allegro nie podało')
+    })
+
+    it('propozycja nieczytelna: „nieczytelny”, nie „nie podało”', async () => {
+      const m = await odmowa([defaultOption({ limits: { weight: { value: 1, unit: 'POUNDS' } } })])
+      expect(m).toContain('limit tej metody dostawy wg Allegro: nieczytelny w propozycji Allegro')
+    })
+
+    it('kilka opcji z różnymi limitami: „niejednoznaczny”, wymiary gabarytu bez przycięcia', async () => {
+      const m = await odmowa([defaultOption(), defaultOption({ limits: { dimensions: dims(50, 30, 45) } })])
+      expect(m).toContain('Wysłane wymiary: 64×38×8 cm; limit tej metody dostawy wg Allegro: niejednoznaczny (kilka metod z różnymi limitami)')
+    })
   })
 
   it('wynik bez danych osobowych (wartownicy nie wychodzą w wyniku)', async () => {
@@ -334,5 +402,149 @@ describe('telefon z prefiksem kraju (Allegro od 01.10.2026)', () => {
     expect(telefonyAllegro({ sender: { name: 'A' }, receiver: { phone: '', point: 'P' } })).toEqual({ input: { sender: { name: 'A' }, receiver: { phone: '', point: 'P' } } })
     expect(telefonyAllegro({ sender: { phone: 600100200 }, receiver: { phone: '+48 600 100 200' }, packages: [] })).toEqual({ input: { sender: { phone: '+48600100200' }, receiver: { phone: '+48600100200' }, packages: [] } })
     expect(telefonyAllegro({ receiver: { phone: { x: 1 } } })).toHaveProperty('blad')
+  })
+})
+
+/** Pola śledzenia sprzed osi statusów (stan, status, opis); pola osi sprawdzane osobno. */
+const rdzen = (t: { stan: unknown; status: unknown; opis?: unknown }) => ({ stan: t.stan, status: t.status, opis: t.opis })
+
+describe('śledzenie przesyłki Wysyłam z Allegro (shipment.track)', () => {
+  const WAYBILL = 'AL000111222PL'
+  const st = (code: string, occurredAt: string, description?: string) => ({ code, occurredAt, ...(description ? { description } : {}) })
+
+  async function utworzona(fake: FakeAllegroZapis, config?: Record<string, unknown>) {
+    const a = make(fake)
+    const out = await a.createShipment(req(), REF)
+    if (out.kind !== 'OK' || !out.externalRef) throw new Error('brak przesyłki')
+    return { a: config ? make(fake, config) : a, id: out.externalRef }
+  }
+
+  it('manifest: shipment.track i doręczenie (host pyta dalej po „Wysłane”); podgląd allegro.wysylam.v1 bez śledzenia', () => {
+    const a = make(fakeNow())
+    expect(hasShipmentTracker(a)).toBe(true)
+    expect(a.manifest.capabilities).toContain('shipment.track')
+    expect(a.manifest.trackReportsDelivered).toBe(true)
+    expect(defaultRegistry().get(ALLEGRO_WYSYLAM_KEY)!.manifest.capabilities).not.toContain('shipment.track')
+  })
+
+  it('w drodze: GET przesyłki, potem historia u przewoźnika z pola carrier; PRZEKAZANA z polskim opisem; zero zapisów', async () => {
+    const fake = fakeNow()
+    const { a, id } = await utworzona(fake)
+    fake.wys.tracking.set(`ALLEGRO:${WAYBILL}`, [st('PENDING', '2026-11-20T08:00:00Z'), st('IN_TRANSIT', '2026-11-20T15:00:00Z')])
+    const przed = fake.writes().length
+    expect(rdzen(await a.trackShipment(id))).toEqual({ stan: 'PRZEKAZANA', status: 'IN_TRANSIT', opis: 'W drodze' })
+    expect(fake.writes().length).toBe(przed)
+    expect(fake.requests.slice(-2)).toEqual([`GET /shipment-management/shipments/${id}`, `GET /order/carriers/ALLEGRO/tracking?waybill=${WAYBILL}`])
+    // pola osi statusów (czytane tylko przy włączonym „Śledź paczki aż do doręczenia”)
+    expect(await a.trackShipment(id)).toMatchObject({ stanDrogi: 'PRZEKAZANA', kod: 'IN_TRANSIT', przekazanaO: '2026-11-20T15:00:00Z' })
+  })
+
+  it('bez wyłącznika nadawania śledzenie działa (sam odczyt paczek już nadanych)', async () => {
+    const fake = fakeNow()
+    const { a, id } = await utworzona(fake, {})
+    fake.wys.tracking.set(`ALLEGRO:${WAYBILL}`, [st('IN_TRANSIT', '2026-11-20T15:00:00Z')])
+    expect((await a.trackShipment(id)).stan).toBe('PRZEKAZANA')
+  })
+
+  it('doręczona: DORECZONA; kolejność tablicy bez znaczenia (najnowszy wpis wg occurredAt); opis Allegro nie wychodzi', async () => {
+    const fake = fakeNow()
+    const { a, id } = await utworzona(fake)
+    fake.wys.tracking.set(`ALLEGRO:${WAYBILL}`, [st('DELIVERED', '2026-11-21T10:00:00Z', PII_SENTINELS[0]), st('IN_TRANSIT', '2026-11-20T15:00:00Z'), st('PENDING', '2026-11-20T08:00:00Z')])
+    const t = await a.trackShipment(id)
+    expect(rdzen(t)).toEqual({ stan: 'DORECZONA', status: 'DELIVERED', opis: 'Doręczona' })
+    expect(t).toMatchObject({ stanDrogi: 'DORECZONA', kod: 'DELIVERED', czas: '2026-11-21T10:00:00Z' })
+    for (const s of PII_SENTINELS) expect(JSON.stringify(t)).not.toContain(s)
+  })
+
+  it('samo PENDING, pusta historia i trackingDetails null (numer nieznany) = PRZED_NADANIEM', async () => {
+    const fake = fakeNow()
+    const { a, id } = await utworzona(fake)
+    expect(rdzen(await a.trackShipment(id))).toEqual({ stan: 'PRZED_NADANIEM', status: null, opis: null })
+    fake.wys.tracking.set(`ALLEGRO:${WAYBILL}`, [])
+    expect(rdzen(await a.trackShipment(id))).toEqual({ stan: 'PRZED_NADANIEM', status: null, opis: null })
+    fake.wys.tracking.set(`ALLEGRO:${WAYBILL}`, [st('PENDING', '2026-11-20T08:00:00Z')])
+    expect(rdzen(await a.trackShipment(id))).toEqual({ stan: 'PRZED_NADANIEM', status: 'PENDING', opis: 'Przygotowana, czeka na nadanie' })
+  })
+
+  it('brak numeru nadania: PRZED_NADANIEM bez pytania o historię', async () => {
+    const fake = fakeNow()
+    fake.waybillForNew = null
+    const { a, id } = await utworzona(fake)
+    expect(rdzen(await a.trackShipment(id))).toEqual({ stan: 'PRZED_NADANIEM', status: null, opis: null })
+    expect(fake.requests.some((r) => r.includes('/tracking'))).toBe(false)
+  })
+
+  it('nieznany kod, ISSUE i RETURNED bez wcześniejszego „w drodze” = NIEZNANY; zły kod nie trafia do statusu', async () => {
+    const fake = fakeNow()
+    const { a, id } = await utworzona(fake)
+    fake.wys.tracking.set(`ALLEGRO:${WAYBILL}`, [st('PENDING', '2026-11-20T08:00:00Z'), st('NOWY_KOD', '2026-11-20T09:00:00Z')])
+    expect(rdzen(await a.trackShipment(id))).toEqual({ stan: 'NIEZNANY', status: 'NOWY_KOD', opis: null })
+    fake.wys.tracking.set(`ALLEGRO:${WAYBILL}`, [st('ISSUE', '2026-11-20T09:00:00Z')])
+    expect((await a.trackShipment(id)).stan).toBe('NIEZNANY')
+    fake.wys.tracking.set(`ALLEGRO:${WAYBILL}`, [st('RETURNED', '2026-11-20T09:00:00Z')])
+    expect((await a.trackShipment(id)).stan).toBe('NIEZNANY')
+    fake.wys.tracking.set(`ALLEGRO:${WAYBILL}`, [st('IN_TRANSIT', '2026-11-20T09:00:00Z'), st(PII_SENTINELS[1]!, '2026-11-20T10:00:00Z')])
+    expect(rdzen(await a.trackShipment(id))).toEqual({ stan: 'PRZEKAZANA', status: null, opis: null })
+  })
+
+  it('ISSUE po „w drodze” = PRZEKAZANA (przewoźnik miał paczkę), status = najnowszy kod', async () => {
+    const fake = fakeNow()
+    const { a, id } = await utworzona(fake)
+    fake.wys.tracking.set(`ALLEGRO:${WAYBILL}`, [st('IN_TRANSIT', '2026-11-20T09:00:00Z'), st('ISSUE', '2026-11-21T09:00:00Z')])
+    expect(rdzen(await a.trackShipment(id))).toEqual({ stan: 'PRZEKAZANA', status: 'ISSUE', opis: 'Problem z przesyłką' })
+  })
+
+  it('5xx = PRZEJSCIOWY, 4xx = TRWALY, 403 = PRZEJSCIOWY bez klasy błędu konta, odpowiedź bez waybills = TRWALY', async () => {
+    const fake = fakeNow()
+    const { a, id } = await utworzona(fake)
+    fake.wys.trackingFailures.push({ status: 503 })
+    await expect(a.trackShipment(id)).rejects.toMatchObject({ kind: 'PRZEJSCIOWY' })
+    fake.wys.trackingFailures.push({ status: 400 })
+    await expect(a.trackShipment(id)).rejects.toMatchObject({ kind: 'TRWALY', message: expect.stringContaining('HTTP 400') })
+    fake.wys.trackingFailures.push({ status: 403 })
+    const e403 = await a.trackShipment(id).catch((e: unknown) => e)
+    expect(e403).toMatchObject({ kind: 'PRZEJSCIOWY' })
+    expect(klasaBledu(e403 as Error)).toBeNull()
+    fake.wys.trackingFailures.push({ status: 200, body: { carrierId: 'ALLEGRO' } })
+    await expect(a.trackShipment(id)).rejects.toMatchObject({ kind: 'TRWALY', message: expect.stringContaining('waybills') })
+  })
+
+  it('przesyłka nieznana (404), anulowana albo bez przewoźnika: TRWALY bez pytania o historię', async () => {
+    const fake = fakeNow()
+    const { a, id } = await utworzona(fake)
+    await expect(a.trackShipment('00000000-0000-4000-9000-00000000ffff')).rejects.toMatchObject({ kind: 'TRWALY', message: expect.stringContaining('404') })
+    fake.wys.shipments.get(id)!['carrier'] = null
+    await expect(a.trackShipment(id)).rejects.toMatchObject({ kind: 'TRWALY', message: expect.stringContaining('carrier') })
+    fake.wys.shipments.get(id)!['carrier'] = '../x'
+    await expect(a.trackShipment(id)).rejects.toMatchObject({ kind: 'TRWALY' })
+    fake.wys.shipments.get(id)!['carrier'] = 'ALLEGRO'
+    fake.wys.shipments.get(id)!['canceledDate'] = '2026-11-20T10:00:00Z'
+    await expect(a.trackShipment(id)).rejects.toMatchObject({ kind: 'TRWALY', message: expect.stringContaining('anulowana') })
+    expect(fake.requests.some((r) => r.includes('/tracking'))).toBe(false)
+    await expect(a.trackShipment('../org')).rejects.toMatchObject({ kind: 'TRWALY' })
+  })
+
+  it('przewoźnik z pola carrier trafia do ścieżki (dokumentacja: {carrierId} = carrier przesyłki)', async () => {
+    const fake = fakeNow()
+    const { a, id } = await utworzona(fake)
+    fake.wys.shipments.get(id)!['carrier'] = 'INPOST'
+    fake.wys.tracking.set(`INPOST:${WAYBILL}`, [st('AVAILABLE_FOR_PICKUP', '2026-11-20T09:00:00Z')])
+    expect(rdzen(await a.trackShipment(id))).toEqual({ stan: 'PRZEKAZANA', status: 'AVAILABLE_FOR_PICKUP', opis: 'Czeka w punkcie odbioru' })
+  })
+})
+
+describe('stanAllegro', () => {
+  it('mapowanie każdego kodu z dokumentacji', () => {
+    const jeden = (code: string) => stanAllegro([{ code, occurredAt: '2026-11-20T09:00:00Z' }]).stan
+    expect(jeden('PENDING')).toBe('PRZED_NADANIEM')
+    for (const k of ['IN_TRANSIT', 'RELEASED_FOR_DELIVERY', 'AVAILABLE_FOR_PICKUP', 'NOTICE_LEFT']) expect(jeden(k), k).toBe('PRZEKAZANA')
+    expect(jeden('DELIVERED')).toBe('DORECZONA')
+    for (const k of ['ISSUE', 'RETURNED', 'COS_NOWEGO']) expect(jeden(k), k).toBe('NIEZNANY')
+  })
+
+  it('śmieci na wejściu: brak tablicy = PRZED_NADANIEM, wpis bez kodu = NIEZNANY, remis czasu = późniejszy w tablicy', () => {
+    expect(stanAllegro(null)).toEqual({ stan: 'PRZED_NADANIEM', status: null, opis: null })
+    expect(stanAllegro([{ occurredAt: 'x' }])).toEqual({ stan: 'NIEZNANY', status: null, opis: null })
+    expect(stanAllegro([{ code: 'PENDING', occurredAt: '2026-11-20T09:00:00Z' }, { code: 'IN_TRANSIT', occurredAt: '2026-11-20T09:00:00Z' }]).status).toBe('IN_TRANSIT')
   })
 })

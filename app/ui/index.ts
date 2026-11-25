@@ -9,7 +9,7 @@ export { ToastProvider, useToast, ToastPoAkcji, type RodzajToastu } from './toas
 export { ToastZAdresuZapisu } from './toast-z-adresu'
 export { Modal, Potwierdzenie, PrzyciskPotwierdz } from './modal'
 export { PasekZapisu } from './pasek-zapisu'
-export { Tabela, Paginacja, type KolumnaTabeli, type WierszTabeli } from './tabela'
+export { Tabela, Paginacja, NaglowekSortu, LinkSortu, SortNaTelefonie, ariaSortu, type KolumnaTabeli, type WierszTabeli } from './tabela'
 export { ZaznaczoneUkryte, KlikalneWiersze, useZaznaczenie, ZaznaczanieTabeli, PoleZaznaczenia, ZaznaczWszystkie, PasekAkcjiMasowych } from './tabela-klient'
 export { PasekFiltrow } from './pasek-filtrow'
 export { MenuAkcji, GrupaMenu, RozwinWMenu } from './menu'

@@ -169,7 +169,9 @@ export class FakeAllegro {
     if (p === '/sale/offers') {
       const limit = Math.min(Number(q.get('limit') ?? 20), this.offersPageMax)
       const offset = Number(q.get('offset') ?? 0)
-      const all = [...this.offers.values()]
+      // filtr `offer.id` (powtarzany parametr) jak w Allegro
+      const ids = q.getAll('offer.id')
+      const all = [...this.offers.values()].filter((o) => !ids.length || ids.includes(String(o['id'])))
       const page = all.slice(offset, offset + limit)
       return json(200, { offers: page, count: page.length, totalCount: all.length })
     }

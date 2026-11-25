@@ -52,6 +52,8 @@ export const CAPABILITIES = [
   'offers.prepare',
   // wystawienie nowej oferty albo produktu w kanale, za osobnym przełącznikiem konta
   'offers.publish',
+  // zamówienie podjazdu kuriera po paczki dnia (PickupOrderer), za wyłącznikiem konta „Zamawianie kuriera z Kompletora”
+  'shipment.pickup',
 ] as const
 export type Capability = (typeof CAPABILITIES)[number]
 
@@ -100,6 +102,12 @@ export interface ConfigField {
   envSuffix?: string
   /** dla type=string lista dozwolonych wartości z etykietami (panel pokazuje listę wyboru, rejestr sprawdza). */
   options?: readonly { value: string; label: string }[]
+  /**
+   * wartość z umowy albo kluczy konkretnego konta u przewoźnika (numer klienta, FID płatnika, środowisko
+   * kluczy). Przy przeniesieniu reguły na inne konto nie przechodzi do nowego konta (paczka nie może pójść kluczami
+   * nowego konta z płatnikiem starego); reszta pól (wymiary, waga, format etykiety) przechodzi, gdy nowe konto ich nie ma.
+   */
+  zKontaPrzewoznika?: true
 }
 
 /**
@@ -157,6 +165,17 @@ export interface AdapterManifest {
    * (do doręczenia, z limitem dni); bez tej deklaracji paczka po „Wysłane” nie jest już pytana.
    */
   trackReportsDelivered?: boolean
+  /**
+   * Zamówienie kuriera dotyczy konkretnych przesyłek z numerem u przewoźnika (`PickupOrderRequest.przesylki`), nie
+   * liczby paczek i wagi (Wysyłam z Allegro). Okno „Zamów kuriera” nie pyta wtedy o liczbę i wagę, a host zapisuje
+   * w zleceniu liczbę przesyłek, które przewoźnik przyjął (`WynikOdbioru.przesylek`).
+   */
+  pickupPerShipment?: boolean
+  /**
+   * Przewoźnicy Kompletora (wartości enumu `Carrier`), przy których pasku moduł zamawia kuriera; brak = każdy przewoźnik
+   * reguły. Wysyłam z Allegro: tylko kurier Allegro One, nie paczkomaty ani punkty z reguł tego samego modułu.
+   */
+  pickupCarriers?: readonly string[]
 }
 
 /** Klucz mapy statusów: status Kompletora albo zdarzenie szczególne (anulowanie nieopłaconego po terminie). */
@@ -187,6 +206,12 @@ export interface ChannelBehavior {
    * „anulowania nieopłaconego po terminie” (ANULOWANE_NIEOPLACONE), bo nie anulowałby bezpiecznie opłaconego w międzyczasie.
    */
   unpaidGuard?: boolean
+  /**
+   * true = kanał chce numer nadania przed statusem (Mirakl: OR23 przed OR24). Host odkłada zapis statusu
+   * zamówienia, dopóki zapis numeru nadania tego zamówienia czeka w kolejce albo właśnie wychodzi (nie liczy tego jako
+   * próby). Numer z błędem trwałym statusu nie blokuje.
+   */
+  trackingBeforeStatus?: boolean
 }
 
 // ─── Kontekst i port bazowy ──────────────────────────────────────────────────
@@ -432,6 +457,13 @@ export interface OrderFeed {
 export interface StockWriteItem {
   offerExternalId: string
   qty: number
+  /**
+   * kiedy kanał zakończył tę ofertę na polecenie Kompletora (stan 0), ISO. Przy stanie dodatnim adapter
+   * wznawia tylko taką ofertę; ofertę zakończoną przez człowieka albo kanał zostawia zakończoną. Brak = nie my.
+   */
+  zakonczonaPrzezNasAt?: string
+  /** dobowy limit zakończeń ofert konta wyczerpany: przy stanie 0 adapter NIE kończy oferty (błąd pozycji). */
+  bezKonczenia?: boolean
 }
 
 /** pozycja paczki stanów, która się nie udała (reszta paczki przeszła). */
@@ -439,6 +471,26 @@ export interface FailedWriteItem {
   offerExternalId: string
   kind: FailureKind
   message: string
+  /**
+   * bez ponowień: host od razu odstawia job (jak po TRWALY_MAX próbach) i wysyła alert. Dla odmów, których
+   * powtórka nie zmieni (kanał odmówił zakończenia albo wznowienia oferty, wyczerpany dobowy limit zakończeń).
+   */
+  odstaw?: boolean
+}
+
+/**
+ * zmiana publikacji oferty przy zapisie stanu (kanały, które przy stanie 0 kończą ofertę):
+ *   - ZAKONCZONA: Kompletor zakończył ofertę (stan 0); host zapamiętuje to na powiązaniu oferty;
+ *   - WZNOWIONA: Kompletor wznowił ofertę, którą sam zakończył (stan dodatni); host czyści znacznik;
+ *   - JUZ_ZAKONCZONA: stan 0, a oferta już nie jest aktywna: bez zapisu w kanale;
+ *   - ZAKONCZONA_POZA: stan dodatni, oferta zakończona przez człowieka albo kanał: bez wznowienia, bez zapisu;
+ *   - AKTYWNA: oferta ze znacznikiem „zakończona przez nas” jest znowu aktywna (wznowił ją ktoś inny): host czyści znacznik.
+ */
+export type RodzajZmianyPublikacji = 'ZAKONCZONA' | 'WZNOWIONA' | 'JUZ_ZAKONCZONA' | 'ZAKONCZONA_POZA' | 'AKTYWNA'
+
+export interface ZmianaPublikacji {
+  offerExternalId: string
+  zmiana: RodzajZmianyPublikacji
 }
 
 export type WriteOutcome =
@@ -451,6 +503,8 @@ export type WriteOutcome =
        * odbioru. Bez danych osobowych. Host dopisuje ją do przesyłki (`lastError`), do zdarzenia i pokazuje na karcie.
        */
       info?: string
+      /** zmiany publikacji ofert przy zapisie stanów (zakończenie przy 0, wznowienie). */
+      publikacja?: readonly ZmianaPublikacji[]
     }
   | {
       kind: FailureKind
@@ -471,6 +525,8 @@ export type WriteOutcome =
       failedItems?: readonly FailedWriteItem[]
       /** identyfikator zapisu w kanale, gdy część paczki przeszła (np. import stanów Mirakl `STO01:<id>`). */
       externalRef?: string
+      /** zmiany publikacji ofert, które przeszły mimo błędu innych pozycji paczki. */
+      publikacja?: readonly ZmianaPublikacji[]
     }
 
 /**
@@ -614,8 +670,13 @@ export type OfferPageWithProblems = OfferPage & { unreadable?: OfferReadProblem[
 
 export interface ShipmentProblem {
   kod: string
-  /** BLAD = przesyłki nie da się nadać, OSTRZEZENIE = do sprawdzenia przez człowieka. */
-  poziom: 'BLAD' | 'OSTRZEZENIE'
+  /**
+   * BLAD = przesyłki nie da się nadać, OSTRZEZENIE = do potwierdzenia przez człowieka przed nadaniem, INFO = tylko
+   * informacja: nie blokuje i nie wymaga potwierdzenia, bo zgoda jest już w ustawieniach firmy (np. waga
+   * domyślna ustawiona na koncie przewoźnika). Host nadania (lib/wysylka/nadanie.ts) dopisuje kody INFO do
+   * `potwierdzoneOstrzezenia`, więc adaptery traktują je jak potwierdzone ostrzeżenia.
+   */
+  poziom: 'BLAD' | 'OSTRZEZENIE' | 'INFO'
   tekst: string
 }
 
@@ -801,9 +862,128 @@ export interface ShipmentCreateRequest {
    * który przed zapisem szuka śladów poprzedniej próby (GLS), może kosztowny przegląd zrobić tylko przy ponowieniu.
    */
   ponowienie?: boolean
+  /**
+   * Termin podjazdu kuriera z harmonogramu odbiorów firmy (Ustawienia → Wysyłka i druk → Przewoźnicy) dla przewoźnika
+   * tej przesyłki: kolejne dni odbioru (pierwszy = preferowany; po godzinie „wyślemy dziś do” i po „Przyjechał” dziś
+   * już jutro) i okno godzin. Host liczy go zawsze; używa tylko moduł, który zamawia podjazd razem z przesyłką i ma to
+   * włączone w koncie. null/brak = firma nie ma aktywnego harmonogramu tego przewoźnika.
+   */
+  podjazd?: PropozycjaPodjazdu | null
+}
+
+/** Propozycja podjazdu kuriera z harmonogramu firmy (lib/wysylka/podjazd.ts): dni RRRR-MM-DD i okno w minutach od północy (Warszawa). */
+export interface PropozycjaPodjazdu {
+  dni: readonly string[]
+  odMin: number
+  doMin: number
 }
 
 export type LabelFormat = 'PDF' | 'ZPL' | 'EPL'
+
+// ─── Zdolność: zamówienie kuriera po paczki (shipment.pickup) ───────────────
+
+/** Paczka do odbioru: waga w kg i wymiary w cm (dowolna kolejność; brak = domyślne wymiary paczki z konta). Bez danych odbiorców. */
+export interface PaczkaOdbioru {
+  wagaKg: number
+  wymiaryCm?: readonly [number, number, number] | null
+}
+
+/** Zamówienie podjazdu: dzień RRRR-MM-DD i okno w minutach od północy (Warszawa), paczki dnia. Nadawca = dane firmy z konfiguracji. */
+export interface PickupOrderRequest {
+  data: string
+  odMin: number
+  doMin: number
+  paczki: readonly PaczkaOdbioru[]
+  /**
+   * Numery przesyłek u przewoźnika (`Shipment.externalRef`) wszystkich paczek czekających na kuriera. Przewoźnik, który
+   * zamawia odbiór konkretnych przesyłek (Wysyłam z Allegro), bierze je stąd; DPD liczy tylko paczki.
+   */
+  przesylki?: readonly string[]
+}
+
+/**
+ * Wynik zamówienia odbioru. `sumaKontrolna`: to, czego przewoźnik potrzebuje do późniejszej operacji na zleceniu (DPD:
+ * checkSum do anulowania; Wysyłam z Allegro: identyfikator odbioru w Allegro). `okno`: godziny, na które przewoźnik
+ * faktycznie przyjął odbiór, gdy różnią się od zamówionych (Allegro przyjmuje tylko swoje proponowane terminy).
+ */
+export type WynikOdbioru = WriteOutcome & {
+  sumaKontrolna?: string | null
+  okno?: { odMin: number; doMin: number } | null
+  /** Ile przesyłek objęło zamówienie (moduły z `pickupPerShipment`: tylko przesyłki przewoźnika, który przyjeżdża). */
+  przesylek?: number | null
+}
+
+export interface PickupOrderer {
+  /**
+   * Jedno żądanie zamówienia kuriera, bez ponawiania. `reference` = klucz zlecenia od hosta (do śladu). OK niesie numer
+   * zlecenia u przewoźnika w `externalRef` i (opcjonalnie) `sumaKontrolna` potrzebną do anulowania. NIEJEDNOZNACZNY =
+   * nie wiadomo, czy przewoźnik przyjął zlecenie: rozstrzyga człowiek, host nie ponawia. Wyłączone w koncie = TRWALY
+   * bez żądania.
+   */
+  zamowOdbior(req: PickupOrderRequest, reference: string): Promise<WynikOdbioru>
+}
+
+/**
+ * Grupa przesyłek do jednego odbioru (moduły z `pickupPerShipment`). Przewoźnik może wymagać osobnych odbiorów dla
+ * części przesyłek (Allegro: `REQUIRES_SEPARATE_PICKUPS`); host zamawia każdą grupę osobnym zleceniem. `klucz` =
+ * deterministyczny opis grupy z cech przesyłek (krótki, bez danych osób), `opis` = tekst dla ekranu, `dni` = terminy
+ * wspólne dla przesyłek grupy jak w `DostepnoscOdbioru`.
+ */
+export interface GrupaOdbioru {
+  klucz: string
+  opis: string
+  przesylki: string[]
+  dni: { dzienOd: number; przedzialy: PrzedzialDostepnosci[] }[]
+}
+
+/**
+ * Podział przesyłek na odbiory (odczyt bez skutku, nic nie zamawia). `wOdbiorze` = identyfikatory odbiorów już
+ * zamówionych (host: `sumaKontrolna` zleceń ZAMOWIONY); ich przesyłki wypadają z listy. Błąd odczytu = wyjątek (host
+ * nic nie zamawia). `powod` = dlaczego żadnej grupy nie ma (np. tylko przesyłki innych przewoźników).
+ * `przesylek` = ile przesyłek objęło zamówienie według hosta: przewoźnik, który zwraca ich mniej (albo żadnej), nie
+ * daje pewności, które przesyłki są w odbiorze, więc to wyjątek (nic nie zamawiamy), nie pusta lista.
+ */
+export interface OdbiorPrzyjety {
+  id: string
+  przesylek: number
+}
+
+export interface PickupGrouping {
+  /**
+   * `drobniej`: podział awaryjny po odmowie „osobne odbiory” dla grupy, którą zwykły podział złożył razem;
+   * przewoźnik dzieli wtedy najdrobniej, jak umie (Allegro: po elementach odpowiedzi z propozycjami terminów).
+   */
+  grupyOdbioru(o: { przesylki: readonly string[]; wOdbiorze: readonly OdbiorPrzyjety[]; timeoutMs?: number; drobniej?: boolean }): Promise<{ grupy: GrupaOdbioru[]; powod: string | null }>
+}
+
+/** Przedział podjazdu z dostępności przewoźnika (minuty od północy, Warszawa). */
+export interface PrzedzialDostepnosci {
+  odMin: number
+  doMin: number
+  /**
+   * Liczba minut, którą przewoźnik podaje przy przedziale bez opisu (DPD: `offset`, np. 360 przy 09:00–17:00). Znaczenie
+   * NIEPOTWIERDZONE (hipoteza: zapas przed końcem przedziału, do którego trzeba zamówić); host używa jej najwyżej do
+   * miękkiej podpowiedzi w oknie, nigdy do blokowania zamówienia.
+   */
+  offsetMin?: number | null
+}
+
+/**
+ * Wynik odczytu wolnych przedziałów podjazdu. OK: `przedzialy` bez dat (przewoźnik nie mówi, na które dni, więc
+ * obowiązują w każdy dzień odbioru) i/lub `dni` z przesunięciem `dzienOd` od dzisiejszego dnia (Warszawa), gdy przewoźnik
+ * podaje daty (lista dnia wygrywa z ogólną). BRAK = przewoźnik nie ma przedziałów dla adresu nadawcy. Lista nie jest
+ * zamknięta (przewoźnik bywa, że przyjmuje godziny spoza niej), więc host nie blokuje nią zamówienia.
+ */
+export type DostepnoscOdbioru = { stan: 'OK'; przedzialy?: PrzedzialDostepnosci[]; dni?: { dzienOd: number; przedzialy: PrzedzialDostepnosci[] }[] } | { stan: 'BRAK' }
+
+/**
+ * Wolne przedziały podjazdu kuriera dla adresu nadawcy z konfiguracji (odczyt bez skutku, nic nie zamawia). Błąd
+ * odczytu, limit czasu albo nieznany format = wyjątek (host zostaje przy samych polach godzin). Opcjonalna: moduł bez
+ * tej metody = okno z dwoma polami godzin bez podpowiedzi.
+ */
+export interface PickupAvailability {
+  dostepnoscOdbioru(o: { timeoutMs: number; /** jak `PickupOrderRequest.przesylki` (moduły z `pickupPerShipment`) */ przesylki?: readonly string[] }): Promise<DostepnoscOdbioru>
+}
 
 /**
  * stan przesyłki u przewoźnika sprowadzony do tego, co obchodzi magazyn. PRZED_NADANIEM = paczka jeszcze
@@ -1042,6 +1222,19 @@ export function hasShipmentCreator(a: ChannelAdapter): a is ChannelAdapter & Shi
 /** przewoźnik anuluje utworzoną przesyłkę z Kompletora (deklaracja w manifeście i metoda). */
 export function hasShipmentCanceller(a: ChannelAdapter): a is ChannelAdapter & ShipmentCreator & Required<Pick<ShipmentCreator, 'cancelShipment'>> {
   return hasShipmentCreator(a) && declares(a, 'shipment.cancel') && typeof a.cancelShipment === 'function'
+}
+
+/** Przewoźnik zamawia podjazd kuriera z Kompletora (deklaracja w manifeście, moduł z zapisem i metoda). */
+export function hasPickupAvailability(a: ChannelAdapter): a is ChannelAdapter & PickupAvailability {
+  return declares(a, 'shipment.pickup') && typeof (a as Partial<PickupAvailability>).dostepnoscOdbioru === 'function'
+}
+
+export function hasPickupGrouping(a: ChannelAdapter): a is ChannelAdapter & PickupGrouping {
+  return declares(a, 'shipment.pickup') && a.manifest.pickupPerShipment === true && typeof (a as Partial<PickupGrouping>).grupyOdbioru === 'function'
+}
+
+export function hasPickupOrderer(a: ChannelAdapter): a is ChannelAdapter & PickupOrderer {
+  return declares(a, 'shipment.pickup') && !a.manifest.readOnly && typeof (a as Partial<PickupOrderer>).zamowOdbior === 'function'
 }
 
 /** przewoźnik podaje stan przesyłki od ręki (deklaracja w manifeście i metoda). Wzór: `hasShipmentCanceller`. */

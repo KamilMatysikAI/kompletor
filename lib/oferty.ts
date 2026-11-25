@@ -5,6 +5,7 @@
 // - każda ręczna zmiana zeruje `deactivatedByImportAt` i `needsApproval` — inaczej import uznałby
 //   ręczne wyłączenie za swoje i przy następnym przebiegu włączył ofertę.
 import type { ChannelOffer, PrismaClient } from '@prisma/client'
+import { powodOfertaWylaczony, wylaczoneProdukty } from './produkty/aktywnosc'
 
 // Migawka do AuditLog: wszystkie pola, które ręczna zmiana może przestawić (drobna 6).
 const snapshot = (o: ChannelOffer) => ({
@@ -29,6 +30,11 @@ export async function setOfferActiveManually(
 ): Promise<void> {
   await db.$transaction(async (tx) => {
     const before = await tx.channelOffer.findUniqueOrThrow({ where: { id: offerId } })
+    // włączona oferta nie może wskazywać produktu wyłączonego (wyłączenie oferty zawsze wolno)
+    if (active) {
+      const sku = (await wylaczoneProdukty(tx, [opts.productId ?? before.productId])).values().next().value
+      if (sku !== undefined) throw new Error(powodOfertaWylaczony(sku))
+    }
     const after = await tx.channelOffer.update({
       where: { id: offerId },
       data: {

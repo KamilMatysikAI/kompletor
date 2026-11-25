@@ -2,13 +2,15 @@
 // `getEventsForWaybillV1(waybill, eventsSelectType, language, authDataV1)` → `CustomerEventsResponseV3` z listą
 // `eventsList` (pola `businessCode`, `waybill`, `description`, `eventTime`, …). Źródło: „DPDInfoServices. Specyfikacja
 // biznesowa”, wersja 1.0.7 z 06.02.2015, rozdz. 9.1.6 i 10 (przestrzeń nazw `http://events.dpdinfoservices.dpd.com.pl/`,
-// przykładowe koperty w rozdz. 11). Usługa ma osobne dane logowania (login, hasło, kanał kliencki) od DPD, inne niż
-// DPDServices REST; `getEventsForWaybill` według specyfikacji działa bez uwzględniania kanału.
-// [NIEPEWNE] Adres usługi nie stoi w specyfikacji: firma wpisuje go z danych od DPD, a adapter przyjmuje tylko adres
-// https w domenie dpd.com.pl (login i hasło nie mogą pójść gdzie indziej). Do potwierdzenia na danych od DPD przed
-// włączeniem śledzenia: adres, zachowanie przy nieznanym numerze listu (pusta lista czy Fault).
+// przykładowe koperty w rozdz. 11). Klient przeniesiony (gałąź main) na gałąź produkcji.
+// odczyt 20.11.2026 potwierdził adres usługi
+// (`DPD_INFO_URL`) i logowanie danymi konta DPDServices (login, hasło, kanał = masterFid), także dla paczek nadanych
+// przez Base Courier (inny płatnik). [NIEPEWNE] Zachowanie przy nieznanym numerze listu (pusta lista czy Fault).
+// Adres przyjmujemy tylko https w domenie dpd.com.pl (login i hasło nie mogą pójść gdzie indziej).
 import { fetchWithTimeout, type FetchLike, type RetryOptions, SourceError, withRetry } from './http'
 
+/** Adres produkcyjny DPDInfoServices (zdarzenia przesyłek), sprawdzony odczytem 20.11.2026. Wersji demo usługa nie ma. */
+export const DPD_INFO_URL = 'https://dpdinfoservices.dpd.com.pl/DPDInfoServicesObjEventsService/DPDInfoServicesObjEvents'
 /** Tylko https w domenie DPD Polska, bez zapytania i fragmentu. */
 export const DPD_INFO_URL_RE = /^https:\/\/([a-z0-9-]+\.)*dpd\.com\.pl(\/[A-Za-z0-9._/-]*)?$/
 export const DPD_INFO_NS = 'http://events.dpdinfoservices.dpd.com.pl/'

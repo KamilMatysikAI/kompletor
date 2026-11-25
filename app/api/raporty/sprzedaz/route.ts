@@ -1,5 +1,5 @@
 // Eksport XLSX raportu sprzedaży z ekranu „Raporty”: GET z tymi samymi parametrami co ekran (od, do, grupuj,
-// konto). Sesja i `raporty.sprzedaz` przez requirePermissionApi (jak ekran; Magazyn domyślnie bez),
+// konto; porownaj, porownaj_od, porownaj_do jak w lib/api/raporty-porownanie.ts). Sesja i `raporty.sprzedaz` przez requirePermissionApi (jak ekran; Magazyn domyślnie bez),
 // dane wyłącznie przez klienta firmy z sesji (RLS). Same agregaty: bez danych klientów. Zakres najwyżej 366 dni, liczy baza (GROUPING SETS),
 // więc plik powstaje od razu, bez kolejki w tle (pomiar: docs/raporty.md).
 import type { NextRequest } from 'next/server'
@@ -19,7 +19,7 @@ export async function GET(req: NextRequest): Promise<Response> {
   const sp = req.nextUrl.searchParams
   let q
   try {
-    q = zapytanieSprzedazy({ od: sp.get('od'), do: sp.get('do'), grupuj: sp.get('grupuj'), konto: sp.get('konto'), produktow: SPRZEDAZ_MAKS_PRODUKTOW })
+    q = zapytanieSprzedazy({ od: sp.get('od'), do: sp.get('do'), grupuj: sp.get('grupuj'), konto: sp.get('konto'), produktow: SPRZEDAZ_MAKS_PRODUKTOW, porownaj: sp.get('porownaj'), porownajOd: sp.get('porownaj_od'), porownajDo: sp.get('porownaj_do') })
   } catch (e) {
     if (e instanceof ApiInputError) return NextResponse.json({ error: e.message }, { status: 400 })
     throw e

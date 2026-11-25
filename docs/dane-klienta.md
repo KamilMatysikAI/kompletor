@@ -69,6 +69,8 @@ Technicznie: baza trzyma skrót (HMAC-SHA256) e-maila, telefonu i NIP-u liczony 
 
 **API dla systemów zewnętrznych.** Klucz obsługi klienta (zakres `obsluga:odczyt`, opis w `docs/api.md`, sekcja „Obsługa klienta”) szuka zamówień po pełnym e-mailu albo telefonie tym samym skrótem, bez odszyfrowywania i bez fragmentów. Klucz widzi tylko zamówienia kont sprzedaży wybranych przy jego zakładaniu (albo jawnie wszystkich kont firmy). Odpowiedź nie zawiera danych klienta (adresu, imienia, e-maila, telefonu, NIP-u). Każde zapytanie zostawia w dzienniku podglądów jeden wpis z autorem „klucz API <nazwa>” i celem „obsługa klienta (API)”, bez szukanej wartości. Inne klucze API danych klienta nie czytają.
 
+**API dla systemów zewnętrznych.** Klucz obsługi klienta (zakres `obsluga:odczyt`, opis w `docs/api.md`, sekcja „Obsługa klienta”) szuka zamówień po pełnym e-mailu albo telefonie tym samym skrótem, bez odszyfrowywania i bez fragmentów. Klucz widzi tylko zamówienia kont sprzedaży wybranych przy jego zakładaniu (albo jawnie wszystkich kont firmy). Odpowiedź nie zawiera danych klienta (adresu, imienia, e-maila, telefonu, NIP-u). Każde zapytanie zostawia w dzienniku podglądów jeden wpis z autorem „klucz API <nazwa>” i celem „obsługa klienta (API)”, bez szukanej wartości. Inne klucze API danych klienta nie czytają.
+
 **E-mail z Allegro.** Allegro podaje sprzedawcy adres maskowany (`…@allegromail.pl`), a nie prawdziwy adres kupującego. Zapisujemy go tak, jak podał kanał, i on też dostaje skrót. Wyszukiwanie po prawdziwym adresie klienta nie znajdzie zamówień z Allegro: szukaj po telefonie albo po adresie maskowanym z zamówienia.
 
 ## Jak długo przechowujemy
@@ -94,7 +96,7 @@ Usunięte dane nie wracają z kanału (zadanie zapisu i „Odśwież z kanału�
 
 ## Czego nie wysyłamy i nie zapisujemy
 
-- **AI**: dane klienta nie trafiają do żadnego wywołania AI.
+- **AI**: dane klienta nie trafiają do wywołań AI, z jednym wyjątkiem uruchamianym przez człowieka. „Podpowiedz podział adresu (asystent AI)” na karcie zamówienia i na stanowisku pakowania wysyła do dostawcy modelu firmy (Ustawienia → Integracje i agenci AI → Agenci AI → Dostawca AI) **samą linię ulicy z numerem domu** jednego zamówienia, gdy przesyłka idzie kurierem do drzwi, a linii nie da się rozdzielić automatycznie. Bez imienia, nazwiska, telefonu, e-maila, kodu pocztowego, miasta i numeru zamówienia. Zapytanie wychodzi tylko po kliknięciu, raz na linię adresu; odczyt linii jest w dzienniku podglądów (cel „poprawka”). Wynik zapisuje człowiek przyciskiem „Zatwierdź”, a w zamówieniu zostaje tylko skrót linii i pozycje znaków, bez treści adresu ([Przesyłki](przesylki.md), „Podział adresu przez asystenta AI”).
 - **Logi**: w logach jest numer zamówienia i rodzaj błędu, nigdy dane klienta ani treść odpowiedzi kanału.
 - **Powiadomienia** (Zulip) i alerty: bez danych klienta.
 - **Kolejka zadań**: zadanie zapisu niesie tylko numer zamówienia.

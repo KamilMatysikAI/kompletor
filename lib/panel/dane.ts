@@ -8,6 +8,9 @@ import { addDays, fromWarsaw, toWarsaw } from '@/lib/rdzen/kalendarz'
 import { flagsOf } from '@/lib/rdzen/rezerwacja'
 import { kwotyZwrotuBrakow } from '@/lib/zwroty/kwota-braku'
 import { accountDisplayName, SALES_COUNT_CANCELLED } from './format'
+import { czytajKursy } from '@/lib/kursy/nbp'
+import { naGrosze, sumaWalut, type KursyWalut, type ObcaKwota } from './sumy-walut'
+import { sortZ, type SortTabeli } from './tabela'
 
 type Db = PrismaClient
 
@@ -320,6 +323,8 @@ export interface ProductRow {
   /** grupa wariantów produktu i liczba produktów w tej grupie (ten sam filtr aktywności); null = poza grupą. */
   groupId: string | null
   wariantow: number | null
+  /** kategoria produktu (nazwa liścia i pełna ścieżka); null = bez kategorii. */
+  kategoria: { name: string; path: string } | null
 }
 
 /** id grupy wariantów z adresu listy (`?grupa=`); śmieci = brak filtra. */
@@ -349,27 +354,115 @@ async function zeroAvailableIds(db: Db): Promise<string[]> {
   return rows.map((r) => r.productId)
 }
 
+// ───: sortowanie listy produktów kliknięciem w nagłówek ───────────────────────────────────────
+// Klucze w adresie (`?sort=dostepne&kier=malejaco`, jak `Tabela` z app/ui). Biała lista: nieznany klucz = kolejność
+// domyślna (nazwa rosnąco). Kolumny liczbowe sortują tę samą wartość, którą pokazuje komórka (patrz `productsPage`):
+// fizycznie i zarezerwowane = suma ze wszystkich magazynów, dostępne = max(0, fizycznie − zarezerwowane); zestaw,
+// produkt bez stanu i produkt bez wiersza stanu nie mają liczby w kolumnie, więc idą na koniec w obu kierunkach.
+export const PRODUCT_SORT_KEYS = ['produkt', 'kategoria', 'lokalizacja', 'fizycznie', 'zarezerwowane', 'dostepne', 'oferty'] as const
+export type ProductSortKey = (typeof PRODUCT_SORT_KEYS)[number]
+export const PRODUCT_SORT_DEFAULT: SortTabeli = { klucz: 'produkt', kierunek: 'rosnaco' }
+
+/** Sortowanie listy produktów z parametrów adresu (biała lista kluczy i kierunku). */
+export function productSortZ(p: Record<string, string | string[] | undefined>): SortTabeli {
+  return sortZ(p, PRODUCT_SORT_KEYS, PRODUCT_SORT_DEFAULT)
+}
+
+const isProductSortKey = (k: string): k is ProductSortKey => (PRODUCT_SORT_KEYS as readonly string[]).includes(k)
+
+/**
+ * Id produktów jednej strony w kolejności sortowania (kolumny liczone, których Prisma nie sortuje: sumy stanu, liczba
+ * ofert, kategoria, lokalizacja). Zbiór wejściowy to wynik tego samego warunku listy (`ids`), więc filtry mają jedno
+ * źródło; sortowanie, LIMIT i OFFSET robi baza. Klient firmy (RLS) widzi tylko swoje wiersze.
+ *
+ * Jeden stały szablon SQL: klucz i kierunek idą jako parametry (bez sklejania SQL, strażnik SESSION_ESCAPE
+ * w tests/organizacje-izolacja). `num` / `txt` = wartość wybranej kolumny (druga z pary jest NULL dla wszystkich, więc
+ * nie zmienia kolejności); kolumna w złym kierunku też daje same NULL. Podzapytania liczą się tylko dla wybranego klucza.
+ *  - fizycznie / zarezerwowane = suma ze wszystkich magazynów, dostępne = max(0, fizycznie − zarezerwowane), jak komórka;
+ *    tylko towar z wierszem stanu (zestaw, bez stanu, brak wiersza = „—” w komórce = NULL na końcu; uwaga:
+ *    GREATEST(0, NULL) w Postgresie daje 0, stąd jawny warunek na wiersz stanu),
+ *  - lokalizacja = pierwszy stan z miejscem w kolejności magazynów (include niżej ma ten sam orderBy, ten sam magazyn),
+ *  - oferty = aktywne oferty (jak `_count` w include), kategoria = nazwa liścia (jak komórka).
+ */
+async function sortedProductIds(db: Db, ids: string[], klucz: Exclude<ProductSortKey, 'produkt'>, malejaco: boolean, skip: number, take: number): Promise<string[]> {
+  if (!ids.length) return []
+  const rows = await db.$queryRaw<{ id: string }[]>`
+    SELECT x.id FROM (
+      SELECT p.id, p.title,
+        CASE ${klucz}::text
+          WHEN 'fizycznie' THEN CASE WHEN p.kind = 'STOCKED' AND st."productId" IS NOT NULL THEN st.fiz END
+          WHEN 'zarezerwowane' THEN CASE WHEN p.kind = 'STOCKED' AND st."productId" IS NOT NULL THEN st.rez END
+          WHEN 'dostepne' THEN CASE WHEN p.kind = 'STOCKED' AND st."productId" IS NOT NULL THEN GREATEST(0, st.fiz - st.rez) END
+          WHEN 'oferty' THEN (SELECT count(*) FROM "ChannelOffer" o WHERE o."productId" = p.id AND o.active)
+        END AS num,
+        CASE ${klucz}::text
+          WHEN 'kategoria' THEN c.name
+          WHEN 'lokalizacja' THEN (SELECT s2.location FROM "Stock" s2 WHERE s2."productId" = p.id AND s2.location IS NOT NULL ORDER BY s2."warehouseId" LIMIT 1)
+        END AS txt
+      FROM "Product" p
+      LEFT JOIN (
+        SELECT "productId", sum(physical)::bigint AS fiz, sum(reserved)::bigint AS rez FROM "Stock"
+        WHERE "productId" = ANY(${ids}::text[]) GROUP BY "productId"
+      ) st ON st."productId" = p.id
+      LEFT JOIN "ProductCategory" c ON c."organizationId" = p."organizationId" AND c.id = p."categoryId"
+      WHERE p.id = ANY(${ids}::text[])
+    ) x
+    ORDER BY
+      CASE WHEN NOT ${malejaco}::boolean THEN x.num END ASC NULLS LAST,
+      CASE WHEN ${malejaco}::boolean THEN x.num END DESC NULLS LAST,
+      CASE WHEN NOT ${malejaco}::boolean THEN x.txt END ASC NULLS LAST,
+      CASE WHEN ${malejaco}::boolean THEN x.txt END DESC NULLS LAST,
+      x.title ASC, x.id ASC
+    LIMIT ${take} OFFSET ${skip}`
+  return rows.map((r) => r.id)
+}
+
+const PRODUCT_INCLUDE = {
+  stocks: { orderBy: { warehouseId: 'asc' } },
+  _count: { select: { offers: { where: { active: true } } } },
+  category: { select: { name: true, path: true } },
+} satisfies Prisma.ProductInclude
+
 /**
  * Strona listy produktów. `tylkoId`: zawężenie do zbioru z kafla kompletności (`lib/produkty/kompletnosc.ts`),
- * ten sam zbiór co licznik kafla.
+ * ten sam zbiór co licznik kafla. `sort`: kolejność całej listy przed stronicowaniem; domyślnie nazwa rosnąco.
  */
-export async function productsPage(db: Db, p: { filter: ProductFilter; q?: string; page?: number; tylkoId?: readonly string[]; grupa?: string | null }): Promise<{ rows: ProductRow[]; total: number }> {
+export async function productsPage(
+  db: Db,
+  p: {
+    filter: ProductFilter
+    q?: string
+    page?: number
+    tylkoId?: readonly string[]
+    grupa?: string | null
+    /** warunek filtra kategorii (`warunekKategorii`) */ kategoria?: Prisma.ProductWhereInput | null
+    sort?: SortTabeli
+  },
+): Promise<{ rows: ProductRow[]; total: number }> {
   assertOrg(db)
   let where = productWhere(p.filter, p.q)
+  if (p.kategoria) where = { AND: [where, p.kategoria] }
   if (p.grupa) where = { AND: [where, { groupId: p.grupa }] }
   if (p.filter === 'brak') where = { AND: [where, { id: { in: await zeroAvailableIds(db) } }] }
   if (p.tylkoId) where = { AND: [where, { id: { in: [...p.tylkoId] } }] }
   const page = Math.max(1, Math.min(10_000, Math.floor(p.page ?? 1)))
-  const [list, total] = await Promise.all([
-    db.product.findMany({
-      where,
-      orderBy: [{ title: 'asc' }, { id: 'asc' }],
-      skip: (page - 1) * PAGE_SIZE,
-      take: PAGE_SIZE,
-      include: { stocks: true, _count: { select: { offers: { where: { active: true } } } } },
-    }),
-    db.product.count({ where }),
-  ])
+  const sort = p.sort && isProductSortKey(p.sort.klucz) ? p.sort : PRODUCT_SORT_DEFAULT
+  const malejaco = sort.kierunek === 'malejaco'
+  let list: Prisma.ProductGetPayload<{ include: typeof PRODUCT_INCLUDE }>[]
+  let total: number
+  if (sort.klucz === 'produkt') {
+    ;[list, total] = await Promise.all([
+      db.product.findMany({ where, orderBy: [{ title: malejaco ? 'desc' : 'asc' }, { id: 'asc' }], skip: (page - 1) * PAGE_SIZE, take: PAGE_SIZE, include: PRODUCT_INCLUDE }),
+      db.product.count({ where }),
+    ])
+  } else {
+    // same id pasujących produktów (jedna kolumna), sortowanie i strona w SQL, pełne dane tylko dla strony
+    const ids = (await db.product.findMany({ where, select: { id: true } })).map((x) => x.id)
+    total = ids.length
+    const pageIds = await sortedProductIds(db, ids, sort.klucz as Exclude<ProductSortKey, 'produkt'>, malejaco, (page - 1) * PAGE_SIZE, PAGE_SIZE)
+    const byId = new Map((await db.product.findMany({ where: { id: { in: pageIds } }, include: PRODUCT_INCLUDE })).map((x) => [x.id, x]))
+    list = pageIds.map((id) => byId.get(id)).filter((x): x is NonNullable<typeof x> => !!x)
+  }
   // ile produktów liczy każda grupa wariantów widoczna na stronie (aktywne albo wyłączone, jak zakładka)
   const grupy = [...new Set(list.map((x) => x.groupId).filter((g): g is string => !!g))]
   const ileWGrupie = new Map<string, number>()
@@ -398,6 +491,7 @@ export async function productsPage(db: Db, p: { filter: ProductFilter; q?: strin
         location: x.stocks.find((s) => s.location)?.location ?? null, // kod miejsca z BL, np. B-3-4
         groupId: x.groupId,
         wariantow: x.groupId ? (ileWGrupie.get(x.groupId) ?? 1) : null,
+        kategoria: x.category,
       }
     }),
   }
@@ -484,9 +578,13 @@ export interface DashboardData {
   now: Date
   /** `shortageLines`: braki do decyzji (zakładka „Brakuje”); `shortageLinesAll`: wszystkie otwarte, z „do zwrotu” (API raportów) */
   work: { toPack: number; shortageLines: number; shortageLinesAll: number; shortageOrders: number; shortageOrdersAll: number; clarify: number; unpaid: number; invoiceFailed: number; wfirmaFix: number; overcommit: number }
-  today: { count: number; gross: number; outside: OutsideCore; perAccount: { key: string; name: string; count: number; gross: number; outside: OutsideCore }[] }
-  month: { day: number; count: number; gross: number; future: boolean }[]
-  monthTotals: { count: number; gross: number; outside: OutsideCore }
+  /**
+   * `count` = wszystkie zamówienia, `gross` = zamówienia w PLN plus obce waluty przeliczone po kursie średnim
+   * NBP (informacyjnie), `foreign` = rozbicie obcych walut (kwota w walucie, kurs, kwota w złotych; bez kursu = poza `gross`)
+   */
+  today: { count: number; gross: number; foreign: ObcaKwota[]; outside: OutsideCore; perAccount: { key: string; name: string; count: number; gross: number; foreign: ObcaKwota[]; outside: OutsideCore }[] }
+  month: { day: number; count: number; gross: number; foreign: ObcaKwota[]; future: boolean }[]
+  monthTotals: { count: number; gross: number; foreign: ObcaKwota[]; outside: OutsideCore }
   channels: (AccountRef & { lastOkAt: Date | null; failingSince: Date | null; lastPollAt: Date | null; lastPollOk: boolean | null })[]
   alerts: { id: string; kind: string; message: string; createdAt: Date }[]
   /** konta cienia zamówień bez udanego odczytu (> 15 min albo otwarty alert); enabled = CIEN_ODCZYT. */
@@ -513,6 +611,8 @@ interface SalesRow {
   day: number
   channel: Channel
   channelAccountId: string
+  /** waluta zamówień wiersza (z kopii kanału, bez kopii = PLN) */
+  waluta: string
   count: bigint
   gross: string | null
   przed: bigint
@@ -534,18 +634,23 @@ interface SalesRow {
 async function salesRows(db: Db, from: Date, to: Date): Promise<SalesRow[]> {
   return db.$queryRaw<SalesRow[]>`
     SELECT extract(day FROM (s.at AT TIME ZONE 'UTC') AT TIME ZONE 'Europe/Warsaw')::int AS day,
-           s.channel, s."channelAccountId", count(*) FILTER (WHERE s.liczy) AS count, (sum(s.gross) FILTER (WHERE s.liczy))::text AS gross,
+           s.channel, s."channelAccountId", s.waluta, count(*) FILTER (WHERE s.liczy) AS count, (sum(s.gross) FILTER (WHERE s.liczy))::text AS gross,
            count(*) FILTER (WHERE s.liczy AND s.poza = 'przed-startem') AS przed, count(*) FILTER (WHERE s.liczy AND s.poza = 'nieprzyjete') AS nieprzyjete,
            count(*) FILTER (WHERE s.liczy AND s.poza = 'pominiete') AS pominiete, count(*) FILTER (WHERE s.anulowane) AS anulowane
     FROM (
       SELECT o."channel"::text AS channel, o."channelAccountId" AS "channelAccountId", o."createdAtChannel" AS at, o."totalGross" AS gross, NULL::text AS poza,
-             o."status" = 'ANULOWANE' AS anulowane, (o."status" <> 'ANULOWANE' OR ${SALES_COUNT_CANCELLED}::boolean) AS liczy
+             o."status" = 'ANULOWANE' AS anulowane, (o."status" <> 'ANULOWANE' OR ${SALES_COUNT_CANCELLED}::boolean) AS liczy,
+             coalesce(nullif(upper(btrim(k."currency")), ''), 'PLN') AS waluta
       FROM "Order" o
+      -- waluta z kopii kanału (klucz unikalny; zamówienie bez kopii = PLN); kwoty w obcej walucie idą osobno
+      LEFT JOIN "ChannelOrderSnapshot" k
+        ON k."organizationId" = o."organizationId" AND k."channel" = o."channel" AND k."channelAccountId" = o."channelAccountId" AND k."externalId" = o."externalId"
       WHERE o."createdAtChannel" >= ${from} AND o."createdAtChannel" < ${to} AND o."parentOrderId" IS NULL
       UNION ALL
       SELECT c."channel"::text, c."channelAccountId", c."createdAtChannel", c."totalGross",
              CASE WHEN c."skipReason" IS NULL THEN 'nieprzyjete' WHEN c."skipReason" = 'zrealizowane-przed-pierwszym-odczytem' THEN 'przed-startem' ELSE 'pominiete' END,
-             c."lifecycle" = 'CANCELLED', (c."lifecycle" <> 'CANCELLED' OR ${SALES_COUNT_CANCELLED}::boolean)
+             c."lifecycle" = 'CANCELLED', (c."lifecycle" <> 'CANCELLED' OR ${SALES_COUNT_CANCELLED}::boolean),
+             coalesce(nullif(upper(btrim(c."currency")), ''), 'PLN')
       FROM "ChannelOrderSnapshot" c
       WHERE c."createdAtChannel" >= ${from} AND c."createdAtChannel" < ${to} AND c."lifecycle" <> 'DRAFT'
         AND NOT EXISTS (
@@ -553,7 +658,7 @@ async function salesRows(db: Db, from: Date, to: Date): Promise<SalesRow[]> {
           WHERE x."organizationId" = c."organizationId" AND x."channel" = c."channel" AND x."channelAccountId" = c."channelAccountId" AND x."externalId" = c."externalId"
         )
     ) s
-    GROUP BY 1, 2, 3`
+    GROUP BY 1, 2, 3, 4`
 }
 
 /** Zamówienie sprzedaży dnia: to samo źródło co `salesRows`, ale per zamówienie (porównanie z BL). */
@@ -607,25 +712,30 @@ export async function salesOrders(db: Db, from: Date, to: Date): Promise<SalesOr
 
 /** Suma wierszy w groszach (kwoty z bazy jako tekst Decimal — bez błędów zaokrągleń przy dodawaniu). */
 interface SalesSum {
+  /** wszystkie zamówienia, każda waluta */
   count: number
+  /** kwota zamówień w PLN plus obce waluty przeliczone kursem */
   cents: number
+  /** rozbicie obcych walut (z kursem albo bez, wtedy poza `cents`) */
+  foreign: ObcaKwota[]
   outside: OutsideCore
 }
 
-function sumRows(rows: SalesRow[]): SalesSum {
-  return rows.reduce<SalesSum>(
-    (acc, r) => ({
-      count: acc.count + Number(r.count),
-      cents: acc.cents + Math.round(Number(r.gross ?? 0) * 100),
-      outside: {
-        beforeStart: acc.outside.beforeStart + Number(r.przed),
-        notIngested: acc.outside.notIngested + Number(r.nieprzyjete),
-        skipped: acc.outside.skipped + Number(r.pominiete),
-        cancelled: acc.outside.cancelled + Number(r.anulowane),
-      },
-    }),
-    { count: 0, cents: 0, outside: { beforeStart: 0, notIngested: 0, skipped: 0, cancelled: 0 } },
+function sumRows(rows: SalesRow[], kursy: KursyWalut | null): SalesSum {
+  const s = sumaWalut(
+    rows.map((r) => ({ waluta: r.waluta, grosze: naGrosze(r.gross), zamowien: Number(r.count) })),
+    kursy,
   )
+  const outside = rows.reduce<OutsideCore>(
+    (acc, r) => ({
+      beforeStart: acc.beforeStart + Number(r.przed),
+      notIngested: acc.notIngested + Number(r.nieprzyjete),
+      skipped: acc.skipped + Number(r.pominiete),
+      cancelled: acc.cancelled + Number(r.anulowane),
+    }),
+    { beforeStart: 0, notIngested: 0, skipped: 0, cancelled: 0 },
+  )
+  return { count: s.zamowien, cents: s.grosze, foreign: s.obce, outside }
 }
 
 /** Granice dnia i miesiąca w strefie Warszawy dla chwili `now`. */
@@ -649,7 +759,7 @@ export async function dashboard(db: Db, now = new Date(), opts: { shadowEnabled?
   const r = warsawRanges(now)
   const accs = await accounts(db)
   const shadow = await loadShadowReading(db, { enabled: opts.shadowEnabled ?? shadowEnabled(process.env), now })
-  const [toPack, shortageAgg, shortageAll, shortageOrders, shortageOrdersAll, clarify, unpaid, invoiceFailed, wfirmaFix, overcommit, monthRows, health, polls, alerts] = await Promise.all([
+  const [toPack, shortageAgg, shortageAll, shortageOrders, shortageOrdersAll, clarify, unpaid, invoiceFailed, wfirmaFix, overcommit, monthRows, health, polls, alerts, kursy] = await Promise.all([
     db.order.count({ where: viewWhere('do_spakowania') }),
     db.shortage.count({ where: BRAK_DO_DECYZJI_OTWARTY }), // = zakładka „Brakuje” na /braki i plakietka w menu
     db.shortage.count({ where: OPEN_SHORTAGE }),
@@ -664,34 +774,36 @@ export async function dashboard(db: Db, now = new Date(), opts: { shadowEnabled?
     db.channelHealth.findMany(),
     db.channelOrderPoll.findMany({ orderBy: { startedAt: 'desc' }, take: 200, select: { channel: true, channelAccountId: true, finishedAt: true, ok: true, startedAt: true } }),
     db.alert.findMany({ where: { closedAt: null }, orderBy: { createdAt: 'desc' }, take: 5, select: { id: true, kind: true, message: true, createdAt: true } }),
+    // kursy NBP zapisane przez worker (bez sieci w ścieżce renderu)
+    czytajKursy(db),
   ])
   const todayRows = monthRows.filter((m) => Number(m.day) === r.today)
-  const ofAccount = (channel: Channel, channelAccountId: string) => sumRows(todayRows.filter((t) => t.channel === channel && t.channelAccountId === channelAccountId))
+  const ofAccount = (channel: Channel, channelAccountId: string) => sumRows(todayRows.filter((t) => t.channel === channel && t.channelAccountId === channelAccountId), kursy)
   const perAccount = accs
     .filter((a) => a.channel !== 'RECZNE' || todayRows.some((t) => t.channel === a.channel && t.channelAccountId === a.channelAccountId))
     .map((a) => {
       const t = ofAccount(a.channel, a.channelAccountId)
-      return { key: accountKey(a.channel, a.channelAccountId), name: a.name, count: t.count, gross: t.cents / 100, outside: t.outside }
+      return { key: accountKey(a.channel, a.channelAccountId), name: a.name, count: t.count, gross: t.cents / 100, foreign: t.foreign, outside: t.outside }
     })
   const unknown = new Set(todayRows.filter((t) => !accs.some((a) => a.channel === t.channel && a.channelAccountId === t.channelAccountId)).map((t) => accountKey(t.channel, t.channelAccountId)))
   for (const key of unknown) {
     const t0 = todayRows.find((t) => accountKey(t.channel, t.channelAccountId) === key)!
     const t = ofAccount(t0.channel, t0.channelAccountId)
-    perAccount.push({ key, name: accountDisplayName(t0.channel, t0.channelAccountId), count: t.count, gross: t.cents / 100, outside: t.outside })
+    perAccount.push({ key, name: accountDisplayName(t0.channel, t0.channelAccountId), count: t.count, gross: t.cents / 100, foreign: t.foreign, outside: t.outside })
   }
   perAccount.sort((a, b) => b.count - a.count || a.name.localeCompare(b.name, 'pl'))
   const month = Array.from({ length: r.daysInMonth }, (_, i) => {
-    const t = sumRows(monthRows.filter((m) => Number(m.day) === i + 1))
-    return { day: i + 1, count: t.count, gross: t.cents / 100, future: i + 1 > r.today }
+    const t = sumRows(monthRows.filter((m) => Number(m.day) === i + 1), kursy)
+    return { day: i + 1, count: t.count, gross: t.cents / 100, foreign: t.foreign, future: i + 1 > r.today }
   })
-  const todaySum = sumRows(todayRows)
-  const monthSum = sumRows(monthRows)
+  const todaySum = sumRows(todayRows, kursy)
+  const monthSum = sumRows(monthRows, kursy)
   return {
     now,
     work: { toPack, shortageLines: shortageAgg, shortageLinesAll: shortageAll, shortageOrders, shortageOrdersAll, clarify, unpaid, invoiceFailed, wfirmaFix, overcommit },
-    today: { count: todaySum.count, gross: todaySum.cents / 100, outside: todaySum.outside, perAccount },
+    today: { count: todaySum.count, gross: todaySum.cents / 100, foreign: todaySum.foreign, outside: todaySum.outside, perAccount },
     month,
-    monthTotals: { count: monthSum.count, gross: monthSum.cents / 100, outside: monthSum.outside },
+    monthTotals: { count: monthSum.count, gross: monthSum.cents / 100, foreign: monthSum.foreign, outside: monthSum.outside },
     channels: accs.map((a) => {
       const h = health.find((x) => x.channel === a.channel && x.channelAccountId === a.channelAccountId)
       const p = polls.find((x) => x.channel === a.channel && x.channelAccountId === a.channelAccountId)

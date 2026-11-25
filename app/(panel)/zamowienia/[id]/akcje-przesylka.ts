@@ -3,13 +3,16 @@
 // adresu i punktu odbioru przed nadaniem. Używają ich karta zamówienia i stanowisko pakowania. Każda zaczyna od
 // requirePermission (sesja + uprawnienie, klient bazy firmy z sesji, RLS). Komunikaty bez danych klienta.
 import { revalidatePath } from 'next/cache'
+import { czyOdbiorOsobisty } from '@/lib/druk/etykieta-odbioru'
 import { zlecZPanelu } from '@/lib/druk/panel'
 import { BladDruku } from '@/lib/druk/zlecenia'
+import { powodBrakuAsystentaAdresu, propozycjaPodzialu, zatwierdzPodzial, type PropozycjaWidok } from '@/lib/klienci/adres-ai'
 import { BladPoprawki, daneDoPoprawki, poprawDostawe, poprawkaZFormularza, type PoprawkaDostawy } from '@/lib/klienci/poprawka'
 import { bramkaKarty } from '@/lib/karta/bramka'
 import { requirePermission } from '@/lib/panel/kontekst'
 import { RODZAJE_DODATKOWEJ } from '@/lib/wysylka/dodatkowa'
 import { anulujPrzesylke, bramkaDodatkowej, utworzDodatkowa, bramkaNadania, moznaPoprawicAdres, pobierzEtykiete, przesylkaZamowienia, rozstrzygnijRecznie, sprawdzPrzesylke, utworzPrzesylke, widokPrzesylki, type RozstrzygniecieReczne, type WidokPrzesylki } from '@/lib/wysylka/nadanie'
+import { ostrzezeniaDoPotwierdzenia } from '@/lib/wysylka/podglad'
 import { poprzedniaPrzesylka, type PoprzedniaPrzesylka } from '@/lib/wysylka/poprzednia'
 import { szukajPunktow, wolnoSzukacPunktow, type PunktZWyszukiwarki } from '@/lib/wysylka/punkt-inpost'
 import { InpostPunktyError, pobierzPunkty } from '@/lib/zrodla/inpost-punkty'
@@ -30,6 +33,13 @@ export interface StanNadania {
   mozeRozstrzygnac: boolean
   /** poprzednia przesyłka tej paczki anulowana albo oznaczona jako niepowstała (kto, kiedy). */
   poprzednia: PoprzedniaPrzesylka | null
+  /**
+   * „Podpowiedz podział adresu” na stanowisku przy nieudanej przesyłce; null = nie dotyczy (brak `klienci.dane`,
+   * przesyłka utworzona albo bez nieudanej próby). `powod` = przycisk nieaktywny (tryb konta, brak asystenta AI, limit).
+   */
+  podzialAdresu: { powod: string | null } | null
+  /** ostrzeżenia z podglądu do zaznaczenia przed „Utwórz przesyłkę” (bez przesyłki aktywnej: puste). */
+  doPotwierdzenia?: { kod: string; tekst: string }[]
 }
 
 /** Stan bloku przesyłki (karta i stanowisko); null = brak zamówienia. */
@@ -40,8 +50,13 @@ export async function stanNadania(orderId: string): Promise<StanNadania | null> 
   const b = await bramkaNadania(ctx.db, id)
   if (!b) return null
   const przesylka = await widokPrzesylki(ctx.db, id)
+  const moznaPoprawic = await moznaPoprawicAdres(ctx.db, id)
+  // powód liczony tylko przy nieudanej przesyłce i dla osób z pełnymi danymi klientów (bez pytania modelu)
+  const podzialAdresu = przesylka?.stan === 'BLAD' && moznaPoprawic && ctx.permissions.has('klienci.dane') ? { powod: (await trybKarty(ctx.db, id)) ?? (await powodBrakuAsystentaAdresu(ctx.db)) } : null
   // poprzednią przesyłkę komponent pokazuje tylko bez bieżącej, więc tylko wtedy ją liczymy
-  return { powod: b.powod, nieDotyczy: b.nieDotyczy, gabaryty: b.gabaryty, modul: b.modul, przesylka, moznaPoprawic: await moznaPoprawicAdres(ctx.db, id), mozeRozstrzygnac: ctx.permissions.has('przesylki.rozstrzyganie'), poprzednia: przesylka ? null : await poprzedniaPrzesylka(ctx.db, id) }
+  const aktywna = !!przesylka && przesylka.stan !== 'BLAD' && przesylka.stan !== 'ANULOWANA'
+  const doPotwierdzenia = aktywna || b.nieDotyczy ? [] : await ostrzezeniaDoPotwierdzenia(ctx.db, id)
+  return { powod: b.powod, nieDotyczy: b.nieDotyczy, gabaryty: b.gabaryty, modul: b.modul, przesylka, moznaPoprawic, mozeRozstrzygnac: ctx.permissions.has('przesylki.rozstrzyganie'), poprzednia: przesylka ? null : await poprzedniaPrzesylka(ctx.db, id), podzialAdresu, doPotwierdzenia }
 }
 
 export interface WynikPrzyciskuPrzesylki {
@@ -51,19 +66,34 @@ export interface WynikPrzyciskuPrzesylki {
   doPotwierdzenia?: { kod: string; tekst: string }[]
   /** Zlecenie druku etykiety, gdy podano stanowisko. */
   druk?: { id: string; stanowisko: string } | null
+  /** poprawka adresu — pole formularza, przy którym stoi błąd (`blad`); null = błąd całego formularza. */
+  pole?: string | null
+  /** poprawka adresu — wartości po udanym zapisie (formularz pokazuje je bez odświeżania karty). */
+  zapisane?: PoprawkaDostawy
+}
+
+/** Wartości po zapisie tak, jak je odda `daneDoPoprawki`: bez ulicy, kodu i miasta poprawka czyści adres (`rekordPoPoprawce`). */
+function poZapisie(p: PoprawkaDostawy): PoprawkaDostawy {
+  return p.ulica || p.kodPocztowy || p.miasto ? p : { ...p, ulica: null, numerDomu: null, numerLokalu: null, kodPocztowy: null, miasto: null }
 }
 
 /**
  * „Utwórz przesyłkę”: host przesyłek (bramki, jedna przesyłka na paczkę), potem — gdy podano stanowisko — druk etykiety
  * na nim (klucz zlecenia od przesyłki: podwójne kliknięcie = jedno zlecenie).
  */
-export async function utworzPrzesylkeAkcja(orderId: string, gabaryt: string | null, potwierdzone: string[], stanowisko: string | null): Promise<WynikPrzyciskuPrzesylki> {
+// `teksty` to zaznaczone ostrzeżenia z tekstem, który człowiek widział; kod liczy się tylko przy
+// tym samym tekście w świeżym liczeniu. Bez listy (automat stanowiska) same kody, jak dotąd.
+export async function utworzPrzesylkeAkcja(orderId: string, gabaryt: string | null, potwierdzone: string[], stanowisko: string | null, teksty?: { kod: string; tekst: string }[]): Promise<WynikPrzyciskuPrzesylki> {
   const ctx = await requirePermission('pakowanie.stanowisko')
   const id = String(orderId ?? '')
   if (!ID_RE.test(id)) return { blad: 'Nie ma takiego zamówienia.', info: null }
   const g = gabaryt && KOD_RE.test(String(gabaryt)) ? String(gabaryt) : null
   const pot = Array.isArray(potwierdzone) ? potwierdzone.filter((k) => typeof k === 'string' && KOD_RE.test(k)).slice(0, 20) : []
-  const w = await utworzPrzesylke(ctx.db, { orderId: id, gabaryt: g, potwierdzoneOstrzezenia: pot, userId: ctx.user.id })
+  const tek = Array.isArray(teksty)
+    ? Object.fromEntries(teksty.filter((t) => !!t && typeof t.kod === 'string' && KOD_RE.test(t.kod) && typeof t.tekst === 'string' && t.tekst.length <= 2000).slice(0, 20).map((t) => [t.kod, t.tekst]))
+    : undefined
+  // magazynier czeka na wynik: przy wyczerpanym limicie tempa przewoźnika zapis chwilę czeka na żeton (bez drugiej paczki)
+  const w = await utworzPrzesylke(ctx.db, { orderId: id, gabaryt: g, potwierdzoneOstrzezenia: pot, ...(tek ? { potwierdzoneTeksty: tek } : {}), userId: ctx.user.id }, { interaktywne: true })
   revalidatePath(`/zamowienia/${id}`)
   if (w.wynik === 'ODMOWA') return { blad: w.powod, info: null, ...(w.doPotwierdzenia ? { doPotwierdzenia: w.doPotwierdzenia } : {}) }
   if (w.wynik === 'BLAD') return { blad: `Przewoźnik nie utworzył przesyłki: ${w.powod}`, info: null }
@@ -82,6 +112,25 @@ export async function utworzPrzesylkeAkcja(orderId: string, gabaryt: string | nu
     }
   }
   return { blad: null, info, druk }
+}
+
+/**
+ * po „Spakowano” przy odbiorze osobistym etykieta odbioru (do naklejenia na paczkę) na stanowisku, tym samym
+ * zleceniem druku co etykieta kuriera. Klucz od zamówienia: podwójne wywołanie = jedno zlecenie (ponowny druk: przycisk
+ * na karcie zamówienia). Null = zamówienie bez odbioru osobistego (stanowisko nic nie pokazuje).
+ */
+export async function etykietaOdbioruPoSpakowaniu(orderId: string, stanowisko: string | null): Promise<WynikPrzyciskuPrzesylki | null> {
+  const ctx = await requirePermission('pakowanie.stanowisko')
+  const id = String(orderId ?? '')
+  if (!ID_RE.test(id) || !(await czyOdbiorOsobisty(ctx.db, id))) return null
+  if (!stanowisko || !ID_RE.test(String(stanowisko))) return { blad: 'nie wybrano stanowiska druku', info: null }
+  try {
+    const z = await zlecZPanelu(ctx.db, { userId: ctx.user.id, nazwa: ctx.user.name }, { typ: 'etykieta', ids: [id], stationId: String(stanowisko), klucz: `odbior-${id}-auto` })
+    return { blad: null, info: null, druk: { id: z.zlecenie.id, stanowisko: z.zlecenie.cel } }
+  } catch (e) {
+    if (e instanceof BladDruku) return { blad: e.message, info: null }
+    throw e
+  }
 }
 
 export async function sprawdzPrzesylkeAkcja(orderId: string, shipmentId: string): Promise<WynikPrzyciskuPrzesylki> {
@@ -115,7 +164,7 @@ export async function pobierzEtykieteAkcja(orderId: string, shipmentId: string):
   const id = String(orderId ?? '')
   const sid = String(shipmentId ?? '')
   if (!ID_RE.test(id) || !ID_RE.test(sid) || !(await przesylkaZamowienia(ctx.db, sid, id))) return { blad: 'Nie ma takiej przesyłki.', info: null }
-  const r = await pobierzEtykiete(ctx.db, sid, { actorId: `user:${ctx.user.id}` })
+  const r = await pobierzEtykiete(ctx.db, sid, { actorId: `user:${ctx.user.id}`, interaktywne: true })
   revalidatePath(`/zamowienia/${id}`)
   return r.blad ? { blad: r.blad, info: null } : { blad: null, info: 'Etykieta pobrana od przewoźnika.' }
 }
@@ -144,17 +193,66 @@ export async function poprawAdresAkcja(orderId: string, form: FormData): Promise
   if (b) return { blad: b, info: null }
   if (!(await moznaPoprawicAdres(ctx.db, id))) return { blad: 'Przesyłka już jest utworzona: adres zmienia się w panelu przewoźnika, nie tutaj.', info: null }
   try {
-    const w = await poprawDostawe(ctx.db, id, poprawkaZFormularza(form), { actorId: ctx.user.id, zrodloPunktu: form.get('punkt_z_wyszukiwarki') === 'tak' ? 'WYSZUKIWARKA' : 'FORMULARZ' })
+    const p = poprawkaZFormularza(form)
+    const w = await poprawDostawe(ctx.db, id, p, { actorId: ctx.user.id, zrodloPunktu: form.get('punkt_z_wyszukiwarki') === 'tak' ? 'WYSZUKIWARKA' : 'FORMULARZ' })
     revalidatePath(`/zamowienia/${id}`)
     if (w.wynik === 'ODMOWA') return { blad: w.powod, info: null }
-    if (w.wynik === 'BEZ_ZMIAN') return { blad: null, info: 'Bez zmian.' }
-    return { blad: null, info: 'Adres poprawiony. Zmiana jest w dzienniku podglądów danych klientów.' }
+    // formularz po zapisie pokazuje zapisane wartości (bez drugiego odczytu = bez drugiego wpisu w dzienniku podglądów)
+    if (w.wynik === 'BEZ_ZMIAN') return { blad: null, info: 'Zapisano: adres i punkt były już takie same.', zapisane: poZapisie(p) }
+    return { blad: null, info: 'Zapisano. Adres i punkt odbioru poprawione, zmiana jest w dzienniku podglądów danych klientów.', zapisane: poZapisie(p) }
   } catch (e) {
-    if (e instanceof BladPoprawki) return { blad: e.message, info: null }
+    if (e instanceof BladPoprawki) return { blad: e.message, info: null, pole: e.pole }
     if (e instanceof Error && e.name === 'BrakKluczaSkrotow') return { blad: 'Dane klienta niedostępne: brak klucza skrótów (CUSTOMER_LOOKUP_KEY)', info: null }
     if (e instanceof Error && /BladSzyfruKlienta|BrakKluczaKlientow/.test(e.name)) return { blad: 'Dane klienta niedostępne: brak klucza szyfrowania', info: null }
     throw e
   }
+}
+
+/** wynik „Podpowiedz podział adresu” i „Zatwierdź” dla ekranu (karta zamówienia, stanowisko pakowania). */
+export type WynikPodzialuAdresu =
+  | { stan: 'PROPOZYCJA'; linia: string; propozycja: PropozycjaWidok }
+  | { stan: 'ZAPISANO'; komunikat: string }
+  | { stan: 'ODRZUCONA' | 'NIEDOSTEPNE' | 'NIE_DOTYCZY' | 'BLAD'; komunikat: string }
+
+const NIE_DOTYCZY_PODZIAL = 'Ten adres nie wymaga podziału: numer domu jest już w osobnym polu, linia rozdziela się sama albo przesyłka idzie do punktu odbioru.'
+
+/** Bramki jak przy poprawce adresu: zamówienie, tryb pracy konta, przesyłka jeszcze nieutworzona; null = można. */
+async function bramkaPodzialu(db: Parameters<typeof bramkaKarty>[0], id: string): Promise<string | null> {
+  if (!ID_RE.test(id)) return 'Nie ma takiego zamówienia.'
+  const b = await trybKarty(db, id)
+  if (b) return b
+  if (!(await moznaPoprawicAdres(db, id))) return 'Przesyłka już jest utworzona: adres zmienia się w panelu przewoźnika, nie tutaj.'
+  return null
+}
+
+/**
+ * „Podpowiedź podział adresu” — linia ulicy z numerem idzie do asystenta AI firmy (lib/klienci/adres-ai.ts),
+ * wynik raz na linię adresu; nic nie zapisuje w danych klienta. Odczyt linii = wpis w dzienniku podglądów (cel POPRAWKA).
+ */
+export async function podpowiedzPodzialAkcja(orderId: string): Promise<WynikPodzialuAdresu> {
+  const ctx = await requirePermission('klienci.dane')
+  const id = String(orderId ?? '')
+  const b = await bramkaPodzialu(ctx.db, id)
+  if (b) return { stan: 'BLAD', komunikat: b }
+  const w = await propozycjaPodzialu(ctx.db, id, { actorId: ctx.user.id })
+  if (w.stan === 'PROPOZYCJA') return { stan: 'PROPOZYCJA', linia: w.linia, propozycja: w.propozycja }
+  if (w.stan === 'ODRZUCONA') return { stan: 'ODRZUCONA', komunikat: `Asystent nie podał pewnego podziału (${w.powod}). Popraw adres ręcznie w „Popraw adres albo punkt odbioru”.` }
+  if (w.stan === 'NIEDOSTEPNE') return { stan: 'NIEDOSTEPNE', komunikat: w.powod }
+  return { stan: 'NIE_DOTYCZY', komunikat: NIE_DOTYCZY_PODZIAL }
+}
+
+/** „Zatwierdź” podział z propozycji — zwykła poprawka adresu z wpisem w historii zamówienia (jedna transakcja). */
+export async function zatwierdzPodzialAkcja(orderId: string): Promise<WynikPodzialuAdresu> {
+  const ctx = await requirePermission('klienci.dane')
+  const id = String(orderId ?? '')
+  const b = await bramkaPodzialu(ctx.db, id)
+  if (b) return { stan: 'BLAD', komunikat: b }
+  const w = await zatwierdzPodzial(ctx.db, id, { actorId: ctx.user.id })
+  revalidatePath(`/zamowienia/${id}`)
+  if (w.wynik === 'ODMOWA') return { stan: 'BLAD', komunikat: w.powod }
+  const p = w.propozycja
+  const opis = p ? `ulica „${p.ulica}”, numer domu ${p.numerDomu}${p.numerLokalu ? `, lokal ${p.numerLokalu}` : ''}` : 'podział adresu'
+  return { stan: 'ZAPISANO', komunikat: `Zapisano: ${opis}. Zmiana jest w historii zamówienia i w dzienniku podglądów danych klientów. Możesz utworzyć przesyłkę.` }
 }
 
 /**

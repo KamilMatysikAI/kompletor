@@ -353,7 +353,11 @@ type LinkResult = { state: StanOferty; note: string | null; created: boolean; pr
 
 async function linkBySku(db: PrismaClient, ref: KontoRef, row: ChannelOfferRow, sku: string, canCreate: boolean, opts: OfertyOpts, now: Date): Promise<LinkResult> {
   return db.$transaction(async (tx) => {
-    let product = await tx.product.findFirst({ where: { sku }, select: { id: true, unit: true } })
+    const jest = await tx.product.findFirst({ where: { sku }, select: { id: true, unit: true, active: true } })
+    // produkt wyłączony w Kompletorze nie dostaje nowej oferty z „Pobierz oferty” (stan szedłby do sklepu,
+    // a zamówienia na wyłączony produkt); oferta zostaje do przypisania, produkt włącza się na karcie.
+    if (jest && !jest.active) return { state: 'BEZ_PRODUKTU', note: `produkt o SKU „${sku}” jest wyłączony: włącz go na karcie produktu albo przypisz ofertę innemu`, created: false, productId: null, offer: null }
+    let product = jest ? { id: jest.id, unit: jest.unit } : null
     let created = false
     if (!product) {
       const similar = await tx.product.count({ where: { sku: { equals: sku, mode: 'insensitive' } } })
@@ -435,8 +439,10 @@ function snapshot(o: ChannelOffer | null) {
 export async function przypiszOferte(db: PrismaClient, ref: KontoRef, p: Przypisanie, opts: { actorId: string; now?: Date; expected?: OczekiwanaOferta }): Promise<{ remapped: number; failed: number }> {
   if (!OFFER_ID_RE.test(p.externalId)) throw new KontoError('Zły numer oferty')
   if (!Number.isInteger(p.qtyBasePerOffer) || p.qtyBasePerOffer < 1 || p.qtyBasePerOffer > 100_000) throw new KontoError('Liczba sztuk na ofertę musi być liczbą całkowitą od 1')
-  const product = await db.product.findFirst({ where: { id: p.productId, active: true }, select: { id: true, kind: true } })
+  const product = await db.product.findFirst({ where: { id: p.productId }, select: { id: true, kind: true, active: true } })
   if (!product) throw new KontoError('Nie ma takiego produktu')
+  // wyłączony produkt nie dostaje oferty — jasny powód zamiast „Nie ma takiego produktu”.
+  if (!product.active) throw new KontoError('Produkt jest wyłączony. Włącz go, żeby powiązać ofertę.')
   await db.$transaction(async (tx) => {
     const before = await tx.channelOffer.findFirst({ where: { channel: ref.channel, channelAccountId: ref.channelAccountId, externalId: p.externalId } })
     if (opts.expected !== undefined) {

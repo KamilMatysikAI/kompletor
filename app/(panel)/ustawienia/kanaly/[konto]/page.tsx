@@ -15,7 +15,7 @@ import { kontoEkran, szukajProduktow } from '@/lib/kanaly/dane'
 import { firmaMaWfirme, firmaPrzechodziZBlWPanelu } from '@/lib/kanaly/firma'
 import { kodKonta, parseKodKonta } from '@/lib/kanaly/konta'
 import { etykietaPola, nazwaPlatformy, POLA_POZA_FORMULARZEM } from '@/lib/kanaly/platformy'
-import { blokadaInstancji, mozna, prowadziZamowienia, trybKonta, warunkiPracy, warunkiZapisu } from '@/lib/kanaly/tryb'
+import { blokadaInstancji, kontoTylkoApi, mozna, prowadziZamowienia, trybKonta, warunkiPracy, warunkiZapisu } from '@/lib/kanaly/tryb'
 import { type PowrotWoo, powrotWoo, stanWoo, type StanWoo } from '@/lib/kanaly/woo-autoryzacja'
 import { type EkranZapisu, ekranZapisu } from '@/lib/kanaly/zapis-host'
 import { int, when } from '@/lib/panel/format'
@@ -147,9 +147,11 @@ export default async function KontoKanalu({ params, searchParams }: Props) {
   // wyłączone po błędach wygrywa z resztą stanów (host nic nie woła, zadania czekają)
   const stan = wylaczone ? { ton: 'blad' as const, tekst: 'Wyłączone po błędach', opis: 'Kompletor przestał wołać to konto po serii błędów połączenia. Zadania czekają.' } : stanKonta(k, zapis, allegro)
   const tryb = trybKonta(k)
-  const warunki = warunkiPracy({ active: k.active, testOk: k.testOk, offers: k.offers, manifest: e.manifest, config: e.config, firmaZBl }, process.env)
+  // konto zasilane tylko przez API (EasyTools) nie ma połączenia do sprawdzenia ani sklepu do zapisu
+  const tylkoApi = kontoTylkoApi(ref.channel)
+  const warunki = warunkiPracy({ active: k.active, testOk: k.testOk, offers: k.offers, manifest: e.manifest, config: e.config, firmaZBl, tylkoApi }, process.env)
   // te same warunki dla pracy bez stanów (inne ostrzeżenia: stany zostają w dotychczasowym systemie)
-  const warunkiBezStanow = warunkiPracy({ active: k.active, testOk: k.testOk, offers: k.offers, manifest: e.manifest, config: e.config, firmaZBl, bezStanow: true }, process.env)
+  const warunkiBezStanow = warunkiPracy({ active: k.active, testOk: k.testOk, offers: k.offers, manifest: e.manifest, config: e.config, firmaZBl, bezStanow: true, tylkoApi }, process.env)
   const kto = firmaZBl ? 'BaseLinker' : 'dotychczasowy system'
   const warunkiZ = warunkiZapisu({ active: k.active, manifest: e.manifest, config: e.config, tryb, sekrety: new Set(e.sekrety.filter((x) => !!x.savedAt).map((x) => x.field.name)), zEnv: !!e.envPrefix, blokadaInstancji: blokadaInstancji(process.env, firmaZBl) })
   // tryb konta i wyłącznik zapisu wymagają uprawnienia „Zmiana trybu kanału”
@@ -173,9 +175,9 @@ export default async function KontoKanalu({ params, searchParams }: Props) {
   const kluczeGotowe = allegro ? allegro.polaczone && !allegro.odrzucone : e.sekrety.every((s) => !s.field.required || !!s.savedAt) || !!e.envPrefix
   const kroki = [
     { nazwa: allegro ? 'Połącz z Allegro' : woo ? 'Połącz ze sklepem' : 'Klucze', gotowe: kluczeGotowe, gdzie: allegro ? '#allegro' : woo ? '#woo' : '#ustawienia' },
-    { nazwa: 'Sprawdź połączenie', gotowe: k.testOk === true, gdzie: '#polaczenie' },
+    { nazwa: 'Sprawdź połączenie', gotowe: tylkoApi || k.testOk === true, gdzie: '#polaczenie' },
     { nazwa: 'Pobierz oferty', gotowe: !e.canReadOffers || !!e.ostatniPrzebieg, gdzie: '#oferty' },
-    { nazwa: 'Przypisz produkty', gotowe: k.offers > 0 && e.doPrzypisania.length === 0, gdzie: '#przypisz' },
+    { nazwa: 'Przypisz produkty', gotowe: tylkoApi || (k.offers > 0 && e.doPrzypisania.length === 0), gdzie: '#przypisz' },
     ...(trybDostepny ? [{ nazwa: 'Włącz tryb pracy', gotowe: prowadziZamowienia(tryb), gdzie: '#stan' }] : []),
   ]
   const teraz = kroki.findIndex((x) => !x.gotowe)

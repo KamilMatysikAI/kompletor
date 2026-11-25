@@ -8,7 +8,7 @@
 //  4. izolacja dwóch firm (ten sam e-mail i ten sam numer w obu);
 //  5. dziennik podglądów: wpis na każde zapytanie, autor = klucz, bez wartości kontaktu i numeru;
 //  6. limit zapytań na klucz, błędy wejścia bez echa wartości, brak klucza skrótów = 503;
-//  7. historia statusów, przesyłki, faktury;
+//  7. historia statusów, przesyłki ze stanem paczki (stały tekst, bez opisu przewoźnika), faktury;
 //  8. konta klucza: klucz widzi wyłącznie zamówienia swoich kont (po stronie serwera), `konta` z żądania tylko zawęża;
 //  9. klucz obsługi nie dostaje serwera MCP (już przy wejściu).
 // Dane wyłącznie fikcyjne (example.test, numery TEST-*), bez sieci.
@@ -17,8 +17,7 @@ import { NextRequest } from 'next/server'
 import { Prisma, type MemberRole, type PrismaClient } from '@prisma/client'
 import { createUserWithHash, grantMembership } from '@/lib/auth/sesje'
 import { createApiKey, listApiKeys } from '@/lib/api/zarzadzanie'
-import { FAKTURA_FIELDS, HISTORIA_FIELDS, OBSLUGA_LINE_FIELDS, OBSLUGA_ORDER_FIELDS, OBSLUGA_PER_MINUTE, resetObslugaLimiters } from '@/lib/api/obsluga'
-import { SHIPMENT_FIELDS } from '@/lib/api/zamowienia'
+import { FAKTURA_FIELDS, HISTORIA_FIELDS, OBSLUGA_LINE_FIELDS, OBSLUGA_ORDER_FIELDS, OBSLUGA_PER_MINUTE, resetObslugaLimiters, SHIPMENT_FIELDS } from '@/lib/api/obsluga'
 import { CEL_OBSLUGI } from '@/lib/klienci/obsluga'
 import { dziennikPodgladow, PODGLAD_AUDIT } from '@/lib/klienci/odczyt'
 import { rekordZOdbiorcy } from '@/lib/klienci/rekord'
@@ -228,7 +227,20 @@ describe('zamówienie po numerze z kontaktem', () => {
     await ev('ZMIANA_RANGI', { z: 1, na: 2 }, '2026-10-15T09:40:00Z') // liczby (ranga kanału), nie status
     await ev('WYSLANE', { z: 'ZBIERANIE', na: 'WYSLANE', nadanie: 'TESTNR0001' }, '2026-10-15T10:00:00Z')
     await sys.order.update({ where: { id: z }, data: { status: 'WYSLANE', carrier: 'DPD' } })
-    await sys.shipment.create({ data: { organizationId: ORG_A, orderId: z, packageNo: 1, reference: 'ref-obs-1', adapterKey: 'dpd', carrier: 'DPD', state: 'UTWORZONA', trackingNumber: 'TESTNR0001', trackState: 'W_DRODZE', trackedAt: new Date('2026-10-15T12:00:00Z') } })
+    const teraz = new Date()
+    const s1 = await sys.shipment.create({ data: { organizationId: ORG_A, orderId: z, packageNo: 1, reference: 'ref-obs-1', adapterKey: 'dpd', carrier: 'DPD', state: 'UTWORZONA', trackingNumber: 'TESTNR0001', carrierStatus: 'KOD-PRZEWOZNIKA-1', trackedAt: teraz, createdAt: new Date('2026-10-15T10:00:00Z') } })
+    const s2 = await sys.shipment.create({ data: { organizationId: ORG_A, orderId: z, packageNo: 2, reference: 'ref-obs-2', adapterKey: 'inpost', carrier: 'PACZKOMATY', state: 'UTWORZONA', trackingNumber: 'TESTNR0002', trackedAt: new Date('2026-10-15T11:00:00Z'), createdAt: new Date('2026-10-15T10:05:00Z') } })
+    await sys.shipment.create({ data: { organizationId: ORG_A, orderId: z, packageNo: 3, reference: 'ref-obs-3', adapterKey: 'dpd', carrier: 'DPD', state: 'ANULOWANA', trackingNumber: 'TESTNR-ANUL' } })
+    await sys.shipment.create({ data: { organizationId: ORG_A, orderId: z, packageNo: 4, reference: 'ref-obs-4', adapterKey: 'dpd', carrier: 'DPD', state: 'UTWORZONA' } })
+    // odczyt niedawny, ale bez żadnego zdarzenia stanu (nieudana próba u przewoźnika też podbija trackedAt)
+    await sys.shipment.create({ data: { organizationId: ORG_A, orderId: z, packageNo: 5, reference: 'ref-obs-5', adapterKey: 'dpd', carrier: 'DPD', state: 'UTWORZONA', trackingNumber: 'TESTNR0005', trackedAt: teraz } })
+    // odczyt niedawny, zamówienie wysłane, a ostatni stan paczki dalej „przed nadaniem”
+    const s6 = await sys.shipment.create({ data: { organizationId: ORG_A, orderId: z, packageNo: 6, reference: 'ref-obs-6', adapterKey: 'inpost', carrier: 'PACZKOMATY', state: 'UTWORZONA', trackingNumber: 'TESTNR0006', trackedAt: teraz } })
+    // stany paczek ze śledzenia: starszy i nowszy dla s1 (wygrywa nowszy), s2 przed nadaniem; opis przewoźnika z danymi odbiorcy nie wychodzi
+    await ev('PRZESYLKA_STATUS', { przesylka: s1.id, status: 'KOD-PRZEWOZNIKA-0', stan: 'PRZED_NADANIEM' }, '2026-10-15T11:00:00Z')
+    await ev('PRZESYLKA_STATUS', { przesylka: s1.id, status: 'KOD-PRZEWOZNIKA-1', stan: 'PRZEKAZANA', opis: 'Odebrał Odbiorca-Tajny, ul. Tajna 1' }, '2026-10-15T15:45:00Z')
+    await ev('PRZESYLKA_STATUS', { przesylka: s2.id, status: 'KOD-PRZEWOZNIKA-2', stan: 'PRZED_NADANIEM' }, '2026-10-15T11:00:00Z')
+    await ev('PRZESYLKA_STATUS', { przesylka: s6.id, status: 'KOD-PRZEWOZNIKA-6', stan: 'PRZED_NADANIEM' }, '2026-10-15T11:00:00Z')
     await sys.invoiceAttempt.create({ data: { organizationId: ORG_A, orderId: z, packageNo: 1, attemptNo: 1, idExternal: `${z}/1/1`, state: 'ISSUED', number: 'FV 1/10/2026' } })
     await sys.invoiceAttempt.create({ data: { organizationId: ORG_A, orderId: z, packageNo: 1, attemptNo: 2, idExternal: `${z}/1/2`, state: 'FAILED', number: 'FV-NIEUDANA' } })
     const { token } = await kluczObslugi(a, ORG_A)
@@ -244,12 +256,30 @@ describe('zamówienie po numerze z kontaktem', () => {
     ])
     for (const h of o.historia as Record<string, unknown>[]) expect(Object.keys(h)).toEqual([...HISTORIA_FIELDS])
     const p = o.przesylki as Record<string, unknown>[]
-    expect(p).toHaveLength(1)
-    expect(Object.keys(p[0]!)).toEqual([...SHIPMENT_FIELDS])
-    expect(p[0]).toMatchObject({ przewoznik: 'DPD', numerNadania: 'TESTNR0001', stan: 'W_DRODZE', rodzaj: 'GLOWNA' })
+    expect(p).toHaveLength(5) // anulowana pominięta
+    for (const x of p) expect(Object.keys(x)).toEqual([...SHIPMENT_FIELDS])
+    expect(p[0]).toEqual({
+      przewoznik: 'DPD',
+      numerNadania: 'TESTNR0001',
+      stan: 'PRZEKAZANA',
+      stanNazwa: 'U przewoźnika, w drodze',
+      stanOd: '2026-10-15T15:45:00.000Z',
+      sprawdzono: teraz.toISOString(),
+      sledzona: true,
+      linkSledzenia: 'https://tracktrace.dpd.com.pl/parcelDetails?typ=1&p1=TESTNR0001',
+      rodzaj: 'GLOWNA',
+    })
+    // sprawdzana dawno = Kompletor jej już nie odświeża
+    expect(p[1]).toMatchObject({ przewoznik: 'PACZKOMATY', numerNadania: 'TESTNR0002', stan: 'UTWORZONA', stanNazwa: 'Etykieta utworzona, paczka czeka na kuriera', stanOd: '2026-10-15T11:00:00.000Z', sledzona: false })
+    // bez odczytu u przewoźnika: stan pusty
+    expect(p[2]).toMatchObject({ przewoznik: 'DPD', numerNadania: null, stan: null, stanNazwa: null, stanOd: null, sprawdzono: null, sledzona: false, linkSledzenia: null })
+    // świeża próba odczytu bez zdarzenia stanu: nie śledzona (stan nieznany, nie świeży)
+    expect(p[3]).toMatchObject({ numerNadania: 'TESTNR0005', stan: null, sprawdzono: teraz.toISOString(), sledzona: false })
+    // zamówienie wysłane, paczka dalej przed nadaniem: stan nie jest pewny
+    expect(p[4]).toMatchObject({ numerNadania: 'TESTNR0006', stan: 'UTWORZONA', sprawdzono: teraz.toISOString(), sledzona: false })
     expect(o.faktury).toEqual([{ numer: 'FV 1/10/2026', wystawiono: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/) }])
     for (const f of o.faktury as Record<string, unknown>[]) expect(Object.keys(f)).toEqual([...FAKTURA_FIELDS])
-    for (const zakazane of ['osoba-tajna', 'notatka', 'FV-NIEUDANA', 'wydruk']) expect(text).not.toContain(zakazane)
+    for (const zakazane of ['osoba-tajna', 'notatka', 'FV-NIEUDANA', 'wydruk', 'Odbiorca-Tajny', 'Tajna 1', 'KOD-PRZEWOZNIKA', 'TESTNR-ANUL']) expect(text).not.toContain(zakazane)
   })
 })
 

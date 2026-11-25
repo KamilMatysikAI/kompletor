@@ -31,6 +31,7 @@ import { organizationIdOf } from '../db'
 import { parseUstawieniaDokumentow, programFaktur, statusyMomentu } from '../dokumenty/ustawienia'
 import { toWarsaw } from '../rdzen/kalendarz'
 import { advisoryLock, runTx } from '../rdzen/stan'
+import { blokadaFakturyWaluta } from '../rdzen/waluta'
 import { zrodloStanu } from '../rdzen/zrodlo-stanu'
 import { resolveSecrets, type SecretSource } from '../sekrety'
 import type { FetchLike } from '../zrodla/http'
@@ -199,6 +200,13 @@ export async function wyslijDoKsef(db: Db, draftId: string, deps: ZaleznosciWysy
   const d0 = await db.ksefInvoiceDraft.findUnique({ where: { id: draftId } })
   if (!d0) return { wynik: 'odmowa', powod: 'Nie ma takiej faktury.' }
   if (d0.status === 'PRZYJETA') return { wynik: 'przyjeta', numer: d0.numer!, ksefNumer: d0.ksefNumer }
+  // faktura (nie korekta) zamówienia w obcej walucie nie wychodzi, zanim przydzielimy numer z serii (szkic
+  // sprzed bezpiecznika waluty nie spala numeru). Korekta zostaje: dotyczy faktury już przyjętej w KSeF.
+  if (d0.rodzaj !== 'KOR') {
+    const o = await db.order.findUnique({ where: { id: d0.orderId }, select: { id: true, channel: true, channelAccountId: true, externalId: true, parentOrderId: true } })
+    const waluta = o ? await blokadaFakturyWaluta(db, o) : null
+    if (waluta) return { wynik: 'odmowa', powod: waluta.powod }
+  }
   const bramka = await bramkaDla(db, d0.orderId, env)
   if (!bramka.dozwolona) return { wynik: 'odmowa', powod: bramka.powod }
   const cfg = parseKonfiguracjaKsef((await db.organization.findFirst({ select: { settings: true } }))?.settings ?? null)

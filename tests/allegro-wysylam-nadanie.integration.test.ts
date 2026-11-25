@@ -285,13 +285,19 @@ describe('śledzenie przesyłki Wysyłam z Allegro w automacie', () => {
     const przesylkaAllegro = fake.wys.shipments.get(s.externalRef!)!
     przesylkaAllegro['carrier'] = 'ALLEGRO'
     const t = (h: number) => ({ ...deps(), now: () => new Date(T0.getTime() + h * 3600_000) })
-    // bez włączenia w ustawieniach firmy nowy moduł nie jest pytany
-    expect(await sledzeniePrzesylek(db, t(3))).toMatchObject({ sprawdzone: 0, bledy: [] })
+    // Wysyłam z Allegro jest śledzony domyślnie (jak na produkcji od 22.11.2026, SLEDZENIE_DOMYSLNIE_WLACZONE);
+    // jawnie wyłączony w ustawieniach firmy nie jest pytany: zero przesyłek sprawdzonych i zero żądań do Allegro
+    await zapiszSledzeniePrzewoznikow(db, { [ALLEGRO_WYSYLAM_ZAPIS_KEY]: false }, [ALLEGRO_WYSYLAM_ZAPIS_KEY], 'u-admin')
+    const zadanPrzedWylaczonym = fake.requests.length
+    expect(await sledzeniePrzesylek(db, t(3))).toMatchObject({ sprawdzone: 0, przeniesione: 0, bledy: [] })
+    expect(fake.requests.length).toBe(zadanPrzedWylaczonym)
     await zapiszSledzeniePrzewoznikow(db, { [ALLEGRO_WYSYLAM_ZAPIS_KEY]: true }, [ALLEGRO_WYSYLAM_ZAPIS_KEY], 'u-admin')
-    fake.wys.tracking.set('ALLEGRO/AL000111222PL', [{ code: 'PENDING', occurredAt: '2026-10-15T09:00:00Z' }])
+    // klucz atrapy `carrierId:waybill` (tests/allegro-wysylam-atrapa.ts); historia naprawdę odczytana, nie pusta
+    fake.wys.tracking.set('ALLEGRO:AL000111222PL', [{ code: 'PENDING', occurredAt: '2026-10-15T09:00:00Z' }])
     expect(await sledzeniePrzesylek(db, t(3))).toMatchObject({ sprawdzone: 1, przeniesione: 0, bledy: [] })
     expect((await db.order.findUniqueOrThrow({ where: { id } })).status).toBe('DO_WYSLANIA')
-    fake.wys.tracking.set('ALLEGRO/AL000111222PL', [
+    expect((await db.shipment.findUniqueOrThrow({ where: { id: s.id } })).carrierStatus).toBe('PENDING')
+    fake.wys.tracking.set('ALLEGRO:AL000111222PL', [
       { code: 'PENDING', occurredAt: '2026-10-15T09:00:00Z' },
       { code: 'IN_TRANSIT', occurredAt: '2026-10-15T12:00:00Z' },
     ])

@@ -12,10 +12,11 @@ import { LIMIT_SPRAW, przeprowadzkaPanel, RODZAJ_SPRAWY } from '@/lib/przeprowad
 import { powodDlaEkranu } from '@/lib/przeprowadzka/powody-ekran'
 import { katalogFirmy, kontaWPracy, LIMIT_POZYCJI, MAX_TOKEN_BL, mapaFirmy, maTokenBl, odmowaKluczaWPracy, stanPanelu, type Streszczenie } from '@/lib/przeprowadzka/z-panelu'
 import { odmowaCofnieciaWPracy, stanZakonczenia } from '@/lib/przeprowadzka/zakonczenie'
-import { Baner, Karta, ListaOpisowa, NaglowekStrony, Odznaka, StatusFirmy, PoleHasla, PustyStan, Przycisk, PrzyciskPotwierdz, Wybor, Zaawansowane } from '@/app/ui'
+import { Baner, Karta, ListaOpisowa, NaglowekStrony, Odznaka, StatusFirmy, PoleHasla, PoleTekstowe, Przelacznik, PustyStan, Przycisk, PrzyciskPotwierdz, Wybor, Zaawansowane } from '@/app/ui'
+import { statusBlFirmy } from '@/lib/kanaly/status-bl'
 import { Odswiezanie } from '../kanaly/odswiezanie'
 import { ToastZAdresu } from '../kanaly/toast-z-adresu'
-import { cofnijZakonczeniePrzejscia, uruchomImport, uruchomProbe, usunKluczBl, zakonczPrzejscieZBl, zapiszDecyzje, zapiszKluczBl } from './akcje'
+import { cofnijZakonczeniePrzejscia, uruchomImport, uruchomProbe, usunKluczBl, zakonczPrzejscieZBl, zapiszDecyzje, zapiszKluczBl, zapiszStatusBlFirmy } from './akcje'
 import './przeprowadzka.css'
 
 export const metadata = { title: 'Przeprowadzka z BaseLinkera' }
@@ -261,7 +262,7 @@ function PobierzRaport({ id, tekst }: { id: string; tekst: string }) {
 export default async function Przeprowadzka({ searchParams }: Props) {
   const ctx = await requirePermission('ustawienia')
   const sp = await searchParams
-  const [d, token, stan, mapa, praca, katalog, koniec] = await Promise.all([
+  const [d, token, stan, mapa, praca, katalog, koniec, statusBl] = await Promise.all([
     przeprowadzkaPanel(ctx.db),
     maTokenBl(ctx.db),
     stanPanelu(ctx.db),
@@ -269,6 +270,7 @@ export default async function Przeprowadzka({ searchParams }: Props) {
     kontaWPracy(ctx.db),
     katalogFirmy(ctx.db),
     stanZakonczenia(ctx.db, process.env),
+    statusBlFirmy(ctx.db),
   ])
   const mozeTryb = ctx.permissions.has('kanaly.tryb')
   const proba = stan.proba
@@ -510,6 +512,25 @@ export default async function Przeprowadzka({ searchParams }: Props) {
           </form>
         )}
       </Karta>
+
+      {token.zapisany && (
+        <Karta
+          id="status-bl"
+          className="pz-mt"
+          tytul="6. Status w BaseLinkerze po wysłaniu"
+          opis="BaseLinker dalej pobiera zamówienia ze sklepów. Żeby zamówienia wysłane albo wydane w Kompletorze nie wisiały tam w „Nowe zamówienia”, Kompletor może ustawić im w BaseLinkerze jeden status (np. „Kompletor”). Najpierw utwórz taki status w BaseLinkerze i wpisz tu jego numer. Kompletor nie nadpisuje zamówień, które BaseLinker sam spakował, wysłał, anulował albo zafakturował."
+        >
+          <form action={zapiszStatusBlFirmy} className="pz-formularz">
+            <PoleTekstowe id="pz-status-bl" etykieta="Numer statusu w BaseLinkerze" pomoc="Same cyfry, np. 388071 (w BaseLinkerze: lista statusów zamówień, numer w adresie edycji statusu)." name="statusId" inputMode="numeric" pattern="[0-9]*" maxLength={12} defaultValue={statusBl.statusId ?? ''} />
+            <Przelacznik id="pz-status-bl-wl" etykieta="Ustawiaj ten status po wysłaniu albo wydaniu w Kompletorze" name="wlaczony" value="tak" defaultChecked={statusBl.wlaczony} />
+            <div>
+              <Przycisk type="submit" wariant="drugorzedny">
+                Zapisz
+              </Przycisk>
+            </div>
+          </form>
+        </Karta>
+      )}
 
       <Karta id="ostatni" className="pz-mt" tytul="Ostatni zapis" opis={d.przebiegow > 0 ? `Zapisów razem: ${d.przebiegow}` : undefined}>
         {!d.ostatni || !st ? (

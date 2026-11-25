@@ -10,6 +10,8 @@
 // listą z „Ignoruj”. Lista tylko czyta; „Ignoruj” pisze wyłącznie ustawienie osoby.
 import { Baner, NaglowekStrony, PasekFiltrow, PrzyciskLink, PustyStan, StatusZamowienia, StanPlatnosci, Tabela, type KolumnaTabeli, type WierszTabeli } from '@/app/ui'
 import { zapiszKolumny } from '@/app/akcje'
+import { numerListy } from '@/lib/karta/opis'
+import { klienciNaLiscie } from '@/lib/klienci/odczyt'
 import { ustawieniaDokumentowFirmy } from '@/lib/dokumenty/firma'
 import { krajeKlientow } from '@/lib/klienci/kraje'
 import { daneAlertow, ukryteAlertyZ, wybierzAlerty } from '@/lib/panel/alerty-listy'
@@ -45,6 +47,8 @@ type Props = { searchParams: Promise<Record<string, string | string[] | undefine
 
 const KOLUMNY: KolumnaTabeli[] = [
   { klucz: 'numer', etykieta: 'Numer', sortowalna: true, szerokosc: '10.5rem' },
+  // jak w BaseLinkerze (numer, klient, produkty); tylko z uprawnieniem `klienci.dane` (filtr w ekranie)
+  { klucz: 'klient', etykieta: 'Klient', ukrywalna: true, szerokosc: '10rem' },
   { klucz: 'produkty', etykieta: 'Produkty', ukrywalna: true },
   { klucz: 'kody', etykieta: 'Produkty (skrót)', ukrywalna: true, ukrytaDomyslnie: true },
   { klucz: 'kwota', etykieta: 'Kwota', wyrownanie: 'prawo', sortowalna: true, szerokosc: '7.5rem' },
@@ -89,12 +93,17 @@ export default async function Zamowienia({ searchParams }: Props) {
     daneTerminowNaZadanie(ctx.db),
     ustawieniaDokumentowFirmy(ctx.db),
   ])
-  const [linie, alertyDane] = await Promise.all([
+  // kolumna „Klient” tylko z `klienci.dane`; ukryta w „Kolumny” = bez odszyfrowania i bez wpisu w dzienniku
+  const ukryte = ukryteKolumny(ctx.kolumnyTabel, 'zamowienia')
+  const kolumny = canKlient ? KOLUMNY : KOLUMNY.filter((k) => k.klucz !== 'klient')
+  const czytajKlientow = canKlient && !(ukryte ?? []).includes('klient')
+  const [linie, alertyDane, klienci] = await Promise.all([
     orderListLines(
       ctx.db,
       dane.wiersze.map((o) => o.id),
     ),
     daneAlertow(ctx.db, { poTerminie: liczniki.poTerminie }),
+    czytajKlientow ? klienciNaLiscie(ctx.db, dane.wiersze, { actorId: ctx.user.id }) : Promise.resolve(new Map<string, string>()),
   ])
   // alert prowadzący do widoku, który już jest na ekranie, nic nie dodaje
   const alerty = wybierzAlerty(alertyDane, ukryteAlertyZ(ctx.ukryteAlerty, ctx.organization.organizationId), f.widok)
@@ -127,7 +136,8 @@ export default async function Zamowienia({ searchParams }: Props) {
 
   const wiersze: WierszTabeli[] = dane.wiersze.map((o) => {
     const konto = accountName(dane.konta, o.channel, o.channelAccountId)
-    const numer = o.channelNumber ?? o.externalId
+    // ten sam numer co w tytule karty (numer z kanału, w całości), z jednej funkcji
+    const numer = numerListy(o).numer
     const href = `/zamowienia/${o.id}`
     const carrier = o.carrier ? CARRIER_LABEL[o.carrier] : null
     const termin = terminWysylki(o, terminy.harmonogramy, terminy.przyjazdy, terminy.now, terminy.cien)
@@ -152,15 +162,16 @@ export default async function Zamowienia({ searchParams }: Props) {
             )}
           </>
         ),
+        ...(canKlient ? { klient: klienci.get(o.id) ? <span className="zl-klient">{klienci.get(o.id)}</span> : <span className="muted">—</span> } : {}),
         produkty: <Produkty lines={lines} />,
         kody: <ProduktyKody lines={lines} />,
         kwota: (
           <>
-            <span className="num zl-kwota">{money(o.totalGross)}</span>
+            <span className="num zl-kwota">{money(o.totalGross, o.waluta)}</span>
             <span className="zl-platnosc">
               <StanPlatnosci stan={o.paymentState} />
             </span>
-            {o.paymentMethod.trim() && <span className="zl-meta">{o.paymentMethod}</span>}
+            {o.paymentState === 'COD' ? <span className="zl-meta">Za pobraniem</span> : o.paymentMethod.trim() && <span className="zl-meta">{o.paymentMethod}</span>}
           </>
         ),
         wysylka: (
@@ -343,12 +354,12 @@ export default async function Zamowienia({ searchParams }: Props) {
         <Tabela
           id="zamowienia"
           etykieta="Zamówienia"
-          kolumny={KOLUMNY}
+          kolumny={kolumny}
           wiersze={wiersze}
           adres={adres}
           sort={sort}
           zaznaczanie
-          kolumnyOsoby={{ ukryte: ukryteKolumny(ctx.kolumnyTabel, 'zamowienia'), zapisz: zapiszKolumny }}
+          kolumnyOsoby={{ ukryte, zapisz: zapiszKolumny }}
           narzedzia={
             <MenuEksportu widok={eksportHref} razem={dane.razem} />
           }
